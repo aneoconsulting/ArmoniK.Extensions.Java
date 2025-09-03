@@ -16,7 +16,6 @@
 package fr.aneo.armonik.client.blob;
 
 import com.google.common.util.concurrent.SettableFuture;
-import com.google.protobuf.ByteString;
 import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.util.FutureAdapters;
 import io.grpc.ManagedChannel;
@@ -29,11 +28,14 @@ import java.util.concurrent.CompletionStage;
 import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 
+import static com.google.protobuf.ByteString.copyFrom;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.*;
 import static java.util.Objects.requireNonNull;
 
 public class DefaultBlobService implements BlobService {
+  public static final int UPLOAD_CHUNK_SIZE = 84_000; // as define in ArmoniK server
+
   private final ResultsFutureStub resultsFutureStub;
   private final ResultsStub resultsStub;
 
@@ -64,6 +66,20 @@ public class DefaultBlobService implements BlobService {
     return IntStream.range(0, blobDefinitions.size())
                     .mapToObj(toBlobHandle(sessionHandle, resultRaws))
                     .toList();
+  }
+
+  @Override
+  public CompletionStage<Void> uploadBlobData(BlobHandle blobHandle, BlobDefinition blobDefinition) {
+    requireNonNull(blobHandle, "handle must not be null");
+    requireNonNull(blobDefinition, "blobDefinition must not be null");
+
+    return blobHandle.metadata()
+                     .thenCompose(metadata -> {
+                   var uploadObserver = new UploadBlobDataObserver(blobHandle.sessionHandle(), metadata.id(), blobDefinition, UPLOAD_CHUNK_SIZE);
+                   //noinspection ResultOfMethodCallIgnored
+                   resultsStub.uploadResultData(uploadObserver);
+                   return uploadObserver.completion();
+                 });
   }
 
   public CompletionStage<byte[]> downloadBlob(SessionHandle sessionHandle, UUID blobId) {
@@ -110,7 +126,7 @@ public class DefaultBlobService implements BlobService {
   private static CreateResultsRequest blobsRequest(SessionHandle sessionHandle, List<BlobDefinition> blobDefinitions) {
     var blobs = blobDefinitions.stream()
                                .map(def -> CreateResultsRequest.ResultCreate.newBuilder()
-                                                                            .setData(ByteString.copyFrom(def.data()))
+                                                                            .setData(copyFrom(def.data()))
                                                                             .build())
                                .toList();
 

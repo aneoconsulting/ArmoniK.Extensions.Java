@@ -15,14 +15,14 @@
  */
 package fr.aneo.armonik.client;
 
+import fr.aneo.armonik.client.blob.BlobDefinition;
+import fr.aneo.armonik.client.blob.BlobHandle;
 import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.task.TaskConfiguration;
 import fr.aneo.armonik.client.task.TaskDefinition;
 import fr.aneo.armonik.client.task.TaskHandle;
 
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.IntStream;
 
 import static java.util.stream.Collectors.toMap;
@@ -81,22 +81,18 @@ public class ArmoniKClient {
    * @throws NullPointerException if {@code taskDefinition} is {@code null}
    */
   public TaskHandle submitTask(TaskDefinition taskDefinition) {
-    var outputs = services.blobs().createBlobMetaData(sessionHandle, taskDefinition.outputs().size());
-    var outputHandles = IntStream.range(0, taskDefinition.outputs().size())
-                                 .boxed()
-                                 .collect(toMap(
-                                   index -> taskDefinition.outputs().get(index),
-                                   outputs::get
-                                 ));
+    Objects.requireNonNull(taskDefinition, "taskDefinition must not be null");
 
-    var inputDefinitions = new ArrayList<>(taskDefinition.inputs().entrySet());
-    var inputs = services.blobs().createBlobs(sessionHandle, inputDefinitions.stream().map(Map.Entry::getValue).toList());
-    var inputHandles = IntStream.range(0, inputDefinitions.size())
-                                .boxed()
-                                .collect(toMap(
-                                  index -> inputDefinitions.get(index).getKey(),
-                                  inputs::get
-                                ));
+    var inlineInputs = new ArrayList<>(taskDefinition.inputs().entrySet());
+    var allocatedHandles = services.blobs().createBlobMetaData(sessionHandle, taskDefinition.outputs().size() + inlineInputs.size());
+
+    var allocatedOutputs = allocatedHandles.subList(0, taskDefinition.outputs().size());
+    var allocatedInputs = allocatedHandles.subList(taskDefinition.outputs().size(), allocatedHandles.size());
+
+    var outputHandles = mapOutputNamesToHandles(taskDefinition.outputs(), allocatedOutputs);
+    var inputHandles = mapInputNamesToHandles(inlineInputs, allocatedInputs);
+
+    startUploads(allocatedInputs, inlineInputs);
 
     return services.tasks().submitTask(sessionHandle, inputHandles, outputHandles, taskDefinition.configuration());
   }
@@ -108,5 +104,33 @@ public class ArmoniKClient {
    */
   public static ArmoniKClientBuilder newBuilder() {
     return new ArmoniKClientBuilder();
+  }
+
+  private static Map<String, BlobHandle> mapOutputNamesToHandles(List<String> outputNames, List<BlobHandle> allocatedOutputHandles) {
+    if (outputNames.size() != allocatedOutputHandles.size()) {
+      throw new IllegalArgumentException("outputs and handles size mismatch: outputs=" + outputNames.size() + ", handles=" + allocatedOutputHandles.size());
+    }
+
+    return IntStream.range(0, outputNames.size())
+                    .boxed()
+                    .collect(toMap(outputNames::get, allocatedOutputHandles::get));
+  }
+
+  private static Map<String, BlobHandle> mapInputNamesToHandles(List<Map.Entry<String, BlobDefinition>> inlineInputs, List<BlobHandle> allocatedInputHandles) {
+    if (inlineInputs.size() != allocatedInputHandles.size()) {
+      throw new IllegalArgumentException("inline inputs and handles size mismatch: inputs=" + inlineInputs.size() + ", handles=" + allocatedInputHandles.size());
+    }
+
+    return IntStream.range(0, inlineInputs.size())
+                    .boxed()
+                    .collect(toMap(index -> inlineInputs.get(index).getKey(), allocatedInputHandles::get));
+  }
+
+  private void startUploads(List<BlobHandle> allocatedInputs, List<Map.Entry<String, BlobDefinition>> blobDefinitions) {
+    if (allocatedInputs.size() != blobDefinitions.size()) {
+      throw new IllegalArgumentException("Allocated input BlobHandles inputs and BlobDefinitions size mismatch: allocated handles=" + allocatedInputs.size() + ", blobDefinitions=" + blobDefinitions.size());
+    }
+    IntStream.range(0, allocatedInputs.size())
+             .forEach(index -> services.blobs().uploadBlobData(allocatedInputs.get(index), blobDefinitions.get(index).getValue()));
   }
 }

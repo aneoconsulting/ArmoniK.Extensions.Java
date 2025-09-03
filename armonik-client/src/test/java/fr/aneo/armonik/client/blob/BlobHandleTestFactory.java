@@ -18,7 +18,7 @@ package fr.aneo.armonik.client.blob;
 import java.util.UUID;
 
 import static fr.aneo.armonik.client.session.SessionTestFactory.session;
-import static java.util.UUID.*;
+import static java.util.UUID.randomUUID;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
 public class BlobHandleTestFactory {
@@ -28,6 +28,7 @@ public class BlobHandleTestFactory {
   public static BlobHandle blobHandle() {
     return blobHandle(randomUUID());
   }
+
   public static BlobHandle blobHandle(UUID id) {
     return new BlobHandle(session(), completedFuture(new BlobMetadata(id)));
   }

@@ -19,6 +19,8 @@ import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataRequest
 import fr.aneo.armonik.client.session.SessionHandle;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -30,6 +32,8 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultData
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataResponse;
 
 public class UploadBlobDataObserver implements ClientResponseObserver<UploadResultDataRequest, UploadResultDataResponse> {
+  private static final Logger logger = LoggerFactory.getLogger(UploadBlobDataObserver.class);
+
   private final CompletableFuture<Void> completion = new CompletableFuture<>();
   private ClientCallStreamObserver<UploadResultDataRequest> request;
   private final SessionHandle sessionHandle;
@@ -50,6 +54,13 @@ public class UploadBlobDataObserver implements ClientResponseObserver<UploadResu
   @Override
   public void beforeStart(ClientCallStreamObserver<UploadResultDataRequest> requestStream) {
     this.request = requestStream;
+
+    logger.atDebug()
+          .addKeyValue("sessionId", sessionHandle.id().toString())
+          .addKeyValue("blobId", blobId.toString())
+          .addKeyValue("totalSize", data.length)
+          .log("Upload stream started");
+
     completion.whenComplete((unused, throwable) -> {
       if (throwable instanceof CancellationException) requestStream.cancel("client cancelled upload", throwable);
     });
@@ -59,15 +70,35 @@ public class UploadBlobDataObserver implements ClientResponseObserver<UploadResu
   @Override
   public void onNext(UploadResultDataResponse value) {
     /* no-op (server may ACK) */
+    logger.atTrace()
+          .addKeyValue("operation", "uploadStream")
+          .addKeyValue("sessionId", sessionHandle.id().toString())
+          .addKeyValue("blobId", blobId.toString())
+          .addKeyValue("phase", "serverAck")
+          .log("Received server acknowledgment");
   }
 
   @Override
   public void onError(Throwable t) {
+    logger.atError()
+          .addKeyValue("sessionId", sessionHandle.id().toString())
+          .addKeyValue("blobId", blobId.toString())
+          .addKeyValue("error", t.getClass().getSimpleName())
+          .setCause(t)
+          .log("Upload stream failed");
+
     completion.completeExceptionally(t);
   }
 
   @Override
   public void onCompleted() {
+    logger.atDebug()
+          .addKeyValue("operation", "uploadStream")
+          .addKeyValue("sessionId", sessionHandle.id().toString())
+          .addKeyValue("blobId", blobId.toString())
+          .addKeyValue("totalSize", data.length)
+          .log("Upload stream completed successfully");
+
     completion.complete(null);
   }
 
@@ -78,7 +109,6 @@ public class UploadBlobDataObserver implements ClientResponseObserver<UploadResu
   private void drain() {
     if (!draining.compareAndSet(false, true)) return;
     try {
-      // Send header once when transport is ready
       if (!headerSent && request.isReady()) {
         sendIds();
       }
@@ -98,6 +128,13 @@ public class UploadBlobDataObserver implements ClientResponseObserver<UploadResu
         request.onCompleted();
       }
     } catch (RuntimeException e) {
+      logger.atError()
+            .addKeyValue("sessionId", sessionHandle.id().toString())
+            .addKeyValue("blobId", blobId.toString())
+            .addKeyValue("error", e.getClass().getSimpleName())
+            .setCause(e)
+            .log("Upload stream drain error");
+
       request.onError(e);
       completion.completeExceptionally(e);
     } finally {

@@ -26,7 +26,7 @@ import java.util.Set;
  * and a default {@link TaskConfiguration}.
  * </p>
  *
- * @see Session
+ * @see SessionHandle
  * @see TaskConfiguration
  */
 
@@ -39,13 +39,13 @@ public interface SessionService {
    * </p>
    *
    * @param partitionIds the set of partition identifiers to associate with the session (may be empty, but not null)
-   * @return a newly created {@link Session}
+   * @return a newly created {@link SessionHandle}
    * @throws NullPointerException     if {@code partitionIds} is {@code null}
    * @throws IllegalArgumentException if the effective default configuration targets a partition
    *                                  not present in {@code partitionIds}
    */
 
-  Session createSession(Set<String> partitionIds);
+  SessionHandle createSession(Set<String> partitionIds);
 
   /**
    * Creates a session associated with the given partitions and an explicit default task configuration.
@@ -53,9 +53,9 @@ public interface SessionService {
    * @param partitionIds      the set of partition identifiers to associate with the session (may be empty, but not null)
    * @param taskConfiguration the default task configuration to apply for tasks submitted in this session;
    *                          if {@code null}, {@code TaskConfiguration.defaultConfiguration()} is applied
-   * @return a newly created {@link Session}
+   * @return a newly created {@link SessionHandle}
    * @throws NullPointerException     if {@code partitionIds} is {@code null}
    * @throws IllegalArgumentException if {@code taskConfiguration} targets a partition not listed in {@code partitionIds}
    */
-  Session createSession(Set<String> partitionIds, TaskConfiguration taskConfiguration);
+  SessionHandle createSession(Set<String> partitionIds, TaskConfiguration taskConfiguration);
 }

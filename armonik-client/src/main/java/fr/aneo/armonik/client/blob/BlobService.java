@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.blob;
 
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.task.TaskDefinition;
 
 import java.util.List;
@@ -36,7 +36,7 @@ import java.util.concurrent.CompletionStage;
  * @see BlobHandle
  * @see BlobMetadata
  * @see BlobDefinition
- * @see Session
+ * @see SessionHandle
  * @see TaskDefinition
  */
 public interface BlobService {
@@ -48,13 +48,13 @@ public interface BlobService {
    * produced by subsequent task executions. The returned handles expose metadata asynchronously.
    * </p>
    *
-   * @param session the session that will own the blobs; must not be {@code null}
+   * @param sessionHandle the session that will own the blobs; must not be {@code null}
    * @param count   the number of blob metadata entries to create; must be {@code >= 0}
    * @return a list of blob handles (possibly empty when {@code count == 0})
    * @throws NullPointerException     if {@code session} is {@code null}
    * @throws IllegalArgumentException if {@code count} is negative
    */
-  List<BlobHandle> createBlobMetaData(Session session, int count);
+  List<BlobHandle> createBlobMetaData(SessionHandle sessionHandle, int count);
 
   /**
    * Creates blobs in the provided session from the given payload definitions.
@@ -63,12 +63,12 @@ public interface BlobService {
    * maps to the corresponding handle in the returned list.
    * </p>
    *
-   * @param session         the session that will own the created input blobs; must not be {@code null}
+   * @param sessionHandle         the session that will own the created input blobs; must not be {@code null}
    * @param blobDefinitions the ordered list of payload definitions; must not be {@code null}
    * @return an ordered list of handles for the created blobs (same cardinality as {@code blobDefinitions})
    * @throws NullPointerException if {@code session} or {@code blobDefinitions} is {@code null}
    */
-  List<BlobHandle> createBlobs(Session session, List<BlobDefinition> blobDefinitions);
+  List<BlobHandle> createBlobs(SessionHandle sessionHandle, List<BlobDefinition> blobDefinitions);
 
   /**
    * Downloads the full content of a blob by its identifier.
@@ -76,10 +76,10 @@ public interface BlobService {
    * The result completes asynchronously with the blob bytes or exceptionally if the download fails.
    * </p>
    *
-   * @param session the session owning the blob; must not be {@code null}
+   * @param sessionHandle the session owning the blob; must not be {@code null}
    * @param blobId  the blob identifier; must not be {@code null}
    * @return a future that completes with the blob data
    * @throws NullPointerException if {@code session} or {@code blobId} is {@code null}
    */
-  CompletionStage<byte[]> downloadBlob(Session session, UUID blobId);
+  CompletionStage<byte[]> downloadBlob(SessionHandle sessionHandle, UUID blobId);
 }

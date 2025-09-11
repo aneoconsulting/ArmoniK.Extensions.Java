@@ -55,12 +55,12 @@ public class DefaultSessionService implements SessionService {
   }
 
   @Override
-  public Session createSession(Set<String> partitionIds) {
+  public SessionHandle createSession(Set<String> partitionIds) {
     return createSession(partitionIds, null);
   }
 
   @Override
-  public Session createSession(Set<String> partitionIds, TaskConfiguration taskConfiguration) {
+  public SessionHandle createSession(Set<String> partitionIds, TaskConfiguration taskConfiguration) {
     var taskConfig = taskConfiguration == null ? defaultConfiguration() : taskConfiguration;
 
     validateTaskDefaultPartition(partitionIds, taskConfig);
@@ -79,7 +79,7 @@ public class DefaultSessionService implements SessionService {
 
     var sessionReply = SessionsGrpc.newBlockingStub(channel).createSession(createSessionRequest);
 
-    return new Session(
+    return new SessionHandle(
       UUID.fromString(sessionReply.getSessionId()),
       partitionIds,
       taskConfig

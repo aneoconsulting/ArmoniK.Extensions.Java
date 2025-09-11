@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.blob;
 
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 
 import java.util.concurrent.CompletionStage;
 
@@ -24,7 +24,7 @@ import static java.util.Objects.requireNonNull;
 /**
  * Lightweight reference to a blob within a given session.
  * <p>
- * A {@code BlobHandle} ties a blob to its owning {@link Session} and provides asynchronous
+ * A {@code BlobHandle} ties a blob to its owning {@link SessionHandle} and provides asynchronous
  * access to immutable blob metadata through {@link #metadata()}.
  * The handle does not contain the blob content and does not perform blocking I/O.
  * </p>
@@ -35,44 +35,44 @@ import static java.util.Objects.requireNonNull;
  * </p>
  *
  * @see BlobMetadata
- * @see Session
+ * @see SessionHandle
  */
 
 public final class BlobHandle {
-  private final Session session;
+  private final SessionHandle sessionHandle;
   private final CompletionStage<BlobMetadata> metadata;
 
   /**
    * Creates a handle for a blob in a given session, with deferred metadata resolution.
    *
-   * @param session  session that owns or scopes the blob
+   * @param sessionHandle  session that owns or scopes the blob
    * @param metadata future providing the blob's metadata when available
    * @throws NullPointerException if {@code session} or {@code metadata} is {@code null}
    */
-  BlobHandle(Session session, CompletionStage<BlobMetadata> metadata) {
-    requireNonNull(session, "session must not be null");
+  BlobHandle(SessionHandle sessionHandle, CompletionStage<BlobMetadata> metadata) {
+    requireNonNull(sessionHandle, "sessionHandle must not be null");
     requireNonNull(metadata, "blobMetaData must not be null");
 
-    this.session = session;
+    this.sessionHandle = sessionHandle;
     this.metadata = metadata;
   }
 
   /**
-   * Returns the session that owns or scopes this blob.
+   * Returns the session handle that owns or scopes this blob.
    *
    * @return the owning session
    */
-  public Session session() {
-    return session;
+  public SessionHandle sessionHandle() {
+    return sessionHandle;
   }
 
   /**
-   * Returns a future that completes with the immutable metadata of this blob.
+   * Returns a {@link CompletionStage} that completes with the immutable metadata of this blob.
    * <p>
-   * The returned future may complete exceptionally if the metadata cannot be retrieved.
+   * The returned CompletionStage may complete exceptionally if the metadata cannot be retrieved.
    * </p>
    *
-   * @return a future of the blob metadata
+   * @return a {@link CompletionStage} of the blob metadata
    */
   public CompletionStage<BlobMetadata> metadata() {
     return metadata;
@@ -81,6 +81,6 @@ public final class BlobHandle {
   @Override
   public String toString() {
     return "BlobHandle[" +
-      "session=" + session + "]";
+      "sessionHandle=" + sessionHandle + "]";
   }
 }

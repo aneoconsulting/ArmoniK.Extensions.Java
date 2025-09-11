@@ -21,7 +21,7 @@ import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest.TaskCrea
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
 import fr.aneo.armonik.client.blob.BlobHandle;
 import fr.aneo.armonik.client.blob.BlobMetadata;
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 import io.grpc.ManagedChannel;
 
 import java.util.Map;
@@ -40,22 +40,22 @@ public class DefaultTaskService implements TaskService {
   }
 
   @Override
-  public TaskHandle submitTask(Session session,
+  public TaskHandle submitTask(SessionHandle sessionHandle,
                                Map<String, BlobHandle> inputs,
                                Map<String, BlobHandle> outputs,
                                TaskConfiguration taskConfiguration) {
-    requireNonNull(session, "session must not be null");
+    requireNonNull(sessionHandle, "session must not be null");
     requireNonNull(inputs, "inputs must not be null");
     requireNonNull(outputs, "outputs must not be null");
 
     var outputIdStage = outputs.entrySet().iterator().next().getValue().metadata().thenApply(BlobMetadata::id);
     var inputIdStage = inputs.entrySet().iterator().next().getValue().metadata().thenApply(BlobMetadata::id);
-    var responseStage = inputIdStage.thenCombine(outputIdStage, toBuildRequest(session, taskConfiguration))
+    var responseStage = inputIdStage.thenCombine(outputIdStage, toBuildRequest(sessionHandle, taskConfiguration))
                                .thenCompose(request -> toCompletionStage(tasksStub.submitTasks(request)));
 
     return new TaskHandle(
-      session,
-      taskConfiguration == null ? session.defaultTaskConfiguration() : taskConfiguration,
+      sessionHandle,
+      taskConfiguration == null ? sessionHandle.defaultTaskConfiguration() : taskConfiguration,
       responseStage.thenApply(response -> new TaskMetadata(UUID.fromString(response.getTaskInfos(0).getTaskId()))),
       inputs,
       outputs,
@@ -63,8 +63,8 @@ public class DefaultTaskService implements TaskService {
     );
   }
 
-  private static BiFunction<UUID, UUID, SubmitTasksRequest> toBuildRequest(Session session, TaskConfiguration taskConfiguration) {
-    var taskConfig = taskConfiguration == null ? session.defaultTaskConfiguration() : taskConfiguration;
+  private static BiFunction<UUID, UUID, SubmitTasksRequest> toBuildRequest(SessionHandle sessionHandle, TaskConfiguration taskConfiguration) {
+    var taskConfig = taskConfiguration == null ? sessionHandle.defaultTaskConfiguration() : taskConfiguration;
     var taskOptionsBuilder = Objects.TaskOptions.newBuilder()
                                                 .setMaxDuration(Duration.newBuilder()
                                                                         .setSeconds(taskConfig.maxDuration().getSeconds())
@@ -74,7 +74,7 @@ public class DefaultTaskService implements TaskService {
                                                 .setPartitionId(taskConfig.partitionId());
 
     return (inputId, outputId) -> SubmitTasksRequest.newBuilder()
-                                                    .setSessionId(session.id().toString())
+                                                    .setSessionId(sessionHandle.id().toString())
                                                     .setTaskOptions(taskOptionsBuilder)
                                                     .addTaskCreations(TaskCreation.newBuilder()
                                                                                   .setPayloadId(inputId.toString())

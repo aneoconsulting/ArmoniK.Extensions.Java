@@ -31,7 +31,7 @@ import static java.util.Objects.requireNonNull;
  * unless explicitly overridden per task.
  * </p>
  */
-public final class Session {
+public final class SessionHandle {
 
   private final UUID id;
   private final Set<String> partitions;
@@ -48,7 +48,7 @@ public final class Session {
    *                                 through this session.
    * @throws NullPointerException if {@code id} is {@code null}
    */
-  Session(
+  SessionHandle(
     UUID id,
     Set<String> partitions,
     TaskConfiguration defaultTaskConfiguration

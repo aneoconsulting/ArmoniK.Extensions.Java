@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client;
 
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.task.TaskConfiguration;
 import fr.aneo.armonik.client.task.TaskDefinition;
 import fr.aneo.armonik.client.task.TaskHandle;
@@ -30,7 +30,7 @@ import static java.util.stream.Collectors.toMap;
 /**
  * High-level entry point for interacting with ArmoniK.
  * <p>
- * An {@code ArmoniKClient} maintains a {@link Session} that scopes task submissions
+ * An {@code ArmoniKClient} maintains a {@link SessionHandle} that scopes task submissions
  * and blob management, and exposes a {@link #services()} facade for advanced scenarios.
  * </p>
  * <p>
@@ -40,10 +40,10 @@ import static java.util.stream.Collectors.toMap;
 public class ArmoniKClient {
 
   private final Services services;
-  public Session session;
+  public SessionHandle sessionHandle;
 
   /**
-   * Creates a client and opens an ArmoniK {@link Session}.
+   * Creates a client and opens an ArmoniK {@link SessionHandle}.
    * <p>
    * If {@code partitionIds} or {@code taskConfiguration} are {@code null}, sensible defaults
    * are applied.
@@ -57,7 +57,7 @@ public class ArmoniKClient {
     var effectivePartitionIds = partitionIds == null ? Set.<String>of() : partitionIds;
     var effectiveTaskConfiguration = taskConfiguration == null ? TaskConfiguration.defaultConfiguration() : taskConfiguration;
     this.services = services;
-    this.session = services.sessions().createSession(effectivePartitionIds, effectiveTaskConfiguration);
+    this.sessionHandle = services.sessions().createSession(effectivePartitionIds, effectiveTaskConfiguration);
   }
 
   /**
@@ -81,7 +81,7 @@ public class ArmoniKClient {
    * @throws NullPointerException if {@code taskDefinition} is {@code null}
    */
   public TaskHandle submitTask(TaskDefinition taskDefinition) {
-    var outputs = services.blobs().createBlobMetaData(session, taskDefinition.outputs().size());
+    var outputs = services.blobs().createBlobMetaData(sessionHandle, taskDefinition.outputs().size());
     var outputHandles = IntStream.range(0, taskDefinition.outputs().size())
                                  .boxed()
                                  .collect(toMap(
@@ -90,7 +90,7 @@ public class ArmoniKClient {
                                  ));
 
     var inputDefinitions = new ArrayList<>(taskDefinition.inputs().entrySet());
-    var inputs = services.blobs().createBlobs(session, inputDefinitions.stream().map(Map.Entry::getValue).toList());
+    var inputs = services.blobs().createBlobs(sessionHandle, inputDefinitions.stream().map(Map.Entry::getValue).toList());
     var inputHandles = IntStream.range(0, inputDefinitions.size())
                                 .boxed()
                                 .collect(toMap(
@@ -98,7 +98,7 @@ public class ArmoniKClient {
                                   inputs::get
                                 ));
 
-    return services.tasks().submitTask(session, inputHandles, outputHandles, taskDefinition.configuration());
+    return services.tasks().submitTask(sessionHandle, inputHandles, outputHandles, taskDefinition.configuration());
   }
 
   /**

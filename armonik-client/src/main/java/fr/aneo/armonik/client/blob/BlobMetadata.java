@@ -20,10 +20,10 @@ import java.util.UUID;
 /**
  * Immutable metadata describing a submitted Blob.
  * <p>
- * This record encapsulates the unique task identifier assigned by the backend.
+ * This record encapsulates the unique Blob identifier assigned by the backend.
  * </p>
  *
- * @param id unique identifier of the task
+ * @param id unique identifier of the Blob
  */
 public record BlobMetadata(UUID id) {
 }

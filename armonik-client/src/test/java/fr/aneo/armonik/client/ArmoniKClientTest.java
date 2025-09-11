@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.session.DefaultSessionService;
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.task.TaskConfiguration;
 import org.junit.jupiter.api.Test;
 
@@ -41,13 +41,13 @@ class ArmoniKClientTest {
 
     // Then
     verify(services.sessions()).createSession(partitionIds, taskConfiguration);
-    assertThat(client.session).isEqualTo(session);
+    assertThat(client.sessionHandle).isEqualTo(session);
   }
 
-  private Services createServices(Session session) {
+  private Services createServices(SessionHandle sessionHandle) {
     var services = mock(Services.class);
     when(services.sessions()).thenReturn(mock(DefaultSessionService.class));
-    when(services.sessions().createSession(any(), any())).thenReturn(session);
+    when(services.sessions().createSession(any(), any())).thenReturn(sessionHandle);
     return services;
   }
 }

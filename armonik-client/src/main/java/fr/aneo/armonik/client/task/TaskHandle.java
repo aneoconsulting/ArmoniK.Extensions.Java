@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client.task;
 
 import fr.aneo.armonik.client.blob.BlobHandle;
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
@@ -24,7 +24,7 @@ import java.util.concurrent.CompletionStage;
 /**
  * Handle representing a submitted task.
  * <p>
- * A {@code TaskHandle} provides access to the {@link Session} in which the task runs,
+ * A {@code TaskHandle} provides access to the {@link SessionHandle} in which the task runs,
  * the {@link TaskConfiguration} that applies to it, the asynchronous {@link #metadata()}
  * with task identifiers, and references to input/output blobs involved in the submission.
  * </p>
@@ -38,11 +38,11 @@ import java.util.concurrent.CompletionStage;
  * @see TaskMetadata
  * @see TaskConfiguration
  * @see BlobHandle
- * @see Session
+ * @see SessionHandle
  */
 
 public final class TaskHandle {
-  private final Session session;
+  private final SessionHandle sessionHandle;
   private final TaskConfiguration taskConfiguration;
   private final CompletionStage<TaskMetadata> metadata;
   private final Map<String, BlobHandle> inputs;
@@ -52,7 +52,7 @@ public final class TaskHandle {
   /**
    * Creates a new task handle.
    *
-   * @param session           the session in which the task is submitted
+   * @param sessionHandle           the session in which the task is submitted
    * @param taskConfiguration the configuration applied to the task (may be {@code null} if defaulted)
    * @param metadata          future that completes with task metadata
    * @param inputs            collection of input blob handles associated with the task
@@ -60,14 +60,14 @@ public final class TaskHandle {
    * @param payLoad           the primary payload blob handle, if applicable
    */
   TaskHandle(
-    Session session,
+    SessionHandle sessionHandle,
     TaskConfiguration taskConfiguration,
     CompletionStage<TaskMetadata> metadata,
     Map<String, BlobHandle> inputs,
     Map<String, BlobHandle> outputs,
     BlobHandle payLoad
   ) {
-    this.session = session;
+    this.sessionHandle = sessionHandle;
     this.taskConfiguration = taskConfiguration;
     this.metadata = metadata;
     this.inputs = inputs;
@@ -80,8 +80,8 @@ public final class TaskHandle {
    *
    * @return the session
    */
-  public Session session() {
-    return session;
+  public SessionHandle session() {
+    return sessionHandle;
   }
 
   /**
@@ -132,7 +132,7 @@ public final class TaskHandle {
   @Override
   public String toString() {
     return "TaskHandle[" +
-      "session=" + session + ", " +
+      "sessionHandle=" + sessionHandle + ", " +
       "configuration=" + taskConfiguration + ", " +
       "inputs=" + inputs + ", " +
       "outputs=" + outputs + ", " +

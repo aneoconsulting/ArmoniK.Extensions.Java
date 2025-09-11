@@ -17,7 +17,7 @@ package fr.aneo.armonik.client.blob;
 
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.util.FutureAdapters;
 import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
@@ -43,32 +43,32 @@ public class DefaultBlobService implements BlobService {
   }
 
   @Override
-  public List<BlobHandle> createBlobMetaData(Session session, int count) {
-    requireNonNull(session, "session must not be null");
+  public List<BlobHandle> createBlobMetaData(SessionHandle sessionHandle, int count) {
+    requireNonNull(sessionHandle, "session must not be null");
     if (count < 0) throw new IllegalArgumentException("count must be positive");
 
-    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResultsMetaData(blobsMetaDataRequest(session, count)))
+    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResultsMetaData(blobsMetaDataRequest(sessionHandle, count)))
                                    .thenApply(CreateResultsMetaDataResponse::getResultsList);
     return IntStream.range(0, count)
-                    .mapToObj(toBlobHandle(session, resultRaws))
+                    .mapToObj(toBlobHandle(sessionHandle, resultRaws))
                     .toList();
   }
 
   @Override
-  public List<BlobHandle> createBlobs(Session session, List<BlobDefinition> blobDefinitions) {
-    requireNonNull(session, "session must not be null");
+  public List<BlobHandle> createBlobs(SessionHandle sessionHandle, List<BlobDefinition> blobDefinitions) {
+    requireNonNull(sessionHandle, "sessionHandle must not be null");
     requireNonNull(blobDefinitions, "blobDefinitions must not be null");
 
-    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResults(blobsRequest(session, blobDefinitions)))
+    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResults(blobsRequest(sessionHandle, blobDefinitions)))
                                    .thenApply(CreateResultsResponse::getResultsList);
     return IntStream.range(0, blobDefinitions.size())
-                    .mapToObj(toBlobHandle(session, resultRaws))
+                    .mapToObj(toBlobHandle(sessionHandle, resultRaws))
                     .toList();
   }
 
-  public CompletionStage<byte[]> downloadBlob(Session session, UUID blobId) {
+  public CompletionStage<byte[]> downloadBlob(SessionHandle sessionHandle, UUID blobId) {
     var request = DownloadResultDataRequest.newBuilder()
-                                           .setSessionId(session.id().toString()).setResultId(blobId.toString())
+                                           .setSessionId(sessionHandle.id().toString()).setResultId(blobId.toString())
                                            .build();
 
     var result = SettableFuture.<byte[]>create();
@@ -98,16 +98,16 @@ public class DefaultBlobService implements BlobService {
     return FutureAdapters.toCompletionStage(result);
   }
 
-  private static CreateResultsMetaDataRequest blobsMetaDataRequest(Session session, int count) {
+  private static CreateResultsMetaDataRequest blobsMetaDataRequest(SessionHandle sessionHandle, int count) {
     return CreateResultsMetaDataRequest.newBuilder()
-                                       .setSessionId(session.id().toString())
+                                       .setSessionId(sessionHandle.id().toString())
                                        .addAllResults(IntStream.range(0, count)
                                                                .mapToObj(index -> CreateResultsMetaDataRequest.ResultCreate.newBuilder().build())
                                                                .toList())
                                        .build();
   }
 
-  private static CreateResultsRequest blobsRequest(Session session, List<BlobDefinition> blobDefinitions) {
+  private static CreateResultsRequest blobsRequest(SessionHandle sessionHandle, List<BlobDefinition> blobDefinitions) {
     var blobs = blobDefinitions.stream()
                                .map(def -> CreateResultsRequest.ResultCreate.newBuilder()
                                                                             .setData(ByteString.copyFrom(def.data()))
@@ -115,14 +115,14 @@ public class DefaultBlobService implements BlobService {
                                .toList();
 
     return CreateResultsRequest.newBuilder()
-                               .setSessionId(session.id().toString())
+                               .setSessionId(sessionHandle.id().toString())
                                .addAllResults(blobs)
                                .build();
   }
 
-  private static IntFunction<BlobHandle> toBlobHandle(Session session, CompletionStage<List<ResultRaw>> resultRaws) {
+  private static IntFunction<BlobHandle> toBlobHandle(SessionHandle sessionHandle, CompletionStage<List<ResultRaw>> resultRaws) {
     return index -> new BlobHandle(
-      session,
+      sessionHandle,
       resultRaws.thenApply(resultRaw -> new BlobMetadata(UUID.fromString(resultRaw.get(index).getResultId()))
       )
     );

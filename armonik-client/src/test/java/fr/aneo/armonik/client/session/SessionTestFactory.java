@@ -23,7 +23,7 @@ public class SessionTestFactory {
 
   private SessionTestFactory() {}
 
-  public static Session session() {
-    return new Session(randomUUID(), emptySet(), defaultConfiguration());
+  public static SessionHandle session() {
+    return new SessionHandle(randomUUID(), emptySet(), defaultConfiguration());
   }
 }

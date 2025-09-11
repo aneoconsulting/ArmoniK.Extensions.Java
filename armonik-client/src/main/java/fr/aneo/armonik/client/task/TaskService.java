@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client.task;
 
 import fr.aneo.armonik.client.blob.BlobHandle;
-import fr.aneo.armonik.client.session.Session;
+import fr.aneo.armonik.client.session.SessionHandle;
 
 import java.util.Map;
 
@@ -26,7 +26,7 @@ import java.util.Map;
  * @see TaskHandle
  * @see TaskDefinition
  * @see TaskMetadata
- * @see Session
+ * @see SessionHandle
  */
 
 public interface TaskService {
@@ -34,14 +34,14 @@ public interface TaskService {
   /**
    * Submits a task within the given session.
    *
-   * @param session            the session in which to submit the task; must not be {@code null}
+   * @param sessionHandle            the session in which to submit the task; must not be {@code null}
    * @param inputs             map of input blob handles keyed by logical input names; must not be {@code null}
    * @param outputs            map of expected output blob handles keyed by logical output names; must not be {@code null}
    * @param taskConfiguration  configuration to apply to the task; may be {@code null} to use defaults
    * @return a handle to the submitted task
    * @throws NullPointerException if {@code session}, {@code inputs}, or {@code outputs} is {@code null}
    */
-  TaskHandle submitTask(Session session,
+  TaskHandle submitTask(SessionHandle sessionHandle,
                         Map<String, BlobHandle> inputs,
                         Map<String, BlobHandle> outputs,
                         TaskConfiguration taskConfiguration);

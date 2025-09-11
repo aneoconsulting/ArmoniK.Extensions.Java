@@ -76,11 +76,11 @@ public final class TaskHandle {
   }
 
   /**
-   * Returns the session in which this task was submitted.
+   * Returns the sessionHandle in which this task was submitted.
    *
-   * @return the session
+   * @return the sessionHandle
    */
-  public SessionHandle session() {
+  public SessionHandle sessionHandle() {
     return sessionHandle;
   }
 

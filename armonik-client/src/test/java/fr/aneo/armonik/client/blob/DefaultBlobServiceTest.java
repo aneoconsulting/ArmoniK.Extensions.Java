@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client.blob;
 
+import fr.aneo.armonik.client.mocks.ResultsGrpcMock;
 import fr.aneo.armonik.client.task.TaskDefinition;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
@@ -43,15 +44,15 @@ class DefaultBlobServiceTest {
   public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
 
   private DefaultBlobService blobService;
-  private ResultsServiceMock resultsServiceMock;
+  private ResultsGrpcMock resultsGrpcMock;
 
   @BeforeEach
   void setUp() throws IOException {
-    resultsServiceMock = new ResultsServiceMock();
+    resultsGrpcMock = new ResultsGrpcMock();
     String serverName = InProcessServerBuilder.generateName();
     grpcCleanup.register(InProcessServerBuilder.forName(serverName)
                                                .directExecutor()
-                                               .addService(resultsServiceMock)
+                                               .addService(resultsGrpcMock)
                                                .build()
                                                .start());
 
@@ -99,9 +100,9 @@ class DefaultBlobServiceTest {
     blobService.uploadBlobData(blobHandle, BlobDefinition.from("Hello".getBytes())).toCompletableFuture().join();
 
     // Then
-    assertThat(resultsServiceMock.sessionId).isEqualTo(blobHandle.sessionHandle().id().toString());
-    assertThat(resultsServiceMock.blobId).isEqualTo(blobHandle.metadata().toCompletableFuture().join().id().toString());
-    assertThat(resultsServiceMock.receivedData.toByteArray()).asString().isEqualTo("Hello");
+    assertThat(resultsGrpcMock.sessionId).isEqualTo(blobHandle.sessionHandle().id().toString());
+    assertThat(resultsGrpcMock.blobId).isEqualTo(blobHandle.metadata().toCompletableFuture().join().id().toString());
+    assertThat(resultsGrpcMock.receivedData.toByteArray()).asString().isEqualTo("Hello");
   }
 
   @Test
@@ -117,10 +118,10 @@ class DefaultBlobServiceTest {
     blobService.uploadBlobData(blobHandle, BlobDefinition.from(payload)).toCompletableFuture().join();
 
     // Then
-    assertThat(resultsServiceMock.sessionId).isEqualTo(blobHandle.sessionHandle().id().toString());
-    assertThat(resultsServiceMock.blobId).isEqualTo(blobHandle.metadata().toCompletableFuture().join().id().toString());
-    assertThat(resultsServiceMock.dataChunkSizes).containsExactly(UPLOAD_CHUNK_SIZE, UPLOAD_CHUNK_SIZE, REMAINDER);
-    assertThat(resultsServiceMock.receivedData.toByteArray()).isEqualTo(payload);
+    assertThat(resultsGrpcMock.sessionId).isEqualTo(blobHandle.sessionHandle().id().toString());
+    assertThat(resultsGrpcMock.blobId).isEqualTo(blobHandle.metadata().toCompletableFuture().join().id().toString());
+    assertThat(resultsGrpcMock.dataChunkSizes).containsExactly(UPLOAD_CHUNK_SIZE, UPLOAD_CHUNK_SIZE, REMAINDER);
+    assertThat(resultsGrpcMock.receivedData.toByteArray()).isEqualTo(payload);
   }
 
 }

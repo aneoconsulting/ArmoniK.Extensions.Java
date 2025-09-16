@@ -57,11 +57,11 @@ class ArmoniKClientTest {
     when(services.sessions().createSession(any(), any())).thenReturn(session);
 
     // When
-    var client = new ArmoniKClient(Set.of("partition1"), taskConfiguration, services);
+    var client = new ArmoniKClient(Set.of("partition1"), taskConfiguration, services, null);
 
     // Then
     verify(services.sessions()).createSession(partitionIds, taskConfiguration);
-    assertThat(client.sessionHandle).isEqualTo(session);
+    assertThat(client.sessionHandle()).isEqualTo(session);
   }
 
   @Test
@@ -87,7 +87,7 @@ class ArmoniKClientTest {
     when(payloadSerializer.serialize(anyMap(), anyMap())).thenReturn(payloadDefinition);
     when(services.sessions().createSession(any(), any())).thenReturn(session);
 
-    var client = new ArmoniKClient(Set.of("partition1"), defaultConfiguration(), payloadSerializer, services);
+    var client = new ArmoniKClient(Set.of("partition1"), defaultConfiguration(), payloadSerializer, services, null);
 
     // When
     client.submitTask(taskDefinition);

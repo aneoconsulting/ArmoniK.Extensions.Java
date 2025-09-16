@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client.task;
 
+import fr.aneo.armonik.client.mocks.TasksGrpcMock;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.testing.GrpcCleanupRule;
@@ -42,15 +43,15 @@ class DefaultTaskServiceTest {
   public final GrpcCleanupRule grpcCleanup = new GrpcCleanupRule();
 
   private DefaultTaskService taskService;
-  private TasksServiceMock tasksServiceMock;
+  private TasksGrpcMock tasksGrpcMock;
 
   @BeforeEach
   void setUp() throws IOException {
-    tasksServiceMock = new TasksServiceMock();
+    tasksGrpcMock = new TasksGrpcMock();
     String serverName = InProcessServerBuilder.generateName();
     grpcCleanup.register(InProcessServerBuilder.forName(serverName)
                                                .directExecutor()
-                                               .addService(tasksServiceMock)
+                                               .addService(tasksGrpcMock)
                                                .build()
                                                .start());
 
@@ -87,22 +88,22 @@ class DefaultTaskServiceTest {
     assertThat(taskHandle.payLoad()).isEqualTo(payload);
 
     // payload
-    assertThat(tasksServiceMock.submittedTasksRequest.getSessionId()).isEqualTo(sessionHandle.id().toString());
+    assertThat(tasksGrpcMock.submittedTasksRequest.getSessionId()).isEqualTo(sessionHandle.id().toString());
 
     // Task options
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getMaxRetries()).isEqualTo(3);
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getPartitionId()).isEqualTo("partition_1");
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getMaxDuration().getSeconds()).isEqualTo(3_600);
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getMaxDuration().getNanos()).isEqualTo(0);
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getPriority()).isEqualTo(1);
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskOptions().getOptionsMap()).isEqualTo(Map.of("option1", "value1"));
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getMaxRetries()).isEqualTo(3);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getPartitionId()).isEqualTo("partition_1");
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getMaxDuration().getSeconds()).isEqualTo(3_600);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getMaxDuration().getNanos()).isEqualTo(0);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getPriority()).isEqualTo(1);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskOptions().getOptionsMap()).isEqualTo(Map.of("option1", "value1"));
 
     // Task Creation
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(1);
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskCreations(0).getPayloadId()).isEqualTo("55555555-5555-5555-5555-555555555555");
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskCreations(0).getDataDependenciesList())
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(1);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreations(0).getPayloadId()).isEqualTo("55555555-5555-5555-5555-555555555555");
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreations(0).getDataDependenciesList())
       .containsExactlyInAnyOrder("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
-    assertThat(tasksServiceMock.submittedTasksRequest.getTaskCreations(0).getExpectedOutputKeysList())
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreations(0).getExpectedOutputKeysList())
       .containsExactlyInAnyOrder("33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444");
   }
 }

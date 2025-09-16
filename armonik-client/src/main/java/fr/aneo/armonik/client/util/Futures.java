@@ -18,6 +18,7 @@ package fr.aneo.armonik.client.util;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ListenableFuture;
 
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -91,7 +92,7 @@ public final class Futures {
    * @return a stage that yields a list of results or fails if any input stage fails
    * @throws NullPointerException if {@code stages} is null
    */
-  public static <T> CompletionStage<List<T>> allOf(List<CompletionStage<T>> stages) {
+  public static <T> CompletionStage<List<T>> allOf(Collection<CompletionStage<T>> stages) {
     if (stages.isEmpty()) return completedFuture(List.of());
 
     var futures = stages.stream().map(CompletionStage::toCompletableFuture).toList();

@@ -61,8 +61,7 @@ public class TaskDefinition {
    *
    * @return an immutable map of input definitions
    */
-
-  public Map<String, BlobDefinition> inputs() {
+  public Map<String, BlobDefinition> inputDefinitions() {
     return Map.copyOf(inputDefinitions);
   }
 

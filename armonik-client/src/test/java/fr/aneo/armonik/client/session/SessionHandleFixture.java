@@ -19,11 +19,11 @@ import static fr.aneo.armonik.client.task.TaskConfiguration.defaultConfiguration
 import static java.util.Collections.emptySet;
 import static java.util.UUID.randomUUID;
 
-public class SessionTestFactory {
+public class SessionHandleFixture {
 
-  private SessionTestFactory() {}
+  private SessionHandleFixture() {}
 
-  public static SessionHandle session() {
+  public static SessionHandle sessionHandle() {
     return new SessionHandle(randomUUID(), emptySet(), defaultConfiguration());
   }
 }

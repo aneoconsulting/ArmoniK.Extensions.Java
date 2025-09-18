@@ -16,20 +16,23 @@
 package fr.aneo.armonik.client.task;
 
 import com.google.protobuf.Duration;
-import fr.aneo.armonik.api.grpc.v1.Objects;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest.TaskCreation;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
 import fr.aneo.armonik.client.blob.BlobHandle;
 import fr.aneo.armonik.client.blob.BlobMetadata;
 import fr.aneo.armonik.client.session.SessionHandle;
+import fr.aneo.armonik.client.util.Futures;
 import io.grpc.ManagedChannel;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.BiFunction;
+import java.util.concurrent.CompletionStage;
 
+import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
-import static fr.aneo.armonik.client.util.FutureAdapters.toCompletionStage;
+import static fr.aneo.armonik.client.util.Futures.toCompletionStage;
 import static java.util.Objects.requireNonNull;
 
 public class DefaultTaskService implements TaskService {
@@ -43,14 +46,21 @@ public class DefaultTaskService implements TaskService {
   public TaskHandle submitTask(SessionHandle sessionHandle,
                                Map<String, BlobHandle> inputs,
                                Map<String, BlobHandle> outputs,
+                               BlobHandle payload,
                                TaskConfiguration taskConfiguration) {
     requireNonNull(sessionHandle, "session must not be null");
     requireNonNull(inputs, "inputs must not be null");
     requireNonNull(outputs, "outputs must not be null");
+    requireNonNull(payload, "payload must not be null");
 
-    var outputIdStage = outputs.entrySet().iterator().next().getValue().metadata().thenApply(BlobMetadata::id);
-    var inputIdStage = inputs.entrySet().iterator().next().getValue().metadata().thenApply(BlobMetadata::id);
-    var responseStage = inputIdStage.thenCombine(outputIdStage, toBuildRequest(sessionHandle, taskConfiguration))
+    var inputIdStages = getIdsFrom(inputs.values());
+    var outputIdStages = getIdsFrom(outputs.values());
+
+    var responseStage = payload.metadata()
+                               .thenApply(BlobMetadata::id)
+                               .thenCombine(inputIdStages, AllInputs::new)
+                               .thenCombine(outputIdStages, this::toTaskCreation)
+                               .thenApply(taskCreation -> toSubmitTasksRequest(sessionHandle, taskConfiguration, taskCreation))
                                .thenCompose(request -> toCompletionStage(tasksStub.submitTasks(request)));
 
     return new TaskHandle(
@@ -59,26 +69,40 @@ public class DefaultTaskService implements TaskService {
       responseStage.thenApply(response -> new TaskMetadata(UUID.fromString(response.getTaskInfos(0).getTaskId()))),
       inputs,
       outputs,
-      inputs.entrySet().iterator().next().getValue()
+      payload
     );
   }
 
-  private static BiFunction<UUID, UUID, SubmitTasksRequest> toBuildRequest(SessionHandle sessionHandle, TaskConfiguration taskConfiguration) {
+  private SubmitTasksRequest toSubmitTasksRequest(SessionHandle sessionHandle, TaskConfiguration taskConfiguration, TaskCreation taskCreation) {
     var taskConfig = taskConfiguration == null ? sessionHandle.defaultTaskConfiguration() : taskConfiguration;
-    var taskOptionsBuilder = Objects.TaskOptions.newBuilder()
-                                                .setMaxDuration(Duration.newBuilder()
-                                                                        .setSeconds(taskConfig.maxDuration().getSeconds())
-                                                                        .setNanos(taskConfig.maxDuration().getNano()))
-                                                .setPriority(taskConfig.priority())
-                                                .setMaxRetries(taskConfig.maxRetries())
-                                                .setPartitionId(taskConfig.partitionId());
+    return SubmitTasksRequest.newBuilder()
+                             .setSessionId(sessionHandle.id().toString())
+                             .setTaskOptions(TaskOptions.newBuilder()
+                                                        .setMaxDuration(Duration.newBuilder()
+                                                                                .setSeconds(taskConfig.maxDuration().getSeconds())
+                                                                                .setNanos(taskConfig.maxDuration().getNano()))
+                                                        .setPriority(taskConfig.priority())
+                                                        .setMaxRetries(taskConfig.maxRetries())
+                                                        .setPartitionId(taskConfig.partitionId())
+                                                        .putAllOptions(taskConfig.options())
+                             )
+                             .addTaskCreations(taskCreation)
+                             .build();
+  }
 
-    return (inputId, outputId) -> SubmitTasksRequest.newBuilder()
-                                                    .setSessionId(sessionHandle.id().toString())
-                                                    .setTaskOptions(taskOptionsBuilder)
-                                                    .addTaskCreations(TaskCreation.newBuilder()
-                                                                                  .setPayloadId(inputId.toString())
-                                                                                  .addExpectedOutputKeys(outputId.toString()))
-                                                    .build();
+  private TaskCreation toTaskCreation(AllInputs allInputs, List<UUID> outputIds) {
+    return TaskCreation.newBuilder()
+                       .setPayloadId(allInputs.payloadId.toString())
+                       .addAllDataDependencies(allInputs.inputIds.stream().map(UUID::toString).toList())
+                       .addAllExpectedOutputKeys(outputIds.stream().map(UUID::toString).toList())
+                       .build();
+  }
+
+  private static CompletionStage<List<UUID>> getIdsFrom(Collection<BlobHandle> blobHandles) {
+    return Futures.allOf(blobHandles.stream().map(BlobHandle::metadata).toList())
+                  .thenApply(blobMetadata -> blobMetadata.stream().map(BlobMetadata::id).toList());
+  }
+
+  private record AllInputs(UUID payloadId, List<UUID> inputIds) {
   }
 }

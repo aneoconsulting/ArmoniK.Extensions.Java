@@ -15,6 +15,8 @@
  */
 package fr.aneo.armonik.client.blob;
 
+import java.util.Arrays;
+
 import static java.util.Objects.requireNonNull;
 
 
@@ -40,6 +42,19 @@ public class BlobDefinition {
    */
   public byte[] data() {
     return data;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (o == null || getClass() != o.getClass()) return false;
+
+    BlobDefinition that = (BlobDefinition) o;
+    return Arrays.equals(data, that.data);
+  }
+
+  @Override
+  public int hashCode() {
+    return Arrays.hashCode(data);
   }
 
   /**

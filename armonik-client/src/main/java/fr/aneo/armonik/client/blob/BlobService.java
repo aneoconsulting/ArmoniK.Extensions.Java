@@ -42,41 +42,58 @@ import java.util.concurrent.CompletionStage;
 public interface BlobService {
 
   /**
-   * Creates metadata entries for a given number of blobs in the provided session.
+   * Allocates and associates blob handles required for a task submission.
    * <p>
-   * This operation pre-allocates blob identifiers and metadata without uploading any content.
-   * It can be used for both input and output blobs when you need to separate metadata creation
-   * from data upload.
+   * This operation pre-allocates blob identifiers for:
+   * <ul>
+   *   <li>One payload handle to hold the serialized task manifest</li>
+   *   <li>All declared output blob handles (mapped by output name)</li>
+   *   <li>Inline input blob handles for inputs defined with {@link BlobDefinition} (mapped by input name)</li>
+   * </ul>
    *
    * <p>
-   * The blob metadata becomes available asynchronously through the returned handles.
-   * For large input blobs, this approach combined with {@link #uploadBlobData(BlobHandle, BlobDefinition)}
-   * provides better control over upload timing and resource management compared to
-   * {@link #createBlobs(SessionHandle, List)}.
-   * </p>
+   * <strong>Important:</strong> Existing input handles that are already {@link BlobHandle} instances
+   * in the task definition are preserved and not reallocated. Only inputs defined as
+   * {@link BlobDefinition} (inline data) receive new blob handles for subsequent upload.
    *
-   * @param sessionHandle the ArmoniK session that will own the blobs; must not be {@code null}
-   * @param count   the number of blob metadata entries to create; must be {@code >= 0}
-   * @return a list of blob handles with pre-allocated identifiers (empty list when {@code count == 0})
-   * @throws NullPointerException     if {@code session} is {@code null}
-   * @throws IllegalArgumentException if {@code count} is negative
+   * <p>
+   * The returned {@link BlobHandlesAllocation} provides organized access to all allocated handles:
+   * <ul>
+   *   <li>{@link BlobHandlesAllocation#payloadHandle()} - for constructing and uploading the task payload manifest</li>
+   *   <li>{@link BlobHandlesAllocation#inputHandlesByName()} - for uploading inline input data via {@link #uploadBlobData}</li>
+   *   <li>{@link BlobHandlesAllocation#outputHandlesByName()} - for task result retrieval after execution</li>
+   * </ul>
+   *
+   * <p>
+   * This method is typically called as part of the task submission workflow before uploading
+   * input data and submitting the task to the ArmoniK cluster.
+   *
+   * @param sessionHandle  the ArmoniK session for which blob handles are allocated; must not be {@code null}
+   * @param taskDefinition the task definition describing inputs and outputs; must not be {@code null}
+   * @return a {@link BlobHandlesAllocation} bundling all allocated blob handles, never {@code null}
+   * @throws NullPointerException if {@code session} or {@code taskDefinition} is {@code null}
+   * @see #uploadBlobData(BlobHandle, BlobDefinition)
+   * @see TaskDefinition#withInput(String, BlobHandle)
+   * @see TaskDefinition#withInput(String, BlobDefinition)
    */
-  List<BlobHandle> createBlobMetaData(SessionHandle sessionHandle, int count);
+
+  BlobHandlesAllocation allocateBlobHandles(SessionHandle sessionHandle, TaskDefinition taskDefinition);
 
   /**
    * Creates input blobs in the provided session from the given definitions.
    * <p>
-   * This operation both creates blob metadata and uploads the content synchronously.
+   * This operation both creates blob metadata and uploads the content in a single step.
    * Each {@link BlobDefinition} provides the raw bytes for one blob. The position in the
    * input list corresponds to the same position in the returned handle list.
    *
    * <p>
-   * <strong>Performance Note:</strong> For large blobs or when fine-grained control over
-   * upload timing is needed, consider using {@link #createBlobMetaData(SessionHandle, int)}
-   * followed by {@link #uploadBlobData(BlobHandle, BlobDefinition)} for better resource management.
+   * <strong>Performance Note:</strong> For task submission workflows or when fine-grained control over
+   * blob allocation and upload timing is needed, consider using {@link #allocateBlobHandles(SessionHandle, TaskDefinition)}
+   * followed by {@link #uploadBlobData(BlobHandle, BlobDefinition)} for better resource management
+   * and integration with the task submission process.
    * </p>
    *
-   * @param sessionHandle         the ArmoniK session that will own the created blobs; must not be {@code null}
+   * @param sessionHandle   the ArmoniK session that will own the created blobs; must not be {@code null}
    * @param blobDefinitions the list of blob definitions containing the blob data; must not be {@code null},
    *                        and no element should be {@code null}
    * @return an ordered list of handles for the created blobs, with the same size as {@code blobDefinitions}
@@ -85,23 +102,25 @@ public interface BlobService {
    */
   List<BlobHandle> createBlobs(SessionHandle sessionHandle, List<BlobDefinition> blobDefinitions);
 
-
   /**
-   * Uploads binary content for a pre-created blob handle.
+   * Uploads binary content for a pre-allocated blob handle.
    * <p>
    * This operation uploads the blob data asynchronously and is designed to handle
    * large payloads efficiently by streaming the data in chunks to the ArmoniK cluster.
-   * The blob handle must have been created previously using {@link #createBlobMetaData(SessionHandle, int)}.
+   * The blob handle must have been allocated previously using {@link #allocateBlobHandles(SessionHandle, TaskDefinition)}.
    *
    * <p>
+   * This method is typically used as part of the task submission workflow to upload inline input data
+   * to blob handles that were pre-allocated through {@link #allocateBlobHandles(SessionHandle, TaskDefinition)}.
    * The operation completes when all data has been successfully transferred and stored.
    *
-   * @param blobHandle         the pre-created blob handle to upload data for; must not be {@code null}
+   * @param blobHandle     the pre-created blob handle to upload data for; must not be {@code null}
    *                       and must be in a state that accepts data upload
    * @param blobDefinition the blob definition containing the binary data to upload; must not be {@code null}
    * @return a {@link CompletionStage} that completes successfully when the upload is finished,
    * or completes exceptionally if the upload fails
    * @throws NullPointerException if {@code handle} or {@code blobDefinition} is {@code null}
+   * @throws IllegalStateException if the blob handle is not in a valid state for data upload
    */
   CompletionStage<Void> uploadBlobData(BlobHandle blobHandle, BlobDefinition blobDefinition);
 

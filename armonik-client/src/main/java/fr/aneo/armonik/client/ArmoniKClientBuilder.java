@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client;
 
+import fr.aneo.armonik.client.payload.JsonPayloadSerializer;
 import fr.aneo.armonik.client.task.TaskConfiguration;
 
 import java.util.HashSet;
@@ -104,6 +105,10 @@ public class ArmoniKClientBuilder {
     requireNonNull(connectionConfiguration, "connectionConfiguration must not be null");
 
     var services = new DefaultServices(connectionConfiguration);
-    return new ArmoniKClient(partitionIds, taskConfiguration, services);
+    return new ArmoniKClient(
+      partitionIds,
+      taskConfiguration,
+      new JsonPayloadSerializer(),
+      services);
   }
 }

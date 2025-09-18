@@ -15,10 +15,9 @@
  */
 package fr.aneo.armonik.client.blob;
 
-import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
+import fr.aneo.armonik.client.task.TaskDefinition;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
-import io.grpc.stub.StreamObserver;
 import io.grpc.testing.GrpcCleanupRule;
 import org.junit.Rule;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,15 +25,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.migrationsupport.rules.ExternalResourceSupport;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.stream.IntStream;
 
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataRequest;
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataResponse;
-import static fr.aneo.armonik.client.blob.BlobHandleTestFactory.blobHandle;
-import static fr.aneo.armonik.client.blob.DefaultBlobService.*;
+import static fr.aneo.armonik.client.blob.BlobHandleFixture.blobHandle;
+import static fr.aneo.armonik.client.blob.DefaultBlobService.UPLOAD_CHUNK_SIZE;
+import static fr.aneo.armonik.client.session.SessionHandleFixture.sessionHandle;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DefaultBlobServiceTest {
@@ -65,9 +62,38 @@ class DefaultBlobServiceTest {
   }
 
   @Test
+  void should_allocate_blob_handle_successfully() {
+    // Given
+    var session = sessionHandle();
+    var taskDefinition = new TaskDefinition().withInput("name", BlobDefinition.from("John".getBytes(UTF_8)))
+                                             .withInput("age", BlobDefinition.from("42".getBytes(UTF_8)))
+                                             .withInput("address", blobHandle(session))
+                                             .withOutput("result");
+
+    // When
+    var blobHandlesAllocation = blobService.allocateBlobHandles(session, taskDefinition);
+
+    // Then
+    assertThat(blobHandlesAllocation.payloadHandle().sessionHandle()).isEqualTo(session);
+    assertThat(blobHandlesAllocation.payloadHandle().metadata().toCompletableFuture().join().id()).isNotNull();
+
+    assertThat(blobHandlesAllocation.inputHandlesByName()).hasSize(2).containsOnlyKeys("name", "age");
+    assertThat(blobHandlesAllocation.inputHandlesByName().values()).allSatisfy( blobHandle -> {
+      assertThat(blobHandle.sessionHandle()).isEqualTo(session);
+      assertThat(blobHandle.metadata().toCompletableFuture().join().id()).isNotNull();
+    });
+
+    assertThat(blobHandlesAllocation.outputHandlesByName()).hasSize(1).containsOnlyKeys("result");
+    assertThat(blobHandlesAllocation.outputHandlesByName().values()).allSatisfy( blobHandle -> {
+      assertThat(blobHandle.sessionHandle()).isEqualTo(session);
+      assertThat(blobHandle.metadata().toCompletableFuture().join().id()).isNotNull();
+    });
+  }
+
+  @Test
   void should_successfully_upload_blob() {
     // Given
-    var blobHandle = blobHandle();
+    var blobHandle = blobHandle(sessionHandle());
 
     // When
     blobService.uploadBlobData(blobHandle, BlobDefinition.from("Hello".getBytes())).toCompletableFuture().join();
@@ -84,9 +110,8 @@ class DefaultBlobServiceTest {
     var blobHandle = blobHandle();
     final int REMAINDER = 123;
     byte[] payload = new byte[UPLOAD_CHUNK_SIZE * 2 + REMAINDER];
-    for (int i = 0; i < payload.length; i++) {
-      payload[i] = (byte) (i % 251);
-    }
+    IntStream.range(0, REMAINDER)
+             .forEach(i -> payload[i] = (byte) (i % 251));
 
     // When
     blobService.uploadBlobData(blobHandle, BlobDefinition.from(payload)).toCompletableFuture().join();
@@ -98,46 +123,4 @@ class DefaultBlobServiceTest {
     assertThat(resultsServiceMock.receivedData.toByteArray()).isEqualTo(payload);
   }
 
-  static class ResultsServiceMock extends ResultsGrpc.ResultsImplBase {
-    boolean firstCall = true;
-    String sessionId;
-    String blobId;
-    ByteArrayOutputStream receivedData = new ByteArrayOutputStream();
-    List<Integer> dataChunkSizes = new ArrayList<>();
-
-    @Override
-    public StreamObserver<UploadResultDataRequest> uploadResultData(
-      StreamObserver<UploadResultDataResponse> responseObserver) {
-      return new StreamObserver<>() {
-        @Override
-        public void onNext(UploadResultDataRequest request) {
-          if (firstCall && request.hasId()) {
-            sessionId = request.getId().getSessionId();
-            blobId = request.getId().getResultId();
-            firstCall = false;
-            return;
-          }
-          if (request.hasDataChunk()) {
-            try {
-              dataChunkSizes.add(request.getDataChunk().size());
-              receivedData.write(request.getDataChunk().toByteArray());
-            } catch (IOException e) {
-              throw new RuntimeException(e);
-            }
-          }
-        }
-
-        @Override
-        public void onError(Throwable t) {
-          // no-op for test
-        }
-
-        @Override
-        public void onCompleted() {
-          responseObserver.onNext(UploadResultDataResponse.getDefaultInstance());
-          responseObserver.onCompleted();
-        }
-      };
-    }
-  }
 }

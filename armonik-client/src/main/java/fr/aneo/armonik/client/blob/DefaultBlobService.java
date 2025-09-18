@@ -17,15 +17,15 @@ package fr.aneo.armonik.client.blob;
 
 import com.google.common.util.concurrent.SettableFuture;
 import fr.aneo.armonik.client.session.SessionHandle;
-import fr.aneo.armonik.client.util.FutureAdapters;
+import fr.aneo.armonik.client.task.TaskDefinition;
+import fr.aneo.armonik.client.util.Futures;
 import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletionStage;
 import java.util.function.IntFunction;
 import java.util.stream.IntStream;
@@ -38,7 +38,7 @@ import static java.util.Objects.requireNonNull;
 public class DefaultBlobService implements BlobService {
   private static final Logger logger = LoggerFactory.getLogger(DefaultBlobService.class);
 
-  public static final int UPLOAD_CHUNK_SIZE = 84_000; // as define in ArmoniK server
+  public static final int UPLOAD_CHUNK_SIZE = 84_000; // as defined in ArmoniK server
 
   private final ResultsFutureStub resultsFutureStub;
   private final ResultsStub resultsStub;
@@ -49,22 +49,35 @@ public class DefaultBlobService implements BlobService {
   }
 
   @Override
-  public List<BlobHandle> createBlobMetaData(SessionHandle sessionHandle, int count) {
+  public BlobHandlesAllocation allocateBlobHandles(SessionHandle sessionHandle, TaskDefinition taskDefinition) {
     requireNonNull(sessionHandle, "session must not be null");
-    if (count < 0) throw new IllegalArgumentException("count must be positive");
+    requireNonNull(taskDefinition, "taskDefinition must not be null");
 
     logger.atDebug()
-          .addKeyValue("operation", "createBlobMetaData")
+          .addKeyValue("operation", "allocateBlobHandles")
           .addKeyValue("sessionId", sessionHandle.id().toString())
-          .addKeyValue("count", count)
-          .log("Creating blob metadata");
+          .log("Allocating Blob Handles");
 
-    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResultsMetaData(blobsMetaDataRequest(sessionHandle, count)))
-                                   .thenApply(CreateResultsMetaDataResponse::getResultsList);
+    int inputDefinitionCount = taskDefinition.inputDefinitions().size();
+    int outputCount = taskDefinition.outputs().size();
+    int totalHandleCount = inputDefinitionCount + outputCount + 1;
 
-    return IntStream.range(0, count)
-                    .mapToObj(toBlobHandle(sessionHandle, resultRaws))
-                    .toList();
+    var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(blobsMetaDataRequest(sessionHandle, totalHandleCount)))
+                            .thenApply(CreateResultsMetaDataResponse::getResultsList);
+    var blobHandles = IntStream.range(0, totalHandleCount)
+                               .mapToObj(toBlobHandle(sessionHandle, resultRaws))
+                               .toList();
+    var payloadHandle = blobHandles.get(0);
+    var outputHandles = blobHandles.subList(1, 1 + outputCount);
+    var inputHandles = blobHandles.subList(1 + outputCount, totalHandleCount);
+    var outputHandleByName = zip(taskDefinition.outputs(), outputHandles);
+    var inputHandleByName = zip(taskDefinition.inputDefinitions().keySet(), inputHandles);
+
+    return new BlobHandlesAllocation(
+      payloadHandle,
+      inputHandleByName,
+      outputHandleByName
+    );
   }
 
   @Override
@@ -82,8 +95,8 @@ public class DefaultBlobService implements BlobService {
           .log("Creating blobs with data");
 
 
-    var resultRaws = FutureAdapters.toCompletionStage(resultsFutureStub.createResults(blobsRequest(sessionHandle, blobDefinitions)))
-                                   .thenApply(CreateResultsResponse::getResultsList);
+    var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResults(blobsRequest(sessionHandle, blobDefinitions)))
+                            .thenApply(CreateResultsResponse::getResultsList);
     return IntStream.range(0, blobDefinitions.size())
                     .mapToObj(toBlobHandle(sessionHandle, resultRaws))
                     .toList();
@@ -101,12 +114,12 @@ public class DefaultBlobService implements BlobService {
           .log("Starting blob upload");
 
     return blobHandle.metadata()
-                 .thenCompose(metadata -> {
-                   var uploadObserver = new UploadBlobDataObserver(blobHandle.sessionHandle(), metadata.id(), blobDefinition, UPLOAD_CHUNK_SIZE);
-                   //noinspection ResultOfMethodCallIgnored
-                   resultsStub.uploadResultData(uploadObserver);
-                   return uploadObserver.completion();
-                 });
+                     .thenCompose(metadata -> {
+                       var uploadObserver = new UploadBlobDataObserver(blobHandle.sessionHandle(), metadata.id(), blobDefinition, UPLOAD_CHUNK_SIZE);
+                       //noinspection ResultOfMethodCallIgnored
+                       resultsStub.uploadResultData(uploadObserver);
+                       return uploadObserver.completion();
+                     });
   }
 
   public CompletionStage<byte[]> downloadBlob(SessionHandle sessionHandle, UUID blobId) {
@@ -159,7 +172,21 @@ public class DefaultBlobService implements BlobService {
       }
     });
 
-    return FutureAdapters.toCompletionStage(result);
+    return Futures.toCompletionStage(result);
+  }
+
+  private static <K, V> Map<K, V> zip(Collection<K> keys, Collection<V> values) {
+    if (keys.size() != values.size()) {
+      throw new IllegalArgumentException("Collections must have the same size");
+    }
+    Iterator<K> keyIt = keys.iterator();
+    Iterator<V> valIt = values.iterator();
+
+    Map<K, V> map = new LinkedHashMap<>(keys.size());
+    while (keyIt.hasNext() && valIt.hasNext()) {
+      map.put(keyIt.next(), valIt.next());
+    }
+    return map;
   }
 
   private static CreateResultsMetaDataRequest blobsMetaDataRequest(SessionHandle sessionHandle, int count) {

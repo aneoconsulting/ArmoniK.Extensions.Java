@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
 
-import static fr.aneo.armonik.client.blob.BlobHandleTestFactory.blobHandle;
+import static fr.aneo.armonik.client.blob.BlobHandleFixture.blobHandle;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class TaskDefinitionTest {
@@ -48,8 +48,8 @@ class TaskDefinitionTest {
     taskDefinition.withInput("prop1", BlobDefinition.from("World".getBytes()));
 
     // Then
-    assertThat(taskDefinition.inputs()).hasSize(1);
-    assertThat(taskDefinition.inputs().get("prop1").data()).asString().isEqualTo("World");
+    assertThat(taskDefinition.inputDefinitions()).hasSize(1);
+    assertThat(taskDefinition.inputDefinitions().get("prop1").data()).asString().isEqualTo("World");
   }
 
   @Test
@@ -62,8 +62,8 @@ class TaskDefinitionTest {
 
     // Then
     assertThat(taskDefinition.inputHandles()).isEmpty();
-    assertThat(taskDefinition.inputs()).hasSize(1);
-    assertThat(taskDefinition.inputs().get("prop1").data()).asString().isEqualTo("World");
+    assertThat(taskDefinition.inputDefinitions()).hasSize(1);
+    assertThat(taskDefinition.inputDefinitions().get("prop1").data()).asString().isEqualTo("World");
   }
 
   @Test

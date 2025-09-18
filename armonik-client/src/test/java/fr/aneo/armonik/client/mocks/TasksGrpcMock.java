@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.task;
+package fr.aneo.armonik.client.mocks;
 
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse.TaskInfo;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
@@ -25,7 +25,7 @@ import java.util.stream.IntStream;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse;
 
-public class TasksServiceMock extends TasksGrpc.TasksImplBase {
+public class TasksGrpcMock extends TasksGrpc.TasksImplBase {
 
   public SubmitTasksRequest submittedTasksRequest;
 

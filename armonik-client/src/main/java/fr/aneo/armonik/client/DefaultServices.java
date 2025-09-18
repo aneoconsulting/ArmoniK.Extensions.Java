@@ -17,10 +17,12 @@ package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.blob.BlobService;
 import fr.aneo.armonik.client.blob.DefaultBlobService;
+import fr.aneo.armonik.client.blob.event.BlobCompletionEventWatcher;
 import fr.aneo.armonik.client.session.DefaultSessionService;
 import fr.aneo.armonik.client.session.SessionService;
 import fr.aneo.armonik.client.task.DefaultTaskService;
 import fr.aneo.armonik.client.task.TaskService;
+import fr.aneo.armonik.client.blob.event.DefaultBlobCompletionEventWatcher;
 import io.grpc.ManagedChannel;
 
 import static java.util.Objects.*;
@@ -32,6 +34,7 @@ final class DefaultServices implements Services {
   private final SessionService sessionService;
   private final BlobService blobService;
   private final TaskService taskService;
+  private final BlobCompletionEventWatcher blobCompletionEventWatcher;
 
   DefaultServices(ArmoniKConnectionConfig armoniKConnectionConfig) {
     requireNonNull(armoniKConnectionConfig, "connectionConfiguration must not be null");
@@ -40,6 +43,7 @@ final class DefaultServices implements Services {
     this.sessionService = new DefaultSessionService(channel);
     this.blobService = new DefaultBlobService(channel);
     this.taskService = new DefaultTaskService(channel);
+    this.blobCompletionEventWatcher = new DefaultBlobCompletionEventWatcher(channel, blobService);
   }
 
   @Override
@@ -55,6 +59,11 @@ final class DefaultServices implements Services {
   @Override
   public TaskService tasks() {
     return taskService;
+  }
+
+  @Override
+  public BlobCompletionEventWatcher blobCompletionEventWatcher() {
+    return blobCompletionEventWatcher;
   }
 
   private ManagedChannel buildChannel(ArmoniKConnectionConfig connectionConfiguration) {

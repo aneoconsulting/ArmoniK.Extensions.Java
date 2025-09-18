@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.blob;
+package fr.aneo.armonik.client.mocks;
 
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
@@ -21,18 +21,26 @@ import io.grpc.stub.StreamObserver;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
+import static com.google.protobuf.ByteString.*;
 import static java.util.UUID.randomUUID;
 import static java.util.stream.IntStream.range;
 
-class ResultsServiceMock extends ResultsGrpc.ResultsImplBase {
+public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
+  private UUID downloadFailedId;
+  private UUID downloadSuccessId;
+  private byte[] downloadContent;
+
   boolean firstCall = true;
-  String sessionId;
-  String blobId;
-  ByteArrayOutputStream receivedData = new ByteArrayOutputStream();
-  List<Integer> dataChunkSizes = new ArrayList<>();
+  public String sessionId;
+  public String blobId;
+  public ByteArrayOutputStream receivedData = new ByteArrayOutputStream();
+  public List<Integer> dataChunkSizes = new ArrayList<>();
+
 
   @Override
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
@@ -41,6 +49,33 @@ class ResultsServiceMock extends ResultsGrpc.ResultsImplBase {
     responseObserver.onNext(builder.build());
     responseObserver.onCompleted();
   }
+
+
+  public void failDownloadFor(UUID id) {
+    this.downloadFailedId = id;
+  }
+
+  public void setDownloadContentFor(UUID id, byte[] bytes) {
+    this.downloadSuccessId = id;
+    this.downloadContent = bytes;
+  }
+
+  @Override
+  public void downloadResultData(DownloadResultDataRequest request, StreamObserver<DownloadResultDataResponse> responseObserver) {
+    var id = UUID.fromString(request.getResultId());
+    if (downloadFailedId != null && downloadFailedId.equals(id)) {
+      responseObserver.onError(new RuntimeException("Failed to download result"));
+      return;
+    }
+
+    byte[] bytes = ((downloadSuccessId != null) && downloadSuccessId.equals(id)) ? downloadContent : ("data-" + id).getBytes(StandardCharsets.UTF_8);
+
+    responseObserver.onNext(DownloadResultDataResponse.newBuilder()
+                                                      .setDataChunk(copyFrom(bytes))
+                                                      .build());
+    responseObserver.onCompleted();
+  }
+
 
   @Override
   public StreamObserver<UploadResultDataRequest> uploadResultData(StreamObserver<UploadResultDataResponse> responseObserver) {

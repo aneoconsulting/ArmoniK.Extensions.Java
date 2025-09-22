@@ -18,12 +18,14 @@ package fr.aneo.armonik.client;
 import fr.aneo.armonik.client.blob.BlobDefinition;
 import fr.aneo.armonik.client.blob.BlobHandle;
 import fr.aneo.armonik.client.blob.BlobMetadata;
+import fr.aneo.armonik.client.blob.event.BlobEventCompletionBatcher;
 import fr.aneo.armonik.client.payload.JsonPayloadSerializer;
 import fr.aneo.armonik.client.payload.PayloadSerializer;
 import fr.aneo.armonik.client.session.SessionHandle;
 import fr.aneo.armonik.client.task.TaskConfiguration;
 import fr.aneo.armonik.client.task.TaskDefinition;
 import fr.aneo.armonik.client.task.TaskHandle;
+import fr.aneo.armonik.client.blob.event.BlobCompletionListener;
 import fr.aneo.armonik.client.util.Futures;
 
 import java.util.*;
@@ -86,13 +88,14 @@ import static java.util.stream.Collectors.toMap;
  * @see TaskHandle
  * @see SessionHandle
  * @see Services
- * @see fr.aneo.armonik.client.blob.BlobDefinition
- * @see fr.aneo.armonik.client.task.TaskConfiguration
+ * @see BlobDefinition
+ * @see TaskConfiguration
  */
 public class ArmoniKClient {
   private final Services services;
   private final PayloadSerializer payloadSerializer;
-  public SessionHandle sessionHandle;
+  private final SessionHandle sessionHandle;
+  private BlobEventCompletionBatcher blobEventCompletionBatcher;
 
   /**
    * Creates a client and opens an ArmoniK {@link SessionHandle}.
@@ -107,9 +110,9 @@ public class ArmoniKClient {
    * </p>
    *
    * @param partitionIds      set of partition identifiers to associate with the session;
-   *                         may be {@code null} or empty to use default partitioning
+   *                          may be {@code null} or empty to use default partitioning
    * @param taskConfiguration default task configuration for submitted tasks;
-   *                         when {@code null}, library defaults are applied
+   *                          when {@code null}, library defaults are applied
    * @param payloadSerializer serializer for task payload manifests; must not be {@code null}
    * @param services          the service facade providing access to ArmoniK operations; must not be {@code null}
    * @throws NullPointerException if {@code payloadSerializer} or {@code services} is {@code null}
@@ -118,18 +121,23 @@ public class ArmoniKClient {
   ArmoniKClient(Set<String> partitionIds,
                 TaskConfiguration taskConfiguration,
                 PayloadSerializer payloadSerializer,
-                Services services) {
+                Services services,
+                BlobCompletionListener taskOutputListener) {
     var effectivePartitionIds = partitionIds == null ? Set.<String>of() : partitionIds;
     var effectiveTaskConfiguration = taskConfiguration == null ? TaskConfiguration.defaultConfiguration() : taskConfiguration;
     this.payloadSerializer = payloadSerializer;
     this.services = services;
     this.sessionHandle = services.sessions().createSession(effectivePartitionIds, effectiveTaskConfiguration);
+    if (taskOutputListener != null) {
+      this.blobEventCompletionBatcher = new BlobEventCompletionBatcher(services.blobCompletionEventWatcher(), taskOutputListener);
+    }
   }
 
   ArmoniKClient(Set<String> partitionIds,
                 TaskConfiguration taskConfiguration,
-                Services services) {
-    this(partitionIds, taskConfiguration, new JsonPayloadSerializer(), services);
+                Services services,
+                BlobCompletionListener taskOutputListener) {
+    this(partitionIds, taskConfiguration, new JsonPayloadSerializer(), services, taskOutputListener);
   }
 
   /**
@@ -143,6 +151,20 @@ public class ArmoniKClient {
    */
   public Services services() {
     return services;
+  }
+
+  /**
+   * Returns the session handle associated with this client.
+   * <p>
+   * The session handle identifies the active session used to scope task submissions
+   * and blob operations. It is established when the client is created and remains
+   * valid for the lifetime of the client.
+   * </p>
+   *
+   * @return the current session handle; never {@code null}
+   */
+  public SessionHandle sessionHandle() {
+    return sessionHandle;
   }
 
   /**
@@ -162,15 +184,15 @@ public class ArmoniKClient {
    * </p>
    *
    * <p>
-   * <strong>Note:</strong> This method handles both {@link fr.aneo.armonik.client.blob.BlobDefinition}
-   * (inline data) and existing {@link fr.aneo.armonik.client.blob.BlobHandle} inputs seamlessly.
+   * <strong>Note:</strong> This method handles both {@link BlobDefinition}
+   * (inline data) and existing {@link BlobHandle} inputs seamlessly.
    * </p>
    *
    * @param taskDefinition the task definition specifying inputs, outputs, and execution options;
-   *                      must not be {@code null}
+   *                       must not be {@code null}
    * @return a handle to the submitted task for monitoring and output access; never {@code null}
    * @throws NullPointerException if {@code taskDefinition} is {@code null}
-   * @throws RuntimeException if task submission fails due to network, serialization, or server errors
+   * @throws RuntimeException     if task submission fails due to network, serialization, or server errors
    * @see TaskDefinition
    * @see TaskHandle
    */
@@ -195,6 +217,10 @@ public class ArmoniKClient {
            .thenCombine(Futures.allOf(outputIdStages), payloadSerializer::serialize)
            .thenCompose(uploadPayload(allocation));
 
+    if (blobEventCompletionBatcher != null) {
+      blobEventCompletionBatcher.enqueue(sessionHandle, allocation.outputHandlesByName().values().stream().toList());
+    }
+
     return services.tasks()
                    .submitTask(
                      sessionHandle,
@@ -202,6 +228,31 @@ public class ArmoniKClient {
                      allocation.outputHandlesByName(),
                      allocation.payloadHandle(),
                      taskDefinition.configuration());
+  }
+
+  /**
+   * Blocks until all currently pending task outputs are completed and the configured
+   * task output listener has been invoked for each of them.
+   * <p>
+   * This method acts as a synchronization barrier for output processing. It takes a
+   * snapshot of the outputs being watched at the moment of invocation and blocks the
+   * calling thread until:
+   * <ul>
+   *   <li>each output has reached a terminal state (completed or failed), and</li>
+   *   <li>the task output listener has been applied for each terminal output.</li>
+   * </ul>
+   * Outputs submitted or started after this method is called are not included in this wait.
+   * If there are no pending outputs at call time, the method returns immediately.
+   * <p>
+   * This method does not cancel any ongoing operations.
+   * <p>
+   * Thread-safety: safe to call concurrently; each call waits for the set of outputs
+   * that were in-flight at the time of that specific invocation.
+   */
+  public void waitUntilFinished() {
+    if (blobEventCompletionBatcher != null) {
+      blobEventCompletionBatcher.waitUntilFinished().toCompletableFuture().join();
+    }
   }
 
   /**

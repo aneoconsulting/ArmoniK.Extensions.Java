@@ -17,6 +17,7 @@ package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.payload.JsonPayloadSerializer;
 import fr.aneo.armonik.client.task.TaskConfiguration;
+import fr.aneo.armonik.client.blob.event.BlobCompletionListener;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -49,6 +50,7 @@ public class ArmoniKClientBuilder {
   private final Set<String> partitionIds = new HashSet<>();
   private TaskConfiguration taskConfiguration = null;//defaultConfiguration();
   private ArmoniKConnectionConfig connectionConfiguration;
+  private BlobCompletionListener blobCompletionListener;
 
   /**
    * Sets the default task configuration applied to the client's session.
@@ -96,6 +98,29 @@ public class ArmoniKClientBuilder {
   }
 
   /**
+   * Registers a listener to receive callbacks when task outputs complete.
+   * <p>
+   * The provided {@link BlobCompletionListener} will be invoked for each task output produced
+   * by tasks submitted through the constructed {@link ArmoniKClient}. The listener is notified
+   * on successful completion as well as on failures.
+   *
+   * <p>
+   * This listener is optional. If not set, task outputs can still be retrieved manually,
+   * but no automatic callbacks will be triggered.
+   * </p>
+   *
+   * @param blobCompletionListener the listener to notify for task output events; may be {@code null}
+   *                               to disable callbacks
+   * @return this builder
+   * @see BlobCompletionListener
+   * @see ArmoniKClient
+   */
+  public ArmoniKClientBuilder withTaskOutputListener(BlobCompletionListener blobCompletionListener) {
+    this.blobCompletionListener = blobCompletionListener;
+    return this;
+  }
+
+  /**
    * Builds a new {@link ArmoniKClient} instance with the configured settings and opens a session.
    *
    * @return a configured client instance
@@ -109,6 +134,7 @@ public class ArmoniKClientBuilder {
       partitionIds,
       taskConfiguration,
       new JsonPayloadSerializer(),
-      services);
+      services,
+      blobCompletionListener);
   }
 }

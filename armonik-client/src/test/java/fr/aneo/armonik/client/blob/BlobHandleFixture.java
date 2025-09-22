@@ -15,21 +15,29 @@
  */
 package fr.aneo.armonik.client.blob;
 
+import fr.aneo.armonik.client.session.SessionHandle;
+
 import java.util.UUID;
 
-import static fr.aneo.armonik.client.session.SessionTestFactory.session;
+import static fr.aneo.armonik.client.session.SessionHandleFixture.sessionHandle;
 import static java.util.UUID.randomUUID;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
-public class BlobHandleTestFactory {
+public class BlobHandleFixture {
 
-  private BlobHandleTestFactory() {}
+  private BlobHandleFixture() {}
 
   public static BlobHandle blobHandle() {
-    return blobHandle(randomUUID());
+    return blobHandle(sessionHandle(), randomUUID());
   }
 
+  public static BlobHandle blobHandle(SessionHandle sessionHandle) {
+    return blobHandle(sessionHandle, randomUUID());
+  }
   public static BlobHandle blobHandle(UUID id) {
-    return new BlobHandle(session(), completedFuture(new BlobMetadata(id)));
+    return blobHandle(sessionHandle(), id);
+  }
+  public static BlobHandle blobHandle(SessionHandle sessionHandle, UUID id) {
+    return new BlobHandle(sessionHandle, completedFuture(new BlobMetadata(id)));
   }
 }

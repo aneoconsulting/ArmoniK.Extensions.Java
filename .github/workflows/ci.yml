@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+    paths:
+      - 'armonik-client/**'
+      - '.github/workflows/ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Show tool versions
+        working-directory: armonik-client
+        run: |
+          java -version
+          ./mvnw -v
+
+      - name: Verify armonik-client
+        working-directory: armonik-client
+        run: ./mvnw -B -ntp verify
+
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: |
+            armonik-client/target/surefire-reports/**
+
+      - name: Upload build artifacts (jars & poms)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            armonik-client/target/*.jar
+            armonik-client/target/*.pom

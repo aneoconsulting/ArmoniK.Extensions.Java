@@ -61,7 +61,8 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var sessionDefinition = new SessionDefinition(
       Set.of("partition_1"),
       new TaskConfiguration(3, 1, "partition_1", Duration.ofMinutes(60), Map.of("option1", "value1")),
-      outputTaskListener
+      outputTaskListener,
+      new BatchingPolicy(1, Duration.ofSeconds(1), 1, 1)
     );
     sessionInfo = sessionInfo("partition_1");
     sessionHandle = new SessionHandle(sessionInfo, sessionDefinition, channel);
@@ -79,6 +80,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var taskHandle = sessionHandle.submitTask(taskDefinition);
     eventsGrpcMock.emitStatusUpdate(idFrom(taskHandle.outputs().get("result")), RESULT_STATUS_COMPLETED);
     eventsGrpcMock.complete();
+    sessionHandle.awaitOutputsProcessed();
 
     // Then
     validateTaskHandle(taskHandle, taskConfiguration);
@@ -129,6 +131,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     assertThat(outputTaskListener.blobs).hasSize(2);
   }
+
   @Test
   void should_await_outputs_processed_with_some_failed_outputs() throws Exception {
     // Given

@@ -30,44 +30,59 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultS
 
 public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
   private final List<StreamObserver<EventSubscriptionResponse>> observers = new CopyOnWriteArrayList<>();
+  private final List<EventSubscriptionResponse> backlog = new CopyOnWriteArrayList<>();
+  private volatile boolean completed = false;
 
 
   @Override
   public void getEvents(EventSubscriptionRequest request,
                         StreamObserver<EventSubscriptionResponse> responseObserver) {
     observers.add(responseObserver);
+
+    backlog.forEach(responseObserver::onNext);
+    if (completed) {
+      try {
+        responseObserver.onCompleted();
+      } catch (Throwable ignored) {
+      }
+    }
   }
 
-  /** Broadcast a NEW_RESULT event to all subscribers. */
+  /**
+   * Broadcast a NEW_RESULT event to all subscribers.
+   */
   public void emitNewResult(BlobId blobId, ResultStatus status) {
     final var response = EventSubscriptionResponse.newBuilder()
-                                              .setNewResult(NewResult.newBuilder()
-                                                                     .setResultId(blobId.asString())
-                                                                     .setStatus(status))
-                                              .build();
+                                                  .setNewResult(NewResult.newBuilder()
+                                                                         .setResultId(blobId.asString())
+                                                                         .setStatus(status))
+                                                  .build();
     broadcast(response);
   }
 
   public void emitStatusUpdate(BlobId blobId, ResultStatus status) {
     final var response = EventSubscriptionResponse.newBuilder()
-                                              .setResultStatusUpdate(ResultStatusUpdate.newBuilder()
-                                                                                       .setResultId(blobId.asString())
-                                                                                       .setStatus(status))
-                                              .build();
+                                                  .setResultStatusUpdate(ResultStatusUpdate.newBuilder()
+                                                                                           .setResultId(blobId.asString())
+                                                                                           .setStatus(status))
+                                                  .build();
     broadcast(response);
   }
 
   public void complete() {
-    for (var obs : observers) {
+    completed = true;
+    observers.forEach(observer -> {
       try {
-        obs.onCompleted();
+        observer.onCompleted();
       } catch (Throwable ignored) {
       }
-    }
+    });
+
     observers.clear();
   }
 
   private void broadcast(EventSubscriptionResponse resp) {
+    backlog.add(resp);
     observers.forEach(observer -> observer.onNext(resp));
   }
 }

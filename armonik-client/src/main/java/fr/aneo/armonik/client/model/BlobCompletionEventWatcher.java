@@ -19,6 +19,8 @@ import fr.aneo.armonik.api.grpc.v1.events.EventsGrpc;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.grpc.observers.BlobCompletionEventObserver;
 import io.grpc.ManagedChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
@@ -46,7 +48,11 @@ import static java.util.stream.Collectors.toMap;
  */
 final class BlobCompletionEventWatcher {
 
+  private static final Logger logger = LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
+
   private final EventsGrpc.EventsStub eventsStub;
+  private final BlobCompletionListener listener;
+  private final SessionId sessionId;
 
   /**
    * Creates a new blob completion event watcher using the specified gRPC channel.
@@ -54,11 +60,19 @@ final class BlobCompletionEventWatcher {
    * The watcher will use the provided channel to establish event streams with the
    * ArmoniK cluster for monitoring blob state changes.
    *
-   * @param channel the gRPC channel for cluster communication
+   * @param sessionId the identifier of the session this watcher serves
+   * @param channel   the gRPC channel for cluster communication
+   * @param listener  the listener to receive completion events
    * @throws NullPointerException if channel is null
    */
-  BlobCompletionEventWatcher(ManagedChannel channel) {
+  BlobCompletionEventWatcher(SessionId sessionId, ManagedChannel channel, BlobCompletionListener listener) {
+    requireNonNull(sessionId, "sessionId must not be null");
+    requireNonNull(channel, "channel must not be null");
+    requireNonNull(listener, "listener must not be null");
+
     this.eventsStub = EventsGrpc.newStub(channel);
+    this.sessionId = sessionId;
+    this.listener = listener;
   }
 
   /**
@@ -71,25 +85,53 @@ final class BlobCompletionEventWatcher {
    * The watching operation is asynchronous and non-blocking. The listener will be
    * invoked on gRPC event threads as blob state changes are received from the cluster.
    *
-   * @param sessionId   the session identifier for the blobs to watch
    * @param blobHandles the list of blob handles to monitor for completion
-   * @param listener    the listener to receive completion events
    * @return a completion stage that completes when all watched blobs are terminal
    * @throws NullPointerException if any parameter is null
    * @see BlobCompletionListener
    * @see BlobHandle
    */
-  public CompletionStage<Void> watch(SessionId sessionId, List<BlobHandle> blobHandles, BlobCompletionListener listener) {
-    requireNonNull(sessionId, "sessionId must not be null");
+  public CompletionStage<Void> watch(List<BlobHandle> blobHandles) {
     requireNonNull(blobHandles, "blobHandles must not be null");
-    requireNonNull(listener, "listener must not be null");
+    logger.atDebug()
+          .addKeyValue("operation", "watch")
+          .addKeyValue("sessionId", sessionId.asString())
+          .addKeyValue("count", blobHandles.size())
+          .log("Starting watch for blob handles");
 
     CompletableFuture<Void> completion = new CompletableFuture<>();
-    handlesById(blobHandles).thenAccept(handlesById -> eventsStub.getEvents(createEventSubscriptionRequest(sessionId, handlesById.keySet()), new BlobCompletionEventObserver(sessionId, handlesById, completion, listener)))
-                            .exceptionally(ex -> {
-                              completion.completeExceptionally(ex);
-                              return null;
-                            });
+    handlesById(blobHandles).thenAccept(handlesById -> {
+      logger.atTrace()
+            .addKeyValue("operation", "subscribe")
+            .addKeyValue("sessionId", sessionId.asString())
+            .addKeyValue("ids", handlesById.size())
+            .log("Subscribing to event stream");
+
+      eventsStub.getEvents(
+        createEventSubscriptionRequest(sessionId, handlesById.keySet()),
+        new BlobCompletionEventObserver(sessionId, handlesById, completion, listener)
+      );
+    }).exceptionally(ex -> {
+      logger.atError()
+            .addKeyValue("operation", "watchError")
+            .addKeyValue("sessionId", sessionId.asString())
+            .addKeyValue("error", ex.getClass().getSimpleName())
+            .setCause(ex)
+            .log("Failed to set up event subscription");
+
+      completion.completeExceptionally(ex);
+      return null;
+    });
+
+    completion.whenComplete((ok, ex) -> {
+      boolean failed = (ex != null);
+      logger.atDebug()
+            .addKeyValue("operation", "watchComplete")
+            .addKeyValue("sessionId", sessionId.asString())
+            .addKeyValue("status", failed ? "failed" : "ok")
+            .log("Watch completed");
+    });
+
     return completion;
   }
 

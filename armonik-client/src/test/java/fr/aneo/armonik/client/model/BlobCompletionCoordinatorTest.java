@@ -26,6 +26,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
+import static fr.aneo.armonik.client.model.BlobCompletionEventWatcher.WatchTicket;
 import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
 import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.completedFuture;
@@ -50,8 +51,10 @@ class BlobCompletionCoordinatorTest {
     when(watcher.watch(anyList())).thenAnswer(inv -> {
       var f = new CompletableFuture<Void>();
       int delaySeconds = completionSeq.incrementAndGet();
-      completionScheduler.schedule(() -> { f.complete(null); }, delaySeconds, SECONDS);
-      return f;
+      completionScheduler.schedule(() -> {
+        f.complete(null);
+      }, delaySeconds, SECONDS);
+      return new WatchTicket(f, List.of());
     });
   }
 
@@ -162,7 +165,7 @@ class BlobCompletionCoordinatorTest {
   void should_split_batch_by_cap_on_size_triggered_flush() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 2, 3);
-    when(watcher.watch(anyList())).thenReturn(completedFuture(null));
+    when(watcher.watch(anyList())).thenReturn(new WatchTicket(completedFuture(null), List.of()));
     var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
 
     // When
@@ -183,7 +186,7 @@ class BlobCompletionCoordinatorTest {
   void should_split_batch_by_cap_on_timer_flush() {
     // Given
     var policy = new BatchingPolicy(1000, ofSeconds(1), 2, 3);
-    when(watcher.watch(anyList())).thenReturn(completedFuture(null));
+    when(watcher.watch(anyList())).thenReturn(new WatchTicket(completedFuture(null), List.of()));
     var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
 
     // When
@@ -295,6 +298,78 @@ class BlobCompletionCoordinatorTest {
   }
 
   @Test
+  void should_resend_leftover_handles_on_success_completion() {
+    // Given
+    var policy = new BatchingPolicy(1, ofSeconds(10), 1, 100);
+    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    when(watcher.watch(anyList()))
+      .thenReturn(successWatchTicket(blobHandles(1), 1), successWatchTicket(2));
+
+    // When
+    coordinator.enqueue(blobHandles(2));
+    completionScheduler.tick(1, SECONDS);
+
+    // Then
+    var captor = blobHandlesCaptor();
+    verify(watcher, times(2)).watch(captor.capture());
+    assertThat(captor.getValue().size()).isEqualTo(1);
+
+    // Cleanup
+    completeAllAndAwait(coordinator);
+  }
+
+  @Test
+  void should_resend_leftover_handles_on_failure_completion() {
+    // Given
+    var policy = new BatchingPolicy(1, ofSeconds(10), 1, 100);
+    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    when(watcher.watch(anyList()))
+      .thenReturn(errorWatchTicket(blobHandles(1), 1), successWatchTicket(2));
+
+    // When
+    coordinator.enqueue(blobHandles(2));
+    completionScheduler.tick(1, SECONDS);
+
+    // Then: a resend should occur with the 1 leftover despite failure
+    var captor = blobHandlesCaptor();
+    verify(watcher, times(2)).watch(captor.capture());
+    assertThat(captor.getValue().size()).isEqualTo(1);
+
+    // Cleanup
+    completeAllAndAwait(coordinator);
+  }
+
+  @Test
+  void should_prepend_leftovers_before_existing_buffer() {
+    // Given
+    var policy = new BatchingPolicy(1, ofSeconds(10), 1, 10);
+    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var A = blobHandle("sessionId", "A");
+    var B1 = blobHandle("sessionId", "B1");
+    var B2 = blobHandle("sessionId", "B2");
+    var L1 = blobHandle("sessionId", "L1");
+    var L2 = blobHandle("sessionId", "L2");
+
+    when(watcher.watch(anyList()))
+      .thenReturn(successWatchTicket(List.of(L1, L2), 1), successWatchTicket(2));
+
+    // When
+    coordinator.enqueue(List.of(A));
+    coordinator.enqueue(List.of(B1));
+    coordinator.enqueue(List.of(B2));
+    completionScheduler.tick(1, SECONDS);
+
+    // Then
+    var captor = blobHandlesCaptor();
+    verify(watcher, times(2)).watch(captor.capture());
+    var actualSecondBatch = captor.getAllValues().get(1);
+    assertThat(actualSecondBatch).containsExactly(L1, L2, B1, B2);
+
+    // Cleanup
+    completeAllAndAwait(coordinator);
+  }
+
+  @Test
   void waitUntilIdle_should_drain_buffer_and_inflight() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 3);
@@ -315,17 +390,12 @@ class BlobCompletionCoordinatorTest {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 3);
     var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
-    var callIdx = new AtomicInteger(0);
-    when(watcher.watch(anyList())).thenAnswer(inv -> {
-      var f = new CompletableFuture<Void>();
-      int i = callIdx.getAndIncrement();
-      if (i == 0) {
-        completionScheduler.schedule(() -> f.completeExceptionally(new RuntimeException("boom")), 1, SECONDS);
-      } else {
-        completionScheduler.schedule(() -> f.complete(null), 2, SECONDS);
-      }
-      return f;
-    });
+    when(watcher.watch(anyList())).thenReturn(
+      errorWatchTicket(1),
+      successWatchTicket(2),
+      successWatchTicket(3),
+      successWatchTicket(4)
+    );
     coordinator.enqueue(blobHandles(4));
 
     // When
@@ -353,6 +423,26 @@ class BlobCompletionCoordinatorTest {
   @SuppressWarnings("unchecked")
   private static ArgumentCaptor<List<BlobHandle>> blobHandlesCaptor() {
     return ArgumentCaptor.forClass(List.class);
+  }
+
+  private WatchTicket errorWatchTicket(int delay) {
+    return errorWatchTicket(List.of(), delay);
+  }
+
+  private WatchTicket errorWatchTicket(List<BlobHandle> blobHandles, int delay) {
+    var future = new CompletableFuture<Void>();
+    completionScheduler.schedule(() -> future.completeExceptionally(new RuntimeException("Boom")), delay, SECONDS);
+    return new WatchTicket(future, blobHandles);
+  }
+
+  private WatchTicket successWatchTicket(int delay) {
+    return successWatchTicket(List.of(), delay);
+  }
+
+  private WatchTicket successWatchTicket(List<BlobHandle> blobHandles, int delay) {
+    var future = new CompletableFuture<Void>();
+    completionScheduler.schedule(() -> future.complete(null), delay, SECONDS);
+    return new WatchTicket(future, blobHandles);
   }
 
   private static List<BlobHandle> blobHandles(int n) {

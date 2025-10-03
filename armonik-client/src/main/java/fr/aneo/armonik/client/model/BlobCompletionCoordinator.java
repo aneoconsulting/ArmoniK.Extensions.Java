@@ -291,20 +291,27 @@ final class BlobCompletionCoordinator {
           .addKeyValue("size", batch.size())
           .log("Starting watch for batch");
 
-    var stage = watcher.watch(batch);
+    var ticket = watcher.watch(batch);
+    var stage = ticket.completion();
     inFlightStages.add(stage);
-    stage.whenComplete((ok, ex) -> {
-      final boolean failed = (ex != null);
-      logger.atDebug()
-            .addKeyValue("operation", "completion")
-            .addKeyValue("size", batch.size())
-            .addKeyValue("status", failed ? "failed" : "ok")
-            .log("Watcher completion");
-      permits.release();
-      inFlightStages.remove(stage);
-      flush();
-      maybeSignalIdle();
-    });
+
+    ticket.leftoversAfterCompletion()
+          .exceptionally(ex -> List.of())
+          .whenComplete((leftovers, ex) -> {
+            final boolean failed = (ex != null);
+            logger.atDebug()
+                  .addKeyValue("operation", "completion")
+                  .addKeyValue("size", batch.size())
+                  .addKeyValue("status", failed ? "failed" : "ok")
+                  .log("Watcher completion");
+            if (leftovers != null && !leftovers.isEmpty()) {
+              pushBackFront(List.of(leftovers));
+            }
+            permits.release();
+            inFlightStages.remove(stage);
+            flush();
+            maybeSignalIdle();
+          });
   }
 
   private void pushBackFront(List<List<BlobHandle>> chunks) {

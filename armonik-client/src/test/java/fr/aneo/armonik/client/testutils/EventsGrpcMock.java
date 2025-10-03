@@ -32,7 +32,7 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
   private final List<StreamObserver<EventSubscriptionResponse>> observers = new CopyOnWriteArrayList<>();
   private final List<EventSubscriptionResponse> backlog = new CopyOnWriteArrayList<>();
   private volatile boolean completed = false;
-
+  private volatile Throwable terminalError = null;
 
   @Override
   public void getEvents(EventSubscriptionRequest request,
@@ -40,7 +40,13 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
     observers.add(responseObserver);
 
     backlog.forEach(responseObserver::onNext);
-    if (completed) {
+
+    if (terminalError != null) {
+      try {
+        responseObserver.onError(terminalError);
+      } catch (Throwable ignored) {
+      }
+    } else if (completed) {
       try {
         responseObserver.onCompleted();
       } catch (Throwable ignored) {
@@ -71,9 +77,22 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
 
   public void complete() {
     completed = true;
+    terminalError = null;
     observers.forEach(observer -> {
       try {
         observer.onCompleted();
+      } catch (Throwable ignored) {
+      }
+    });
+
+    observers.clear();
+  }
+
+  public void error(RuntimeException exception) {
+    terminalError = exception;
+    observers.forEach(observer -> {
+      try {
+        observer.onError(exception);
       } catch (Throwable ignored) {
       }
     });

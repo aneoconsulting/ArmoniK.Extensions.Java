@@ -32,6 +32,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.Objects.requireNonNullElse;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
+import static java.util.stream.Collectors.*;
 
 /**
  * Coordinator for managing batched blob completion monitoring operations within a session.
@@ -291,20 +292,27 @@ final class BlobCompletionCoordinator {
           .addKeyValue("size", batch.size())
           .log("Starting watch for batch");
 
-    var stage = watcher.watch(batch);
+    var ticket = watcher.watch(batch);
+    var stage = ticket.completion();
     inFlightStages.add(stage);
-    stage.whenComplete((ok, ex) -> {
-      final boolean failed = (ex != null);
-      logger.atDebug()
-            .addKeyValue("operation", "completion")
-            .addKeyValue("size", batch.size())
-            .addKeyValue("status", failed ? "failed" : "ok")
-            .log("Watcher completion");
-      permits.release();
-      inFlightStages.remove(stage);
-      flush();
-      maybeSignalIdle();
-    });
+
+    ticket.leftoversAfterCompletion()
+          .exceptionally(ex -> List.of())
+          .whenComplete((leftovers, ex) -> {
+            final boolean failed = (ex != null);
+            logger.atDebug()
+                  .addKeyValue("operation", "completion")
+                  .addKeyValue("size", batch.size())
+                  .addKeyValue("status", failed ? "failed" : "ok")
+                  .log("Watcher completion");
+            if (leftovers != null && !leftovers.isEmpty()) {
+              pushBackFront(List.of(leftovers));
+            }
+            permits.release();
+            inFlightStages.remove(stage);
+            flush();
+            maybeSignalIdle();
+          });
   }
 
   private void pushBackFront(List<List<BlobHandle>> chunks) {
@@ -313,7 +321,7 @@ final class BlobCompletionCoordinator {
       var head = safeChunks.stream()
                            .filter(c -> c != null && !c.isEmpty())
                            .flatMap(List::stream)
-                           .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+                           .collect(toCollection(ArrayList::new));
 
       if (!head.isEmpty()) {
         logger.atTrace()

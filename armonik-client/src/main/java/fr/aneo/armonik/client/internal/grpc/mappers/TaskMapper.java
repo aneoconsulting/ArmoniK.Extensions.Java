@@ -28,11 +28,11 @@ import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
 
 public final class TaskMapper {
 
-  public static TaskCreation toTaskCreation(List<BlobId> inputBlobIds,List<BlobId> outputBlobIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
+  public static TaskCreation toTaskCreation(List<BlobId> inputBlobIds, List<BlobId> outputBlobIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
     var builder = TaskCreation.newBuilder()
-                                                             .setPayloadId(payloadId.asString())
-                                                             .addAllDataDependencies(inputBlobIds.stream().map(BlobId::asString).toList())
-                                                             .addAllExpectedOutputKeys(outputBlobIds.stream().map(BlobId::asString).toList());
+                              .setPayloadId(payloadId.asString())
+                              .addAllDataDependencies(inputBlobIds.stream().map(BlobId::asString).toList())
+                              .addAllExpectedOutputKeys(outputBlobIds.stream().map(BlobId::asString).toList());
     if (taskConfiguration != null) {
       builder.setTaskOptions(toTaskOptions(taskConfiguration));
     }
@@ -42,10 +42,10 @@ public final class TaskMapper {
 
   public static SubmitTasksRequest toSubmitTasksRequest(SessionId sessionId, TaskConfiguration taskConfig, TaskCreation taskCreation) {
     return SubmitTasksRequest.newBuilder()
-                                         .setSessionId(sessionId.asString())
-                                         .setTaskOptions(toTaskOptions(taskConfig))
-                                         .addTaskCreations(taskCreation)
-                                         .build();
+                             .setSessionId(sessionId.asString())
+                             .setTaskOptions(toTaskOptions(taskConfig))
+                             .addTaskCreations(taskCreation)
+                             .build();
   }
 
   public static TaskOptions toTaskOptions(TaskConfiguration taskConfiguration) {

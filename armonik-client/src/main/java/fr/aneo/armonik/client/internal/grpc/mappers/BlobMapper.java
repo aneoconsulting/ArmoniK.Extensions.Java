@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client.internal.grpc.mappers;
 
 import com.google.protobuf.UnsafeByteOperations;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMetaDataRequest.ResultCreate;
 import fr.aneo.armonik.client.model.BlobId;
 import fr.aneo.armonik.client.model.SessionId;
 
@@ -32,28 +33,28 @@ public final class BlobMapper {
     return CreateResultsMetaDataRequest.newBuilder()
                                        .setSessionId(sessionId.asString())
                                        .addAllResults(IntStream.range(0, count)
-                                                               .mapToObj(index -> CreateResultsMetaDataRequest.ResultCreate.newBuilder().build())
+                                                               .mapToObj(index -> ResultCreate.newBuilder().build())
                                                                .toList())
                                        .build();
   }
 
   public static DownloadResultDataRequest toDownloadResultDataRequest(SessionId sessionId, BlobId blobId) {
-   return DownloadResultDataRequest.newBuilder()
-                                          .setSessionId(sessionId.asString()).setResultId(blobId.asString())
-                                          .build();
+    return DownloadResultDataRequest.newBuilder()
+                                    .setSessionId(sessionId.asString()).setResultId(blobId.asString())
+                                    .build();
   }
 
   public static UploadResultDataRequest toUploadResultDataRequest(byte[] data, int offset, int size) {
     return UploadResultDataRequest.newBuilder()
-                           .setDataChunk(UnsafeByteOperations.unsafeWrap(data, offset, size))
-                           .build();
+                                  .setDataChunk(UnsafeByteOperations.unsafeWrap(data, offset, size))
+                                  .build();
   }
 
   public static UploadResultDataRequest toUploadResultDataIdentifierRequest(SessionId sessionId, BlobId blobId) {
     return UploadResultDataRequest.newBuilder()
-                           .setId(UploadResultDataRequest.ResultIdentifier.newBuilder()
-                                                                          .setResultId(blobId.asString())
-                                                                          .setSessionId(sessionId.asString()))
-                           .build();
+                                  .setId(UploadResultDataRequest.ResultIdentifier.newBuilder()
+                                                                                 .setResultId(blobId.asString())
+                                                                                 .setSessionId(sessionId.asString()))
+                                  .build();
   }
 }

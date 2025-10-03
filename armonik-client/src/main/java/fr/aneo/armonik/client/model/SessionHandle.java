@@ -65,7 +65,7 @@ public final class SessionHandle {
     requireNonNull(channel, "channel must not be null");
 
     this.sessionInfo = sessionInfo;
-    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition.taskConfiguration(), sessionDefinition.taskOutputsListener(), channel);
+    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition, channel);
   }
 
   /**

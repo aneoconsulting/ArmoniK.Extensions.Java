@@ -22,10 +22,13 @@ import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static fr.aneo.armonik.client.model.BlobCompletionListener.Blob;
@@ -38,7 +41,7 @@ import static fr.aneo.armonik.client.model.BlobCompletionListener.BlobError;
  * from the ArmoniK Control Plane's Events API. It serves as the bridge between the raw gRPC event
  * stream and the higher-level {@link BlobCompletionListener} interface, providing event filtering,
  * state management, and automatic blob data retrieval.
-
+ *
  * <p>
  * For each incoming event, the observer filters events to only those matching watched blob IDs,
  * processes COMPLETED events by automatically downloading blob data, processes ABORTED events
@@ -58,6 +61,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   private final AtomicInteger remaining;
   private final CompletableFuture<Void> completion;
   private final BlobCompletionListener listener;
+  private final Consumer<List<BlobHandle>> leftoverSink;
 
   /**
    * Creates a new blob completion event observer for the specified session and blob handles.
@@ -66,10 +70,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
    * the listener when blobs become available or encounter errors. The completion future
    * will be completed when all tracked blobs reach terminal states.
    *
-   * @param sessionId the identifier of the session containing the blobs to monitor
-   * @param pending a map of blob handles to monitor, keyed by their blob identifiers
+   * @param sessionId  the identifier of the session containing the blobs to monitor
+   * @param pending    a map of blob handles to monitor, keyed by their blob identifiers
    * @param completion the future to complete when all blobs reach terminal states
-   * @param listener the listener to receive blob completion notifications
+   * @param listener   the listener to receive blob completion notifications
    * @throws NullPointerException if any parameter is null
    * @see SessionId
    * @see BlobHandle
@@ -78,12 +82,14 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   public BlobCompletionEventObserver(SessionId sessionId,
                                      Map<BlobId, BlobHandle> pending,
                                      CompletableFuture<Void> completion,
-                                     BlobCompletionListener listener) {
+                                     BlobCompletionListener listener,
+                                     Consumer<List<BlobHandle>> leftoverSink) {
     this.sessionId = sessionId;
     this.pending = pending.entrySet().stream().collect(Collectors.toConcurrentMap(entry -> entry.getKey().asString(), Map.Entry::getValue));
     this.remaining = new AtomicInteger(pending.size());
     this.completion = completion;
     this.listener = listener;
+    this.leftoverSink = leftoverSink;
   }
 
   @Override
@@ -91,29 +97,59 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
     switch (resp.getUpdateCase()) {
       case RESULT_STATUS_UPDATE ->
         handleEvent(resp.getResultStatusUpdate().getResultId(), resp.getResultStatusUpdate().getStatus());
-      case NEW_RESULT ->
-        handleEvent(resp.getNewResult().getResultId(), resp.getNewResult().getStatus());
-      case UPDATE_NOT_SET ->
-      { /* ignore */ }
+      case NEW_RESULT -> handleEvent(resp.getNewResult().getResultId(), resp.getNewResult().getStatus());
+      case UPDATE_NOT_SET -> { /* ignore */ }
     }
 
     if (remaining.get() == 0 && !completion.isDone()) {
+      safePublishLeftovers(List.of());
       completion.complete(null);
     }
   }
 
   @Override
   public void onError(Throwable throwable) {
+    final int pendingCount = pending.size();
+    safePublishLeftovers(new ArrayList<>(pending.values()));
     log.atError().addKeyValue("sessionId", sessionId.asString())
        .addKeyValue("error", throwable.getClass().getSimpleName())
        .setCause(throwable)
        .log("Blob Event Stream failed");
+
+    if (pendingCount > 0) {
+      remaining.addAndGet(-pendingCount);
+    }
+
+    if (remaining.get() == 0 && !completion.isDone()) {
+      completion.complete(null);
+    }
   }
 
   @Override
   public void onCompleted() {
+    final int pendingCount = pending.size();
+    safePublishLeftovers(new ArrayList<>(pending.values()));
+
+    if (pendingCount > 0) {
+      remaining.addAndGet(-pendingCount);
+    }
+
     if (remaining.get() == 0 && !completion.isDone()) {
       completion.complete(null);
+    }
+  }
+
+  private void safePublishLeftovers(List<BlobHandle> leftovers) {
+    if (leftoverSink != null) {
+      try {
+        leftoverSink.accept(leftovers);
+      } catch (Throwable throwable) {
+        log.atError()
+           .addKeyValue("sessionId", sessionId.asString())
+           .addKeyValue("error", throwable.getClass().getSimpleName())
+           .setCause(throwable)
+           .log("Failed to publish leftover blobs");
+      }
     }
   }
 
@@ -156,8 +192,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
 
   private void handleCompleted(BlobHandle blobHandle) {
     blobHandle.deferredBlobInfo().thenCompose(blobInfo ->
-      blobHandle.downloadData()
-                .whenComplete((bytes, err) -> {
+      blobHandle.downloadData().whenComplete((bytes, err) -> {
         try {
           if (err == null) {
             listener.onSuccess(new Blob(blobInfo, bytes));

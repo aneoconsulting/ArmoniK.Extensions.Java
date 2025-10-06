@@ -17,6 +17,8 @@ package fr.aneo.armonik.client.model;
 
 import java.util.Objects;
 
+import static java.util.Objects.*;
+
 /**
  * Immutable metadata describing a blob within the ArmoniK distributed computing platform.
  * <p>
@@ -36,7 +38,7 @@ public final class BlobInfo {
    *
    */
    BlobInfo(BlobId id) {
-    this.id = id;
+     this.id = requireNonNull(id, "id must not be null");
   }
 
   public BlobId id() {

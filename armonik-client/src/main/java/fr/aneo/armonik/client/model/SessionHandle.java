@@ -15,10 +15,14 @@
  */
 package fr.aneo.armonik.client.model;
 
+import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
+import fr.aneo.armonik.client.definition.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
 
+import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -30,6 +34,7 @@ import static java.util.Objects.requireNonNull;
  * SessionHandle instances are responsible for:
  * <ul>
  *   <li>Submitting tasks within the session context</li>
+ *   <li>Creating and managing session-scoped blob handles</li>
  *   <li>Managing task output completion events and callbacks</li>
  *   <li>Coordinating session-scoped operations</li>
  * </ul>
@@ -44,6 +49,9 @@ public final class SessionHandle {
 
   private final SessionInfo sessionInfo;
   private final TaskSubmitter taskSubmitter;
+  private final ResultsGrpc.ResultsFutureStub resultsFutureStub;
+  private final ManagedChannel channel;
+
 
   /**
    * Constructs a new session handle with the specified session information and configuration.
@@ -52,20 +60,20 @@ public final class SessionHandle {
    * and output processing within the session context. The handle will use the provided
    * gRPC channel for all cluster communications.
    *
-   * @param sessionInfo the immutable session metadata including session ID and configuration
+   * @param sessionInfo       the immutable session metadata including session ID and configuration
    * @param sessionDefinition the session definition used for task default configurations
-   * @param channel the gRPC channel for communicating with the ArmoniK cluster
+   * @param channel           the gRPC channel for communicating with the ArmoniK cluster
    * @throws NullPointerException if any parameter is null
    * @see SessionInfo
    * @see SessionDefinition
    */
   SessionHandle(SessionInfo sessionInfo, SessionDefinition sessionDefinition, ManagedChannel channel) {
-    requireNonNull(sessionInfo, "sessionInfo must not be null");
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
-    requireNonNull(channel, "channel must not be null");
 
-    this.sessionInfo = sessionInfo;
+    this.sessionInfo = requireNonNull(sessionInfo, "sessionInfo must not be null");
     this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition, channel);
+    this.resultsFutureStub = ResultsGrpc.newFutureStub(channel);
+    this.channel = requireNonNull(channel, "channel must not be null");
   }
 
   /**
@@ -95,10 +103,10 @@ public final class SessionHandle {
    * immediately while the actual submission continues in the background.
    *
    * @param taskDefinition the definition specifying task inputs, expected outputs,
-   *                      payload, and optional task-specific configuration
+   *                       payload, and optional task-specific configuration
    * @return a handle representing the submitted task
    * @throws NullPointerException if taskDefinition is null
-   * @throws RuntimeException if task submission fails due to cluster communication issues
+   * @throws RuntimeException     if task submission fails due to cluster communication issues
    * @see TaskHandle
    * @see TaskDefinition
    */
@@ -135,5 +143,43 @@ public final class SessionHandle {
     return "SessionHandle{" +
       "sessionInfo=" + sessionInfo +
       '}';
+  }
+
+  /**
+   * Creates a new blob handle within this session and uploads the provided data.
+   * <p>
+   * This method creates a session-scoped blob that can be shared across multiple tasks
+   * within the same session. The blob is immediately allocated in the ArmoniK cluster
+   * and the data is uploaded asynchronously. The returned {@link BlobHandle} can be
+   * referenced by multiple tasks as input data, avoiding duplicate uploads of the same content.
+   * <p>
+   * Session-scoped blobs are useful for:
+   * <ul>
+   *   <li><strong>Shared input data:</strong> Common datasets or configuration files used by multiple tasks</li>
+   *   <li><strong>Reference data:</strong> Lookup tables or static resources accessed by various tasks</li>
+   *   <li><strong>Intermediate results:</strong> Data produced by one task and consumed by others</li>
+   * </ul>
+   * <p>
+   * The upload operation begins immediately and continues asynchronously in the background.
+   * The blob handle is returned immediately, allowing it to be referenced by task definitions
+   * even while the upload is still in progress.
+   *
+   * @param blobDefinition the definition containing the data to upload and store as a shared blob
+   * @return a handle representing the created blob within this session
+   * @throws NullPointerException if blobDefinition is null
+   * @throws RuntimeException     if blob creation or upload fails due to cluster communication issues
+   * @see BlobHandle
+   * @see BlobDefinition
+   * @see TaskDefinition#withInput(String, BlobHandle)
+   */
+  public BlobHandle createBlob(BlobDefinition blobDefinition) {
+    requireNonNull(blobDefinition, "blobDefinition must not be null");
+
+    var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionInfo.id(), 1)))
+                                  .thenApply(response -> new BlobInfo(BlobId.from(response.getResults(0).getResultId())));
+
+    var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channel);
+    blobHandle.uploadData(blobDefinition);
+    return blobHandle;
   }
 }

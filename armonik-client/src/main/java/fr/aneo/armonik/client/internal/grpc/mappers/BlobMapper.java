@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.internal.grpc.mappers;
 
-import com.google.protobuf.ByteString;
+import com.google.protobuf.UnsafeByteOperations;
 import fr.aneo.armonik.client.model.BlobId;
 import fr.aneo.armonik.client.model.SessionId;
 
@@ -45,7 +45,7 @@ public final class BlobMapper {
 
   public static UploadResultDataRequest toUploadResultDataRequest(byte[] data, int offset, int size) {
     return UploadResultDataRequest.newBuilder()
-                           .setDataChunk(ByteString.copyFrom(data, offset, size))
+                           .setDataChunk(UnsafeByteOperations.unsafeWrap(data, offset, size))
                            .build();
   }
 

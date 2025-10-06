@@ -128,14 +128,26 @@ public final class BlobHandle {
    * Uploads data to this blob in the ArmoniK cluster.
    * <p>
    * This method transfers the data content specified in the blob definition to the
-   * ArmoniK cluster. The upload is performed asynchronously, and
-   * the returned completion stage completes when the entire data transfer is finished.
+   * ArmoniK cluster using chunked streaming for efficient network utilization. The upload
+   * is performed asynchronously, and the returned completion stage completes when the
+   * entire data transfer is finished.
+   * <p>
+   * <strong>Note:</strong> This method uses optimized zero-copy
+   * operations for performance. The data array from {@link BlobDefinition#data()} is accessed
+   * directly during the upload process without creating defensive copies. <strong>Do not modify
+   * the original byte array</strong> returned by {@code BlobDefinition.data()} while the upload
+   * is in progress, as this can lead to data corruption or unpredictable behavior.
+   * <p>
+   * <strong>Best Practice:</strong> Treat the {@code BlobDefinition} and its underlying data
+   * as immutable once passed to this method. If you need to reuse or modify the data,
+   * create a copy before creating the {@code BlobDefinition}.
    *
    * @param blobDefinition the definition containing the data to upload
    * @return a completion stage that completes when the upload is finished
    * @throws NullPointerException if blobDefinition is null
    * @throws RuntimeException     if upload fails due to cluster communication issues
    * @see BlobDefinition
+   * @see BlobDefinition#data()
    */
   public CompletionStage<Void> uploadData(BlobDefinition blobDefinition) {
     requireNonNull(blobDefinition, "blobDefinition must not be null");

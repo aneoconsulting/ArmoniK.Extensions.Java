@@ -15,10 +15,7 @@
  */
 package fr.aneo.armonik.client.definition;
 
-import fr.aneo.armonik.client.model.ArmoniKClient;
-import fr.aneo.armonik.client.model.BlobCompletionListener;
-import fr.aneo.armonik.client.model.SessionHandle;
-import fr.aneo.armonik.client.model.TaskConfiguration;
+import fr.aneo.armonik.client.model.*;
 
 import java.util.Set;
 
@@ -28,8 +25,8 @@ import java.util.Set;
  * <p>
  * A session definition contains the essential configuration needed to create a session
  * within the ArmoniK distributed computing platform. It specifies the partitions where
- * tasks can be executed, default task configuration, and the listener for handling
- * task output completion events.
+ * tasks can be executed, default task configuration, the listener for handling
+ * task output completion events, and the batching policy for efficient output monitoring.
  * <p>
  * Partitions in ArmoniK represent logical groupings that route work to specific pools
  * of compute resources [[1]](https://armonik.readthedocs.io/en/latest/content/user-guide/how-to-configure-partitions.html).
@@ -37,31 +34,35 @@ import java.util.Set;
  *
  * @param partitionIds the set of partition identifiers where tasks within this session can be executed
  * @param taskConfiguration the default task configuration applied to tasks submitted within this session
- * @param taskOutputsListener the listener to receive task output completion events for this session
+ * @param outputListener the listener to receive task output completion events for this session
+ * @param outputBatchingPolicy the batching policy used for coordinating task output completion monitoring
  * @see ArmoniKClient#openSession(SessionDefinition)
  * @see SessionHandle
  * @see TaskConfiguration
  * @see BlobCompletionListener
+ * @see BatchingPolicy
  */
 public record SessionDefinition(
   Set<String> partitionIds,
   TaskConfiguration taskConfiguration,
-  BlobCompletionListener taskOutputsListener
+  BlobCompletionListener outputListener,
+  BatchingPolicy outputBatchingPolicy
 ) {
 
   /**
-   * Creates a session definition targeting the specified partitions with the default task configuration.
+   * Creates a session definition targeting the specified partitions with default configurations.
    * <p>
-   * This convenience constructor creates a session definition with the default task configuration
-   * and no task output listener. Tasks submitted within this session will use the ArmoniK
-   * {@link TaskConfiguration#defaultConfiguration()}
+   * This convenience constructor creates a session definition with default task configuration,
+   * no task output listener, and default batching policy. Tasks submitted within this session
+   * will use the ArmoniK cluster's default configuration settings.
    *
    * @param partitionIds the set of partition identifiers where tasks can be executed
    * @throws NullPointerException if partitionIds is null
    * @see TaskConfiguration#defaultConfiguration()
+   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition(Set<String> partitionIds) {
-    this(partitionIds, TaskConfiguration.defaultConfiguration(), null);
+    this(partitionIds, TaskConfiguration.defaultConfiguration(), null, BatchingPolicy.DEFAULT);
   }
 
   /**
@@ -69,15 +70,16 @@ public record SessionDefinition(
    * <p>
    * This convenience constructor creates a session definition with the provided
    * task configuration as the default for all tasks submitted within the session,
-   * but without a task output listener.
+   * but without a task output listener and using default batching policy.
    *
    * @param partitionIds the set of partition identifiers where tasks can be executed
    * @param taskConfiguration the default task configuration for tasks in this session
    * @throws NullPointerException if any parameter is null
    * @see TaskConfiguration
+   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition(Set<String> partitionIds, TaskConfiguration taskConfiguration) {
-    this(partitionIds, taskConfiguration, null);
+    this(partitionIds, taskConfiguration, null, BatchingPolicy.DEFAULT);
   }
 
   /**
@@ -89,14 +91,22 @@ public record SessionDefinition(
    *   <li>Task configuration is consistent with the specified partitions</li>
    *   <li>All parameters meet the requirements for session creation</li>
    * </ul>
+   * Default values are applied for null parameters:
+   * <ul>
+   *   <li>Task configuration defaults to {@link TaskConfiguration#defaultConfiguration()}</li>
+   *   <li>Output batching policy defaults to {@link BatchingPolicy#DEFAULT}</li>
+   * </ul>
    *
    * @throws NullPointerException if partitionIds is null
    * @throws IllegalArgumentException if partitionIds is empty or if task configuration
-   *         specifies a partition not included in the session's partition set
+   *                                  specifies a partition not included in the session's partition set
+   * @see TaskConfiguration#defaultConfiguration()
+   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition {
     taskConfiguration = taskConfiguration == null ? TaskConfiguration.defaultConfiguration() : taskConfiguration;
     partitionIds = partitionIds == null ? Set.of() : partitionIds;
+    outputBatchingPolicy = outputBatchingPolicy == null ?  BatchingPolicy.DEFAULT : outputBatchingPolicy;
     validateTaskDefaultPartition(partitionIds, taskConfiguration);
   }
 

@@ -19,12 +19,13 @@ import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import io.grpc.BindableService;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
@@ -50,136 +51,184 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     blobInfo = blobInfo("BlobId");
     blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channel);
     resultsGrpcMock.reset();
-    blobCompletionEventWatcher = new BlobCompletionEventWatcher(channel);
   }
 
 
   @Test
   void should_call_observer_on_success_when_blob_update_status_is_completed() {
     // Given
-    var observerMock = new BlobCompletionListenerMock();
+    var listenerMock = new BlobCompletionListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
     resultsGrpcMock.setDownloadContentFor(blobId("BlobId"), "Hello World !!".getBytes(UTF_8));
 
     // when
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), observerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
     eventsGrpcMock.complete();
-    done.toCompletableFuture().join();
+    done.completion().toCompletableFuture().join();
 
     // then
-    assertThat(observerMock.blobErrors).isEmpty();
-    assertThat(observerMock.blobs).hasSize(1);
-    Assertions.assertThat(observerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
-    Assertions.assertThat(observerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
+    assertThat(listenerMock.blobErrors).isEmpty();
+    assertThat(listenerMock.blobs).hasSize(1);
+    assertThat(listenerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
+    assertThat(listenerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
   }
 
   @Test
   void should_call_observer_on_error_when_blob_update_status_is_aborted() {
     // Given
-    var observerMock = new BlobCompletionListenerMock();
+    var listenerMock = new BlobCompletionListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
 
 
     // when
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), observerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_ABORTED);
     eventsGrpcMock.complete();
-    done.toCompletableFuture().join();
+    done.completion().toCompletableFuture().join();
 
     // then
-    assertThat(observerMock.blobs).isEmpty();
-    assertThat(observerMock.blobErrors).hasSize(1);
-    Assertions.assertThat(observerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
+    assertThat(listenerMock.blobs).isEmpty();
+    assertThat(listenerMock.blobErrors).hasSize(1);
+    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
   }
 
   @Test
   void should_call_observer_on_success_when_new_blob_status_is_completed() {
     // Given
-    var observerMock = new BlobCompletionListenerMock();
+    var listenerMock = new BlobCompletionListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
     resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello World !!".getBytes(UTF_8));
 
     // when
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), observerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
     eventsGrpcMock.complete();
-    done.toCompletableFuture().join();
+    done.completion().toCompletableFuture().join();
 
     // then
-    assertThat(observerMock.blobErrors).isEmpty();
-    assertThat(observerMock.blobs).hasSize(1);
-    Assertions.assertThat(observerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
-    Assertions.assertThat(observerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
+    assertThat(listenerMock.blobErrors).isEmpty();
+    assertThat(listenerMock.blobs).hasSize(1);
+    assertThat(listenerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
+    assertThat(listenerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
   }
 
   @Test
   void should_call_observer_on_error_when_new_blob_update_status_is_aborted() {
     // Given
-    var observerMock = new BlobCompletionListenerMock();
+    var listenerMock = new BlobCompletionListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
 
     // when
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), observerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_ABORTED);
     eventsGrpcMock.complete();
-    done.toCompletableFuture().join();
+    done.completion().toCompletableFuture().join();
 
     // then
-    assertThat(observerMock.blobs).isEmpty();
-    assertThat(observerMock.blobErrors).hasSize(1);
-    Assertions.assertThat(observerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
+    assertThat(listenerMock.blobs).isEmpty();
+    assertThat(listenerMock.blobErrors).hasSize(1);
+    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
   }
 
   @Test
   void should_call_observer_on_error_when_downloading_blob_failed() {
     // Given
-    var completionListenerMock = new BlobCompletionListenerMock();
+    var listenerMock = new BlobCompletionListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
     resultsGrpcMock.failDownloadFor(blobInfo.id());
 
     // when
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), completionListenerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
     eventsGrpcMock.complete();
-    done.toCompletableFuture().join();
+    done.completion().toCompletableFuture().join();
 
     // then
-    assertThat(completionListenerMock.blobs).isEmpty();
-    assertThat(completionListenerMock.blobErrors).hasSize(1);
-    Assertions.assertThat(completionListenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
+    assertThat(listenerMock.blobs).isEmpty();
+    assertThat(listenerMock.blobErrors).hasSize(1);
+    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
   }
 
   @Test
   void should_complete_even_if_blob_listener_throws_on_success() {
     // Given
     var failingListenerMock = new FailingListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, failingListenerMock);
     resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "OK".getBytes(UTF_8));
 
     // When
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), failingListenerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
     eventsGrpcMock.complete();
 
     // Then
-    assertThatCode(() -> done.toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
-    assertThat(done.toCompletableFuture()).isDone();
-    assertThat(done.toCompletableFuture()).isNotCompletedExceptionally();
-    assertThat(failingListenerMock.successCalls).isEqualTo(1);
-    assertThat(failingListenerMock.errorCalls).isEqualTo(0);
+    assertThatCode(() -> done.completion().toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
+    assertThat(done.completion().toCompletableFuture()).isDone();
+    assertThat(done.completion().toCompletableFuture()).isNotCompletedExceptionally();
+    assertThat(failingListenerMock.successCalls.get()).isEqualTo(1);
+    assertThat(failingListenerMock.errorCalls.get()).isEqualTo(0);
   }
 
   @Test
   void should_complete_even_if_blob_listener_throws_on_error() {
     // Given
     var failingListenerMock = new FailingListenerMock();
+    blobCompletionEventWatcher = new BlobCompletionEventWatcher(sessionId, channel, failingListenerMock);
 
     // When
-    var done = blobCompletionEventWatcher.watch(sessionId, List.of(blobHandle), failingListenerMock);
+    var done = blobCompletionEventWatcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_ABORTED);
     eventsGrpcMock.complete();
 
     // Then
-    assertThatCode(() -> done.toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
-    assertThat(done.toCompletableFuture()).isDone();
-    assertThat(done.toCompletableFuture()).isNotCompletedExceptionally();
-    assertThat(failingListenerMock.successCalls).isEqualTo(0);
-    assertThat(failingListenerMock.errorCalls).isEqualTo(1);
+    assertThatCode(() -> done.completion().toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
+    assertThat(done.completion().toCompletableFuture()).isDone();
+    assertThat(done.completion().toCompletableFuture()).isNotCompletedExceptionally();
+    assertThat(failingListenerMock.successCalls.get()).isEqualTo(0);
+    assertThat(failingListenerMock.errorCalls.get()).isEqualTo(1);
+  }
+
+  @Test
+  void should_publish_leftovers_on_completed_stream() throws Exception {
+    // Given
+    var sessionId = sessionId();
+    var blobHandleA = blobHandle(sessionId.asString(), "A");
+    var blobHandleB = blobHandle(sessionId.asString(), "B");
+    var blobHandleC = blobHandle(sessionId.asString(), "C");
+    var listener = new BlobCompletionListenerMock();
+    var watcher = new BlobCompletionEventWatcher(sessionId, channel, listener);
+
+    // When
+    var ticket = watcher.watch(List.of(blobHandleA, blobHandleB, blobHandleC));
+    eventsGrpcMock.emitStatusUpdate(blobId("A"), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.emitStatusUpdate(blobId("B"), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.complete();
+
+    // Then
+    ticket.completion().toCompletableFuture().get(2, SECONDS);
+    var leftovers = ticket.leftoversAfterCompletion().toCompletableFuture().get(2, SECONDS);
+    assertThat(leftovers).containsExactly(blobHandleC);
+  }
+
+  @Test
+  void should_publish_leftovers_on_error_stream() throws Exception {
+    //Given
+    var sessionId = sessionId();
+    var blobHandleA = blobHandle(sessionId.asString(), "A");
+    var blobHandleB = blobHandle(sessionId.asString(), "B");
+    var listener = new BlobCompletionListenerMock();
+    var watcher = new BlobCompletionEventWatcher(sessionId, channel, listener);
+
+    // When
+    var ticket = watcher.watch(List.of(blobHandleA, blobHandleB));
+    eventsGrpcMock.emitStatusUpdate(blobId("A"), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.error(new RuntimeException("boom"));
+
+    // Then
+    ticket.completion().toCompletableFuture().get(2, SECONDS);
+    var leftovers = ticket.leftoversAfterCompletion().toCompletableFuture().get(2, SECONDS);
+    assertThat(leftovers).containsExactly(blobHandleB);
   }
 
   @Override
@@ -188,8 +237,8 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   }
 
   static class BlobCompletionListenerMock implements BlobCompletionListener {
-    List<Blob> blobs = new ArrayList<>();
-    List<BlobError> blobErrors = new ArrayList<>();
+    List<Blob> blobs = new CopyOnWriteArrayList<>();
+    List<BlobError> blobErrors = new CopyOnWriteArrayList<>();
 
     @Override
     public void onSuccess(Blob blob) {
@@ -203,18 +252,18 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   }
 
   static class FailingListenerMock implements BlobCompletionListener {
-    int successCalls = 0;
-    int errorCalls = 0;
+    AtomicInteger successCalls = new AtomicInteger();
+    AtomicInteger errorCalls = new  AtomicInteger();
 
     @Override
     public void onSuccess(Blob blob) {
-      successCalls++;
+      successCalls.incrementAndGet();
       throw new RuntimeException("boom in success");
     }
 
     @Override
     public void onError(BlobError blobError) {
-      errorCalls++;
+      errorCalls.incrementAndGet();
       throw new RuntimeException("boom in failure");
     }
   }

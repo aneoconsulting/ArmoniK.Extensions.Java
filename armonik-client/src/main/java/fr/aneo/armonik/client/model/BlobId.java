@@ -17,6 +17,8 @@ package fr.aneo.armonik.client.model;
 
 import java.util.Objects;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * Immutable identifier for a blob within the ArmoniK distributed computing platform.
  * <p>
@@ -29,7 +31,7 @@ import java.util.Objects;
  * @see BlobInfo
  * @see BlobHandle
  */
-public class BlobId {
+public final class BlobId {
   private final String id;
 
   private BlobId(String id) {
@@ -56,6 +58,8 @@ public class BlobId {
    * @throws NullPointerException if id is null
    */
   static BlobId from(String id) {
+    requireNonNull(id, "id must not be null");
+    if (id.isBlank()) throw  new IllegalArgumentException("id must not be blank");
     return new BlobId(id);
   }
 

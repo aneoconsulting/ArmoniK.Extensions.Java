@@ -66,6 +66,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     );
     sessionInfo = sessionInfo("partition_1");
     sessionHandle = new SessionHandle(sessionInfo, sessionDefinition, channel);
+    resultsGrpcMock.reset();
   }
 
   @Test
@@ -172,6 +173,22 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     assertThat(outputTaskListener.blobErrors).hasSize(1);
   }
 
+  @Test
+  void should_create_a_blob_handle() {
+    // Given
+    var blobDefinition = BlobDefinition.from("Hello World".getBytes());
+
+    // when
+    var blobHandle = sessionHandle.createBlob(blobDefinition);
+
+    // then
+    assertThat(blobHandle).isNotNull();
+    assertThat(blobHandle.sessionId()).isEqualTo(sessionInfo.id());
+    assertThat(resultsGrpcMock.uploadedDataInfos).hasSize(1);
+    assertThat(resultsGrpcMock.uploadedDataInfos.get(0).sessionId).isEqualTo(sessionInfo.id().asString());
+    assertThat(resultsGrpcMock.uploadedDataInfos.get(0).receivedData.toString()).isEqualTo("Hello World");
+    assertThat(resultsGrpcMock.uploadedDataInfos.get(0).blobId).isEqualTo(blobHandle.deferredBlobInfo().toCompletableFuture().join().id().asString());
+  }
 
   private void validateSubmittedSession() {
     assertThat(taskGrpcMock.submittedTasksRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());

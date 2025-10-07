@@ -36,6 +36,13 @@ import static java.util.Objects.requireNonNull;
  * provides a lightweight reference to blob data stored in the ArmoniK cluster and offers
  * direct upload and download capabilities through gRPC interactions.
  * <p>
+ * BlobHandles can be created in two ways:
+ * <ul>
+ *   <li><strong>Task-specific blobs:</strong> Created automatically during task submission for inputs and outputs</li>
+ *   <li><strong>Session-scoped blobs:</strong> Created explicitly via {@link SessionHandle#createBlob(BlobDefinition)}
+ *       for sharing across multiple tasks within the same session</li>
+ * </ul>
+ * <p>
  * BlobHandle instances are responsible for managing their own data lifecycle, including:
  * <ul>
  *   <li>Uploading data content to the cluster</li>
@@ -50,7 +57,7 @@ import static java.util.Objects.requireNonNull;
  *
  * @see BlobInfo
  * @see BlobDefinition
- * @see SessionHandle
+ * @see SessionHandle#createBlob(BlobDefinition)
  * @see TaskHandle
  */
 public final class BlobHandle {
@@ -85,7 +92,7 @@ public final class BlobHandle {
    */
   BlobHandle(SessionId sessionId, CompletionStage<BlobInfo> deferredBlobInfo, ManagedChannel channel) {
     requireNonNull(sessionId, "sessionId must not be null");
-    requireNonNull(deferredBlobInfo, "blobInfo");
+    requireNonNull(deferredBlobInfo, "deferredBlobInfo must no be null");
     requireNonNull(channel, "chanel must not be null");
 
     this.sessionId = sessionId;

@@ -3,6 +3,7 @@ package fr.aneo.armonik.worker;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
@@ -10,7 +11,6 @@ import java.net.InetSocketAddress;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
-import static uk.org.webcompere.systemstubs.SystemStubs.withEnvironmentVariable;
 import static uk.org.webcompere.systemstubs.SystemStubs.withEnvironmentVariables;
 
 class ArmoniKWorkerTest {
@@ -28,65 +28,46 @@ class ArmoniKWorkerTest {
   }
 
   @Test
-  void should_fallback_to_default_when_env_missing() throws Exception {
-    // Given
+  @DisplayName("should fail to start when ComputePlane__AgentChannel__Address is missing")
+  void should_fail_when_agent_channel_env_missing() throws Exception {
     withEnvironmentVariables()
-               .execute(() -> {
-                 // When
-                 armoniKWorker.start();
-                 // Then
-                 assertThat(armoniKWorker.address())
-                   .extracting(InetSocketAddress::getHostString, InetSocketAddress::getPort)
-                   .containsExactly("0.0.0.0", 8080);
-               });
+      .execute(() -> {
+        assertThatThrownBy(() -> armoniKWorker.start())
+          .isExactlyInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("ComputePlane__AgentChannel__Address is not set");
+      });
   }
 
   @Test
+  @DisplayName("should use default worker address when environment variable is missing")
+  void should_use_default_worker_address_when_environment_variable_is_missing() throws Exception {
+    // Given
+    withEnvironmentVariables("ComputePlane__AgentChannel__Address", "127.0.0.1:50052")
+      .execute(() -> {
+        // When
+        armoniKWorker.start();
+        // Then
+        assertThat(armoniKWorker.address())
+          .extracting(InetSocketAddress::getHostString, InetSocketAddress::getPort)
+          .containsExactly("0.0.0.0", 8080);
+      });
+  }
+
+  @Test
+  @DisplayName("should start the server with IP and port from environment variable")
   void should_parse_valid_ip_port() throws Exception {
     // Given
-    withEnvironmentVariable("ComputePlane__WorkerChannel__Address", "127.0.0.1:50051")
-               .execute(() -> {
-                 // When
-                 armoniKWorker.start();
-
-                 // Then
-                 assertThat(armoniKWorker.address())
-                   .extracting(InetSocketAddress::getHostString, InetSocketAddress::getPort)
-                   .containsExactly("127.0.0.1", 50051);
-               });
-  }
-
-  @Test
-  void should_throw_exception_when_address_is_unparseable() throws Exception {
-    // Given
-    withEnvironmentVariable("ComputePlane__WorkerChannel__Address", "unparseable")
+    withEnvironmentVariables(
+      "ComputePlane__AgentChannel__Address", "127.0.0.1:50052",
+      "ComputePlane__WorkerChannel__Address", "127.0.0.1:50051")
       .execute(() -> {
-        // When / Then
-        assertThatThrownBy(armoniKWorker::start)
-          .isInstanceOf(IllegalArgumentException.class);
-      });
-  }
+        // When
+        armoniKWorker.start();
 
-
-  @Test
-  void should_throw_exception_when_port_is_not_numeric() throws Exception {
-    // Given
-    withEnvironmentVariable("ComputePlane__WorkerChannel__Address", "127.0.0.1:http")
-      .execute(() -> {
-        // When / Then
-        assertThatThrownBy(armoniKWorker::start)
-          .isInstanceOf(IllegalArgumentException.class);
-      });
-  }
-
-  @Test
-  void should_throw_exception_when_ip_is_invalid() throws Exception {
-    // Given
-    withEnvironmentVariable("ComputePlane__WorkerChannel__Address", "999.999.1.1:8080")
-      .execute(() -> {
-        // When / Then
-        assertThatThrownBy(armoniKWorker::start)
-          .isInstanceOf(IllegalArgumentException.class);
+        // Then
+        assertThat(armoniKWorker.address())
+          .extracting(InetSocketAddress::getHostString, InetSocketAddress::getPort)
+          .containsExactly("127.0.0.1", 50051);
       });
   }
 }

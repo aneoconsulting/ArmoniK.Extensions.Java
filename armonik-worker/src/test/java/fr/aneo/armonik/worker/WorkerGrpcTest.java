@@ -28,7 +28,7 @@ class WorkerGrpcTest {
   void setUp() {
     var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
     taskProcessor = mock(TaskProcessor.class);
-    worker = new WorkerGrpc(agentStub, taskProcessor);
+    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> mock(TaskHandler.class));
   }
 
   @SuppressWarnings("unchecked")
@@ -113,8 +113,6 @@ class WorkerGrpcTest {
     // given
     TaskProcessor taskProcessor = handler -> new TaskOutcome.Success();
     var observer = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
-    var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
-    var worker = new WorkerGrpc(agentStub, taskProcessor);
 
     // when
     worker.healthCheck(Empty.getDefaultInstance(), observer);
@@ -129,7 +127,6 @@ class WorkerGrpcTest {
     assertThat(replyCap.getValue().getStatus()).isEqualTo(SERVING);
   }
 
-  @SuppressWarnings("unchecked")
   @DisplayName("Should report NOT_SERVING while process() is running")
   @Test
   void should_report_not_serving_while_process_is_running() throws Exception {
@@ -181,7 +178,8 @@ class WorkerGrpcTest {
 
     SingleTaskProcessingScenario() {
       this.agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
-      this.workerUnderTest = new WorkerGrpc(agentStub, handler -> {
+      TaskHandlerFactory taskHandlerFactory = (a, r) -> mock(TaskHandler.class);
+      TaskProcessor taskProcessor = handler -> {
         processingStarted.countDown();
         try {
           allowCompletion.await(2, SECONDS);
@@ -189,7 +187,9 @@ class WorkerGrpcTest {
           throw new RuntimeException(e);
         }
         return new TaskOutcome.Success();
-      });
+      };
+
+      this.workerUnderTest = new WorkerGrpc(agentStub, taskProcessor, taskHandlerFactory);
     }
 
     void startProcessingAsync() {

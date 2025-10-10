@@ -15,7 +15,7 @@ public final class InputTask {
   private final String logicalName;
   private byte[] cache;
 
-  InputTask(Path path, String logicalName) {
+  InputTask(String logicalName, Path path) {
     this.path = path;
     this.logicalName = logicalName;
   }

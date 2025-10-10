@@ -142,6 +142,45 @@ class TaskHandlerTest {
     assertThat(taskHandler.getInput("age").asString(UTF_8)).isEqualTo("42");
   }
 
+  @Test
+  @DisplayName("Should build outputs from payload association table")
+  void should_build_outputs_from_payload_association_table() throws IOException {
+    // Given
+    writeString("payload-id", payloadContent);
+    writeString("name-id", "John Doe");
+    writeString("age-id", "42");
+    var request = ProcessRequest.newBuilder()
+                                .setDataFolder(tempDir.toString())
+                                .setPayloadId("payload-id")
+                                .build();
+
+    // When
+    var taskHandler = TaskHandler.from(mock, request);
+
+    // Then
+    assertThat(taskHandler.outputs()).containsKeys("result1", "result2");
+    assertThat(taskHandler.hasOutput("result1")).isTrue();
+    assertThat(taskHandler.getOutput("result1")).isNotNull();
+    assertThat(taskHandler.getOutput("result2")).isNotNull();
+    assertThat(taskHandler.hasOutput("result2")).isTrue();
+  }
+
+  @Test
+  @DisplayName("Should throw an exception when output name is missing")
+  void should_throw_exception_when_output_name_is_missing() throws IOException {
+    // Given
+    writeString("payload-id", payloadContent);
+    writeString("name-id", "John Doe");
+    writeString("age-id", "42");
+    var request = ProcessRequest.newBuilder()
+                                .setDataFolder(tempDir.toString())
+                                .setPayloadId("payload-id")
+                                .build();
+    var taskHandler = TaskHandler.from(mock, request);
+
+    // When - Then
+    assertThatThrownBy(() -> taskHandler.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
+  }
 
   private void writeString(String name, String content) throws IOException {
     var path = tempDir.resolve(name);

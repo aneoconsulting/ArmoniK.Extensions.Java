@@ -17,19 +17,25 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
 public class WorkerGrpc extends WorkerImplBase {
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
+  private final TaskHandlerFactory taskHandlerFactory;
   public final AtomicReference<ServingStatus> servingStatus;
 
-  public WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
+  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskHandlerFactory taskHandlerFactory) {
     this.agentStub = agentStub;
     this.taskProcessor = taskProcessor;
+    this.taskHandlerFactory = taskHandlerFactory;
     this.servingStatus = new AtomicReference<>(SERVING);
+  }
+
+  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
+    this(agentStub, taskProcessor, TaskHandler::from);
   }
 
   @Override
   public void process(ProcessRequest request, StreamObserver<ProcessReply> responseObserver) {
     servingStatus.set(NOT_SERVING);
     try {
-      var taskHandler = new TaskHandler(agentStub);
+      var taskHandler = taskHandlerFactory.create(agentStub, request);
       var outcome = taskProcessor.processTask(taskHandler);
       responseObserver.onNext(ProcessReply.newBuilder()
                                           .setOutput(toOutput(outcome))

@@ -24,7 +24,7 @@ class InputTaskTest {
   void size_returns_file_size_in_bytes() throws IOException {
     // Given
     var file = write(randomBytes(6));
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var size = input.size();
@@ -39,7 +39,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES);
     var file = write(data);
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var first = input.rawData();
@@ -56,7 +56,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES + 1);
     var file = write(data);
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var first = input.rawData();
@@ -73,7 +73,7 @@ class InputTaskTest {
   void stream_provides_fresh_readable_InputStream_each_call() throws IOException {
     // Given
     var file = writeString("abc");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // WHen
     try (var in1 = input.stream(); var in2 = input.stream()) {
@@ -91,7 +91,7 @@ class InputTaskTest {
   void asString_returns_utf8_decoded_content() throws IOException {
     // Given
     var file = writeString("héllo 🌍");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var string = input.asString();
@@ -105,7 +105,7 @@ class InputTaskTest {
   void asLong_parses_trimmed_integer_content() throws IOException {
     // Given
     var file = writeString("  42 \n");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var aLong = input.asLong();
@@ -119,7 +119,7 @@ class InputTaskTest {
   void asDouble_parses_trimmed_double_content() throws IOException {
     // Given
     var file = writeString("  3.1415  ");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var aDouble = input.asDouble();
@@ -133,7 +133,7 @@ class InputTaskTest {
   void asBigDecimal_parses_decimal_content_precisely() throws IOException {
     // Given
     var file = writeString("1234567890.123456789");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var bigDecimal = input.asBigDecimal();
@@ -147,7 +147,7 @@ class InputTaskTest {
   void asBigInteger_parses_integer_content() throws IOException {
     // Given
     var file = writeString("  9876543210123456789\n");
-    var input = new InputTask(file, "input");
+    var input = new InputTask("input", file);
 
     // When
     var bigInteger = input.asBigInteger();
@@ -160,8 +160,8 @@ class InputTaskTest {
   @DisplayName("asBoolean parses trimmed boolean content")
   void asBoolean_parses_trimmed_boolean_content() throws IOException {
     // Given
-    var trueInput = new InputTask(writeString("  true  "), "true_input");
-    var falseInput = new InputTask(writeString("  false  "), "false_input");
+    var trueInput = new InputTask("true_input", writeString("  true  "));
+    var falseInput = new InputTask("false_input", writeString("  false  "));
 
     // When
     var trueBoolean = trueInput.asBoolean();

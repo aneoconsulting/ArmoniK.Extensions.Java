@@ -1,3 +1,18 @@
+/*
+ * Copyright © 2025 ANEO (armonik@aneo.fr)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package fr.aneo.armonik.worker;
 
 
@@ -15,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
-class OutputTaskTest {
+class TaskOutputTest {
   @TempDir
   private Path tempDir;
   private final BlobId blobId = BlobId.from("id");
@@ -26,7 +41,7 @@ class OutputTaskTest {
     // Given
     var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask(blobId, "result", path, notifiedId::set);
+    var output = new TaskOutput(blobId, "result", path, notifiedId::set);
     var data = randomBytes(32);
 
     // When
@@ -44,7 +59,7 @@ class OutputTaskTest {
     // Given
     var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask(blobId, "greeting", path, notifiedId::set);
+    var output = new TaskOutput(blobId, "greeting", path, notifiedId::set);
     var text = "héllo 🌍";
 
     // When
@@ -62,7 +77,7 @@ class OutputTaskTest {
     // Given
     var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask(blobId, "data", path, notifiedId::set);
+    var output = new TaskOutput(blobId, "data", path, notifiedId::set);
     var data = randomBytes(1024);
     var in = new ByteArrayInputStream(data);
 

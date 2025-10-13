@@ -1,3 +1,18 @@
+/*
+ * Copyright © 2025 ANEO (armonik@aneo.fr)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package fr.aneo.armonik.worker;
 
 import org.junit.jupiter.api.DisplayName;
@@ -9,11 +24,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
 
-import static fr.aneo.armonik.worker.InputTask.CACHE_THRESHOLD_BYTES;
+import static fr.aneo.armonik.worker.TaskInput.CACHE_THRESHOLD_BYTES;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
-class InputTaskTest {
+class TaskInputTest {
 
   @TempDir
   private Path tempDir;
@@ -24,7 +39,7 @@ class InputTaskTest {
   void size_returns_file_size_in_bytes() throws IOException {
     // Given
     var file = write(randomBytes(6));
-    var input = new InputTask(blobId, "input", file);
+    var input = new TaskInput(blobId, "input", file);
 
     // When
     var size = input.size();
@@ -39,7 +54,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES);
     var file = write(data);
-    var input = new InputTask(blobId, "input", file);
+    var input = new TaskInput(blobId, "input", file);
 
     // When
     var first = input.rawData();
@@ -56,7 +71,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES + 1);
     var file = write(data);
-    var input = new InputTask(blobId, "input", file);
+    var input = new TaskInput(blobId, "input", file);
 
     // When
     var first = input.rawData();
@@ -73,7 +88,7 @@ class InputTaskTest {
   void stream_provides_fresh_readable_InputStream_each_call() throws IOException {
     // Given
     var file = writeString("abc");
-    var input = new InputTask(blobId, "input", file);
+    var input = new TaskInput(blobId, "input", file);
 
     // WHen
     try (var in1 = input.stream(); var in2 = input.stream()) {
@@ -91,7 +106,7 @@ class InputTaskTest {
   void asString_returns_utf8_decoded_content() throws IOException {
     // Given
     var file = writeString("héllo 🌍");
-    var input = new InputTask(blobId, "input", file);
+    var input = new TaskInput(blobId, "input", file);
 
     // When
     var string = input.asString(UTF_8);

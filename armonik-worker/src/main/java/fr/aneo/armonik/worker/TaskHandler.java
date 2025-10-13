@@ -1,25 +1,26 @@
 package fr.aneo.armonik.worker;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonParseException;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.function.Function;
 
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
+import static fr.aneo.armonik.worker.BlobListener.AgentNotifier;
+import static fr.aneo.armonik.worker.internal.PathValidator.resolveWithin;
+import static fr.aneo.armonik.worker.internal.PathValidator.validateFile;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
 
 public class TaskHandler {
-  private static final Gson gson = new Gson();
-  private final AgentFutureStub agentStub;
   private final Map<String, InputTask> inputs;
   private final Map<String, OutputTask> outputs;
 
-  private TaskHandler(AgentFutureStub agentStub, Map<String, InputTask> inputs, Map<String, OutputTask> outputs) {
-    this.agentStub = agentStub;
+  private TaskHandler(Map<String, InputTask> inputs, Map<String, OutputTask> outputs) {
     this.inputs = inputs;
     this.outputs = outputs;
   }
@@ -49,75 +50,75 @@ public class TaskHandler {
 
     return outputs.get(name);
   }
+
   public Map<String, OutputTask> outputs() {
     return Map.copyOf(outputs);
   }
 
   static TaskHandler from(AgentFutureStub agentStub, ProcessRequest request) {
+    requireNonNull(agentStub, "agentStub");
+    requireNonNull(request, "request");
+
     var dataFolderPath = Path.of(request.getDataFolder());
-    var associationTable = getBlobsMapping(dataFolderPath, request.getPayloadId());
-    var inputs = getInputs(associationTable, dataFolderPath);
-    var outputs = getOutputs(associationTable, dataFolderPath);
-    return new TaskHandler(agentStub, inputs, outputs);
+    var blobsMapping = createBlobsMapping(dataFolderPath, request.getPayloadId());
+    var inputs = createInputs(blobsMapping, dataFolderPath);
+    var outputs = createOutputs(blobsMapping, dataFolderPath, new AgentNotifier(agentStub, request.getSessionId(), request.getCommunicationToken()));
+    return new TaskHandler(inputs, outputs);
   }
 
-  private static Map<String, InputTask> getInputs(BlobsMapping blobsMapping, Path dataFolderPath) {
+  private static Map<String, InputTask> createInputs(BlobsMapping blobsMapping, Path dataFolderPath) {
     return blobsMapping.inputsMapping()
                        .entrySet()
                        .stream()
-                       .collect(toMap(
-                             Map.Entry::getKey,
-                             entry -> {
-                               var inputFilePath = resolveWithin(dataFolderPath, entry.getValue());
-                               validateFile(inputFilePath);
-                               return new InputTask(entry.getKey(), inputFilePath);
-                             }));
+                       .collect(toMap(Map.Entry::getKey, createInputTask(dataFolderPath)));
   }
 
-  private static Map<String, OutputTask> getOutputs(BlobsMapping blobsMapping, Path dataFolderPath) {
+  private static Function<Map.Entry<String, String>, InputTask> createInputTask(Path dataFolderPath) {
+    return entry -> {
+      try {
+        var inputFilePath = resolveWithin(dataFolderPath, entry.getValue());
+        validateFile(inputFilePath);
+        return new InputTask(BlobId.from(entry.getValue()), entry.getKey(), inputFilePath);
+      } catch (Exception e) {
+        throw new ArmoniKException("Failed to create input task for: " + entry.getKey(), e);
+      }
+    };
+  }
+
+  private static Map<String, OutputTask> createOutputs(BlobsMapping blobsMapping, Path dataFolderPath, BlobListener listener) {
     return blobsMapping.outputsMapping()
                        .entrySet()
                        .stream()
-                       .collect(toMap(
-                             Map.Entry::getKey,
-                             entry -> {
-                               var outputFilePath = resolveWithin(dataFolderPath, entry.getValue());
-                               return new OutputTask(entry.getKey(), outputFilePath);
-                             }));
+                       .collect(toMap(Map.Entry::getKey, createOutputTask(dataFolderPath, listener)));
   }
 
-  private static BlobsMapping getBlobsMapping(Path dataFolderPath, String payloadId) {
+  private static Function<Map.Entry<String, String>, OutputTask> createOutputTask(Path dataFolderPath, BlobListener listener) {
+    return entry -> {
+      try {
+        return new OutputTask(
+          BlobId.from(entry.getValue()),
+          entry.getKey(),
+          resolveWithin(dataFolderPath, entry.getValue()),
+          listener
+        );
+      } catch (Exception e) {
+        throw new ArmoniKException("Failed to create output task for: " + entry.getKey(), e);
+      }
+    };
+  }
+
+  private static BlobsMapping createBlobsMapping(Path dataFolderPath, String payloadId) {
     var payload = resolveWithin(dataFolderPath, payloadId);
     validateFile(payload);
     try {
       var payloadData = Files.readString(payload);
       return BlobsMapping.fromJson(payloadData);
     } catch (IOException exception) {
-      throw new ArmoniKException("Failed to load Payload: " + payloadId + ", dataFolder: " + dataFolderPath, exception);
-    } catch (JsonParseException | ClassCastException exception) {
-      throw new ArmoniKException("Failed to load Payload. Invalid json " + payloadId + ", dataFolder: " + dataFolderPath, exception);
+      throw new ArmoniKException("Failed to read payload file: " + payloadId, exception);
+    } catch (JsonParseException exception) {
+      throw new ArmoniKException("Payload contains invalid JSON: " + payloadId, exception);
+    } catch (IllegalArgumentException exception) {
+      throw new ArmoniKException("Payload JSON structure is incorrect: " + payloadId, exception);
     }
-  }
-
-  private static void validateFile(Path path) {
-    if (!Files.exists(path)) {
-      throw new ArmoniKException("File " + path + " does not exist");
-    }
-    if (Files.isDirectory(path)) {
-      throw new ArmoniKException("Path " + path + " is a directory");
-    }
-  }
-
-  private static Path resolveWithin(Path root, String child) {
-    var normalizedRoot = root.normalize();
-    var resolved = normalizedRoot.resolve(child).normalize();
-
-    if (!resolved.startsWith(normalizedRoot)) {
-      throw new ArmoniKException(child + " resolves outside data folder: " + resolved);
-    }
-    if (!resolved.getParent().equals(normalizedRoot)) {
-      throw new ArmoniKException("Only files at the root of dataFolder are allowed: '" + child + "' is not valid");
-    }
-    return resolved;
   }
 }

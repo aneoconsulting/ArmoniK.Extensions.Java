@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import java.io.IOException;
@@ -12,10 +13,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
 
+import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 
 class TaskHandlerTest {
 
@@ -136,6 +139,7 @@ class TaskHandlerTest {
     var taskHandler = TaskHandler.from(mock, request);
 
     // Then
+    assertThat(taskHandler.inputs()).containsOnlyKeys("name", "age");
     assertThat(taskHandler.hasInput("name")).isTrue();
     assertThat(taskHandler.getInput("name").asString(UTF_8)).isEqualTo("John Doe");
     assertThat(taskHandler.hasInput("age")).isTrue();
@@ -158,7 +162,7 @@ class TaskHandlerTest {
     var taskHandler = TaskHandler.from(mock, request);
 
     // Then
-    assertThat(taskHandler.outputs()).containsKeys("result1", "result2");
+    assertThat(taskHandler.outputs()).containsOnlyKeys("result1", "result2");
     assertThat(taskHandler.hasOutput("result1")).isTrue();
     assertThat(taskHandler.getOutput("result1")).isNotNull();
     assertThat(taskHandler.getOutput("result2")).isNotNull();
@@ -180,6 +184,34 @@ class TaskHandlerTest {
 
     // When - Then
     assertThatThrownBy(() -> taskHandler.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("Should notify Agent when output is written")
+  void should_notify_agent_when_output_is_written() throws IOException {
+    // Given
+    writeString("payload-id", payloadContent);
+    writeString("name-id", "John Doe");
+    writeString("age-id", "42");
+    var request = ProcessRequest.newBuilder()
+                                .setDataFolder(tempDir.toString())
+                                .setPayloadId("payload-id")
+                                .setCommunicationToken("communication-token")
+                                .setSessionId("session-id")
+                                .build();
+    var taskHandler = TaskHandler.from(mock, request);
+
+    // When
+    taskHandler.getOutput("result1").write("Hello John", UTF_8);
+
+    // Then
+    var notifyRequestCaptor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);
+    verify(mock).notifyResultData(notifyRequestCaptor.capture());
+    var notifyRequest = notifyRequestCaptor.getValue();
+    assertThat(notifyRequest.getCommunicationToken()).isEqualTo("communication-token");
+    assertThat(notifyRequest.getIdsCount()).isEqualTo(1);
+    assertThat(notifyRequest.getIds(0).getResultId()).isEqualTo("result1-id");
+    assertThat(notifyRequest.getIds(0).getSessionId()).isEqualTo("session-id");
   }
 
   private void writeString(String name, String content) throws IOException {

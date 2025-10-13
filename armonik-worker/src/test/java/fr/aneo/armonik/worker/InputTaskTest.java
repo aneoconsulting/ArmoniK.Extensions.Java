@@ -17,13 +17,14 @@ class InputTaskTest {
 
   @TempDir
   private Path tempDir;
+  private final BlobId blobId = BlobId.from("id");
 
   @Test
   @DisplayName("size returns file size in bytes")
   void size_returns_file_size_in_bytes() throws IOException {
     // Given
     var file = write(randomBytes(6));
-    var input = new InputTask("input", file);
+    var input = new InputTask(blobId, "input", file);
 
     // When
     var size = input.size();
@@ -38,7 +39,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES);
     var file = write(data);
-    var input = new InputTask("input", file);
+    var input = new InputTask(blobId, "input", file);
 
     // When
     var first = input.rawData();
@@ -55,7 +56,7 @@ class InputTaskTest {
     // Given
     var data = randomBytes((int) CACHE_THRESHOLD_BYTES + 1);
     var file = write(data);
-    var input = new InputTask("input", file);
+    var input = new InputTask(blobId, "input", file);
 
     // When
     var first = input.rawData();
@@ -72,7 +73,7 @@ class InputTaskTest {
   void stream_provides_fresh_readable_InputStream_each_call() throws IOException {
     // Given
     var file = writeString("abc");
-    var input = new InputTask("input", file);
+    var input = new InputTask(blobId, "input", file);
 
     // WHen
     try (var in1 = input.stream(); var in2 = input.stream()) {
@@ -90,7 +91,7 @@ class InputTaskTest {
   void asString_returns_utf8_decoded_content() throws IOException {
     // Given
     var file = writeString("héllo 🌍");
-    var input = new InputTask("input", file);
+    var input = new InputTask(blobId, "input", file);
 
     // When
     var string = input.asString(UTF_8);

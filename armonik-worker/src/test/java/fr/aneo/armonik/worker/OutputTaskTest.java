@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -17,35 +18,33 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OutputTaskTest {
   @TempDir
   private Path tempDir;
+  private final BlobId blobId = BlobId.from("id");
 
   @Test
-  @DisplayName("write(byte[]) creates file and truncates on subsequent writes")
-  void write_bytes_creates_and_truncates_on_subsequent_writes() throws IOException {
+  @DisplayName("Should write byte array")
+  void should_write_byte_array() throws IOException {
     // Given
+    var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask("result", path);
-    var first = randomBytes(32);
-    var second = randomBytes(7);
+    var output = new OutputTask(blobId, "result", path, notifiedId::set);
+    var data = randomBytes(32);
 
     // When
-    output.write(first);
-    var afterFirst = Files.readAllBytes(path);
-
-    output.write(second);
-    var afterSecond = Files.readAllBytes(path);
+    output.write(data);
 
     // Then
-    assertThat(afterFirst).containsExactly(first);
-    assertThat(afterSecond).containsExactly(second);
-    assertThat(afterSecond.length).isEqualTo(7);
+    var written = Files.readAllBytes(path);
+    assertThat(written).containsExactly(data);
+    assertThat(notifiedId.get()).isEqualTo(blobId);
   }
 
   @Test
-  @DisplayName("write(String) writes UTF-8 text")
-  void write_writes_utf8_text() throws IOException {
+  @DisplayName("Should write UTF-8 text")
+  void should_write_utf8_text() throws IOException {
     // Given
+    var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask("greeting", path);
+    var output = new OutputTask(blobId, "greeting", path, notifiedId::set);
     var text = "héllo 🌍";
 
     // When
@@ -54,14 +53,16 @@ class OutputTaskTest {
     // Then
     var content = Files.readString(path, UTF_8);
     assertThat(content).isEqualTo(text);
+    assertThat(notifiedId.get()).isEqualTo(blobId);
   }
 
   @Test
-  @DisplayName("write(InputStream) copies all bytes from the stream")
-  void write_stream_copies_all_bytes() throws IOException {
+  @DisplayName("Should write InputStream")
+  void should_write_inputStream() throws IOException {
     // Given
+    var notifiedId = new AtomicReference<>();
     var path = randomPath();
-    var output = new OutputTask("data", path);
+    var output = new OutputTask(blobId, "data", path, notifiedId::set);
     var data = randomBytes(1024);
     var in = new ByteArrayInputStream(data);
 
@@ -71,6 +72,7 @@ class OutputTaskTest {
     // Then
     var written = Files.readAllBytes(path);
     assertThat(written).containsExactly(data);
+    assertThat(notifiedId.get()).isEqualTo(blobId);
   }
 
   private static byte[] randomBytes(int size) {
@@ -82,5 +84,4 @@ class OutputTaskTest {
   private Path randomPath() throws IOException {
     return Files.createTempFile(tempDir, "output-", "");
   }
-
 }

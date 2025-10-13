@@ -10,27 +10,33 @@ import static java.nio.file.StandardOpenOption.*;
 
 public final class OutputTask {
 
+  private final BlobId id;
   private final Path path;
   private final String logicalName;
+  private final BlobListener listener;
 
-  OutputTask(String logicalName, Path path) {
-    this.path = path;
+  OutputTask(BlobId id, String logicalName, Path path, BlobListener listener) {
+    this.id = id;
     this.logicalName = logicalName;
+    this.path = path;
+    this.listener = listener;
   }
 
   public void write(byte[] data) {
     try {
       Files.write(path, data, CREATE, TRUNCATE_EXISTING, WRITE);
+      listener.onBlobReady(id);
     } catch (IOException e) {
-      throw new ArmoniKException("Failed to write output '" + logicalName + "' to " + path, e);
+      throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
     }
   }
 
   public void write(InputStream in) {
     try (var out = Files.newOutputStream(path, CREATE, TRUNCATE_EXISTING, WRITE)) {
       in.transferTo(out);
+      listener.onBlobReady(id);
     } catch (IOException e) {
-      throw new ArmoniKException("Failed to stream-write output '" + logicalName + "' to " + path, e);
+      throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
     }
   }
 

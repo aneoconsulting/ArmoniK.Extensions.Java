@@ -11,11 +11,13 @@ import static java.nio.file.StandardOpenOption.READ;
 public final class InputTask {
   static final long CACHE_THRESHOLD_BYTES = 8L * 1024 * 1024; // 8 MiB
 
+  private final BlobId id;
   private final Path path;
   private final String logicalName;
   private byte[] cache;
 
-  InputTask(String logicalName, Path path) {
+  InputTask(BlobId id, String logicalName, Path path) {
+    this.id = id;
     this.path = path;
     this.logicalName = logicalName;
   }
@@ -24,7 +26,7 @@ public final class InputTask {
     try {
       return Files.size(path);
     } catch (IOException e) {
-      throw new ArmoniKException("Failed to get size of input '" + logicalName + "' from " + path, e);
+      throw new ArmoniKException("Failed to get size of input " + id + "('" + logicalName + "')" + " from " + path, e);
     }
   }
 
@@ -40,7 +42,7 @@ public final class InputTask {
       }
       return bytes;
     } catch (IOException e) {
-      throw new ArmoniKException("Failed to read input '" + logicalName + "' from " + path, e);
+      throw new ArmoniKException("Failed to read input '" + id + "('" + logicalName + "')" + " from " + path, e);
     }
   }
 

@@ -30,6 +30,30 @@ public class BlobsMapping {
     }.getType();
     Map<String, Map<String, String>> mapping = gson.fromJson(jsonString, type);
 
+    validateMapping(mapping);
+
     return new BlobsMapping(mapping);
+  }
+
+  private static void validateMapping(Map<String, Map<String, String>> mapping) {
+    if (mapping == null) {
+      throw new IllegalArgumentException("BlobsMapping JSON cannot be null or empty");
+    }
+
+    if (!mapping.containsKey("inputs")) {
+      throw new IllegalArgumentException("BlobsMapping JSON must contain 'inputs' key");
+    }
+
+    if (!mapping.containsKey("outputs")) {
+      throw new IllegalArgumentException("BlobsMapping JSON must contain 'outputs' key");
+    }
+
+    if (mapping.get("inputs") == null) {
+      throw new IllegalArgumentException("BlobsMapping 'inputs' value cannot be null");
+    }
+
+    if (mapping.get("outputs") == null) {
+      throw new IllegalArgumentException("BlobsMapping 'outputs' value cannot be null");
+    }
   }
 }

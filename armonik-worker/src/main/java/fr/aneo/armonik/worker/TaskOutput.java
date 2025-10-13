@@ -8,14 +8,14 @@ import java.nio.file.Path;
 
 import static java.nio.file.StandardOpenOption.*;
 
-public final class OutputTask {
+public final class TaskOutput {
 
   private final BlobId id;
   private final Path path;
   private final String logicalName;
   private final BlobListener listener;
 
-  OutputTask(BlobId id, String logicalName, Path path, BlobListener listener) {
+  TaskOutput(BlobId id, String logicalName, Path path, BlobListener listener) {
     this.id = id;
     this.logicalName = logicalName;
     this.path = path;

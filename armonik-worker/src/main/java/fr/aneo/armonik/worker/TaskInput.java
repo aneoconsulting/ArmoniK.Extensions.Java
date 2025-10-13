@@ -8,7 +8,7 @@ import java.nio.file.Path;
 
 import static java.nio.file.StandardOpenOption.READ;
 
-public final class InputTask {
+public final class TaskInput {
   static final long CACHE_THRESHOLD_BYTES = 8L * 1024 * 1024; // 8 MiB
 
   private final BlobId id;
@@ -16,7 +16,7 @@ public final class InputTask {
   private final String logicalName;
   private byte[] cache;
 
-  InputTask(BlobId id, String logicalName, Path path) {
+  TaskInput(BlobId id, String logicalName, Path path) {
     this.id = id;
     this.path = path;
     this.logicalName = logicalName;

@@ -20,6 +20,7 @@ public class ArmoniKWorker {
   private final TaskProcessor taskProcessor;
   private Server server;
   private InetSocketAddress workerAddress;
+  private ManagedChannel agentChannel;
 
   public ArmoniKWorker(TaskProcessor taskProcessor) {
     this.taskProcessor = taskProcessor;
@@ -32,7 +33,7 @@ public class ArmoniKWorker {
                                      return new InetSocketAddress("0.0.0.0", 8080);
                                    });
 
-    var agentChanel = buildAgentChannel();
+    agentChannel = buildAgentChannel();
 
     server = NettyServerBuilder.forAddress(workerAddress)
                                .permitKeepAliveWithoutCalls(true)
@@ -41,7 +42,7 @@ public class ArmoniKWorker {
                                .keepAliveTimeout(10, SECONDS)
                                .maxInboundMetadataSize(1024 * 1024)
                                .maxInboundMessageSize(8 * 1024 * 1024)
-                               .addService(new WorkerGrpc(AgentGrpc.newFutureStub(agentChanel), taskProcessor))
+                               .addService(new WorkerGrpc(AgentGrpc.newFutureStub(agentChannel), taskProcessor))
                                .build();
 
     server.start();
@@ -69,6 +70,17 @@ public class ArmoniKWorker {
       logger.info("gRPC worker stopped successfully.");
     } else {
       logger.info("Shutdown requested but server was not running.");
+    }
+
+    if (agentChannel != null) {
+      logger.info("Shutting down agent channel...");
+      agentChannel.shutdown();
+      if (!agentChannel.awaitTermination(30, SECONDS)) {
+        logger.warn("Agent channel graceful shutdown timed out. Forcing shutdown...");
+        agentChannel.shutdownNow();
+        agentChannel.awaitTermination(5, SECONDS);
+      }
+      logger.info("Agent channel closed successfully.");
     }
   }
 

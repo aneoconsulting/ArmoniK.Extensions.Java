@@ -15,6 +15,9 @@
  */
 package fr.aneo.armonik.worker;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
@@ -22,7 +25,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static java.nio.file.StandardOpenOption.READ;
-
 
 /**
  * Provides read-only access to task input data stored in the ArmoniK shared data folder.
@@ -121,6 +123,8 @@ import static java.nio.file.StandardOpenOption.READ;
 public final class TaskInput {
   static final long CACHE_THRESHOLD_BYTES = 8L * 1024 * 1024; // 8 MiB
 
+  private static final Logger logger = LoggerFactory.getLogger(TaskInput.class);
+
   private final BlobId id;
   private final Path path;
   private final String logicalName;
@@ -148,6 +152,7 @@ public final class TaskInput {
     try {
       return Files.size(path);
     } catch (IOException e) {
+      logger.error("Failed to get size of input: logicalName='{}', blobId={}", logicalName, id.asString(), e);
       throw new ArmoniKException("Failed to get size of input " + id + "('" + logicalName + "')" + " from " + path, e);
     }
   }
@@ -179,16 +184,23 @@ public final class TaskInput {
    */
   public byte[] rawData() {
     byte[] local = cache;
-    if (local != null) return local;
+    if (local != null) {
+      logger.debug("Returning cached input: logicalName='{}', size={} bytes", logicalName, local.length);
+      return local;
+    }
 
     try {
       long len = Files.size(path);
+      logger.info("Reading input: logicalName='{}', blobId={}, size={} bytes", logicalName, id.asString(), len);
       byte[] bytes = Files.readAllBytes(path);
       if (len <= CACHE_THRESHOLD_BYTES) {
         cache = bytes;
       }
+
+      logger.info("Input read: logicalName='{}', size={} bytes", logicalName, bytes.length);
       return bytes;
     } catch (IOException e) {
+      logger.error("Failed to read input: logicalName='{}', blobId={}", logicalName, id.asString(), e);
       throw new ArmoniKException("Failed to read input '" + id + "('" + logicalName + "')" + " from " + path, e);
     }
   }
@@ -222,6 +234,7 @@ public final class TaskInput {
    *                     does not exist
    */
   public InputStream stream() throws IOException {
+    logger.info("Opening stream for input: logicalName='{}', blobId={}", logicalName, id.asString());
     return Files.newInputStream(path, READ);
   }
 

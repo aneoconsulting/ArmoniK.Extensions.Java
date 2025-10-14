@@ -197,7 +197,7 @@ public class ArmoniKWorker {
       }
       logger.info("gRPC worker stopped successfully.");
     } else {
-      logger.info("Shutdown requested but server was not running.");
+      logger.debug("Shutdown requested but server was not running.");
     }
 
     if (agentChannel != null) {
@@ -227,11 +227,11 @@ public class ArmoniKWorker {
    */
   public void blockUntilShutdown() throws InterruptedException {
     if (server != null) {
-      logger.info("Blocking until gRPC worker shutdown...");
+      logger.debug("Blocking until gRPC worker shutdown...");
       server.awaitTermination();
-      logger.info("gRPC worker terminated.");
+      logger.debug("gRPC worker terminated.");
     } else {
-      logger.warn("blockUntilShutdown() called but server is null (not started).");
+      logger.debug("blockUntilShutdown() called but server is null (not started).");
     }
   }
 
@@ -251,6 +251,8 @@ public class ArmoniKWorker {
   private ManagedChannel buildAgentChannel() {
     var agentAddress = AddressResolver.resolve(System.getenv("ComputePlane__AgentChannel__Address"))
                                       .orElseThrow(() -> new IllegalStateException("Environment variable ComputePlane__AgentChannel__Address is not set"));
+
+    logger.info("Connecting to Agent at {}:{}", agentAddress.getHostString(), agentAddress.getPort());
 
     return NettyChannelBuilder.forAddress(agentAddress.getHostString(), agentAddress.getPort())
                               .usePlaintext()

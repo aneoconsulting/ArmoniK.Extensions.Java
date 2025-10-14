@@ -16,6 +16,8 @@
 package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.worker.ArmoniKException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -59,6 +61,8 @@ import java.nio.file.Path;
  */
 public final class PathValidator {
 
+  private static final Logger logger = LoggerFactory.getLogger(PathValidator.class);
+
   private PathValidator() {
   }
 
@@ -81,9 +85,11 @@ public final class PathValidator {
    */
   public static void validateFile(Path path) {
     if (!Files.exists(path)) {
+      logger.error("File does not exist: {}", path);
       throw new ArmoniKException("File " + path + " does not exist");
     }
     if (Files.isDirectory(path)) {
+      logger.error("Path is a directory, not a file: {}", path);
       throw new ArmoniKException("Path " + path + " is a directory");
     }
   }
@@ -144,12 +150,15 @@ public final class PathValidator {
     var resolved = normalizedRoot.resolve(child).normalize();
 
     if (!resolved.startsWith(normalizedRoot)) {
+      logger.error("Security violation: Path '{}' resolves outside data folder. Root: {}, Resolved: {}", child, normalizedRoot, resolved);
+
       throw new ArmoniKException(
         child + " resolves outside data folder. Expected: " + normalizedRoot + ", Got: " + resolved
       );
     }
 
     if (!resolved.getParent().equals(normalizedRoot)) {
+      logger.error("Security violation: Path '{}' attempts subdirectory access. Root: {}, Resolved: {}", child, normalizedRoot, resolved);
       throw new ArmoniKException(
         "Only files at the root of dataFolder are allowed: '" + child + "' is not valid"
       );

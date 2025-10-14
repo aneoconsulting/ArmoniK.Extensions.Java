@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <!-- Disable Logback's internal status messages -->
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+  <property name="LOG_LEVEL" value="${ARMONIK_WORKER_LOG_LEVEL:-INFO}" />
+
+  <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+
+      <!-- Exclude @version field -->
+      <includeVersion>false</includeVersion>
+
+      <!-- Include MDC context fields as top-level JSON fields -->
+      <includeMdcKeyName>taskId</includeMdcKeyName>
+      <includeMdcKeyName>sessionId</includeMdcKeyName>
+
+      <!-- Configure stack trace formatting -->
+      <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+        <maxLength>3072</maxLength>
+        <shortenedClassNameLength>40</shortenedClassNameLength>
+        <rootCauseFirst>true</rootCauseFirst>
+      </throwableConverter>
+
+      <!-- Performance optimization -->
+      <includeCallerData>false</includeCallerData>
+
+      <!-- ISO 8601 timestamp format -->
+      <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampPattern>
+    </encoder>
+  </appender>
+
+  <!-- ArmoniK Worker - Configurable level -->
+  <logger name="fr.aneo.armonik.worker" level="${LOG_LEVEL}" additivity="false">
+    <appender-ref ref="JSON_STDOUT" />
+  </logger>
+
+  <!-- Reduce framework noise -->
+  <logger name="io.grpc" level="WARN" />
+  <logger name="io.grpc.netty" level="WARN" />
+  <logger name="io.netty" level="WARN" />
+
+  <!-- Root Logger - Configurable level -->
+  <root level="${LOG_LEVEL}">
+    <appender-ref ref="JSON_STDOUT" />
+  </root>
+
+</configuration>

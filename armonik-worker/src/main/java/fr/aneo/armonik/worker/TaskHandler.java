@@ -16,6 +16,8 @@
 package fr.aneo.armonik.worker;
 
 import com.google.gson.JsonParseException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -100,6 +102,8 @@ import static java.util.stream.Collectors.toMap;
  * @see BlobsMapping
  */
 public class TaskHandler {
+  private static final Logger logger = LoggerFactory.getLogger(TaskHandler.class);
+
   private final Map<String, TaskInput> inputs;
   private final Map<String, TaskOutput> outputs;
 
@@ -150,7 +154,10 @@ public class TaskHandler {
    */
   public TaskInput getInput(String name) {
     if (name == null || name.isEmpty()) throw new IllegalArgumentException("Input name cannot be null or empty");
-    if (!hasInput(name)) throw new IllegalArgumentException("Input with name '" + name + "' not found");
+    if (!hasInput(name)) {
+      logger.error("Input not found: '{}'. Available inputs: {}", name, inputs.keySet());
+      throw new IllegalArgumentException("Input with name '" + name + "' not found");
+    }
 
     return inputs.get(name);
   }
@@ -183,7 +190,10 @@ public class TaskHandler {
    */
   public TaskOutput getOutput(String name) {
     if (name == null || name.isEmpty()) throw new IllegalArgumentException("Output name cannot be null or empty");
-    if (!hasOutput(name)) throw new IllegalArgumentException("Output with name '" + name + "' not found");
+    if (!hasOutput(name)) {
+      logger.error("Output not found: '{}'. Available outputs: {}", name, outputs.keySet());
+      throw new IllegalArgumentException("Output with name '" + name + "' not found");
+    }
 
     return outputs.get(name);
   }
@@ -196,7 +206,7 @@ public class TaskHandler {
    * </p>
    *
    * @return an immutable map of output names to {@link TaskOutput} instances; never {@code null},
-   *         may be empty if the task has no outputs
+   * may be empty if the task has no outputs
    */
   public Map<String, TaskOutput> outputs() {
     return Map.copyOf(outputs);
@@ -241,13 +251,13 @@ public class TaskHandler {
    *
    * @param agentStub the gRPC stub for communicating with the Agent; used to notify
    *                  the Agent when outputs are ready; must not be {@code null}
-   * @param request the task processing request from the Agent containing the data folder path,
-   *                payload ID, session ID, and communication token; must not be {@code null}
+   * @param request   the task processing request from the Agent containing the data folder path,
+   *                  payload ID, session ID, and communication token; must not be {@code null}
    * @return a fully initialized task handler with access to all inputs and outputs;
-   *         never {@code null}
+   * never {@code null}
    * @throws NullPointerException if any parameter is {@code null}
-   * @throws ArmoniKException if payload reading fails, JSON parsing fails, payload structure
-   *                          is invalid, input files are missing, or path validation fails
+   * @throws ArmoniKException     if payload reading fails, JSON parsing fails, payload structure
+   *                              is invalid, input files are missing, or path validation fails
    */
   static TaskHandler from(AgentFutureStub agentStub, ProcessRequest request) {
     requireNonNull(agentStub, "agentStub");
@@ -260,6 +270,7 @@ public class TaskHandler {
     return new TaskHandler(inputs, outputs);
   }
 
+
   private static Map<String, TaskInput> createInputs(BlobsMapping blobsMapping, Path dataFolderPath) {
     return blobsMapping.inputsMapping()
                        .entrySet()
@@ -269,12 +280,18 @@ public class TaskHandler {
 
   private static Function<Map.Entry<String, String>, TaskInput> createInputTask(Path dataFolderPath) {
     return entry -> {
+      String logicalName = entry.getKey();
+      String blobId = entry.getValue();
       try {
-        var inputFilePath = resolveWithin(dataFolderPath, entry.getValue());
+        var inputFilePath = resolveWithin(dataFolderPath, blobId);
         validateFile(inputFilePath);
-        return new TaskInput(BlobId.from(entry.getValue()), entry.getKey(), inputFilePath);
+        long fileSize = Files.size(inputFilePath);
+        logger.info("Input task created: logicalName='{}', blobId={}, size={} bytes", logicalName, blobId, fileSize);
+        return new TaskInput(BlobId.from(entry.getValue()), logicalName, inputFilePath);
+
       } catch (Exception e) {
-        throw new ArmoniKException("Failed to create input task for: " + entry.getKey(), e);
+        logger.error("Failed to create input task: logicalName='{}', blobId={}", logicalName, blobId, e);
+        throw new ArmoniKException("Failed to create input task for: " + logicalName, e);
       }
     };
   }
@@ -288,14 +305,13 @@ public class TaskHandler {
 
   private static Function<Map.Entry<String, String>, TaskOutput> createOutputTask(Path dataFolderPath, BlobListener listener) {
     return entry -> {
+      String logicalName = entry.getKey();
+      String blobId = entry.getValue();
       try {
-        return new TaskOutput(
-          BlobId.from(entry.getValue()),
-          entry.getKey(),
-          resolveWithin(dataFolderPath, entry.getValue()),
-          listener
-        );
+        logger.info("Output task created: logicalName='{}', blobId={}", logicalName, blobId);
+        return new TaskOutput(BlobId.from(blobId), logicalName, resolveWithin(dataFolderPath, blobId), listener);
       } catch (Exception e) {
+        logger.error("Failed to create output task: logicalName='{}', blobId={}", logicalName, blobId, e);
         throw new ArmoniKException("Failed to create output task for: " + entry.getKey(), e);
       }
     };
@@ -308,10 +324,13 @@ public class TaskHandler {
       var payloadData = Files.readString(payload);
       return BlobsMapping.fromJson(payloadData);
     } catch (IOException exception) {
+      logger.error("Failed to read payload file: blobId={}, dataFolder={}", payloadId, dataFolderPath, exception);
       throw new ArmoniKException("Failed to read payload file: " + payloadId, exception);
     } catch (JsonParseException exception) {
+      logger.error("Payload contains invalid JSON: blobId={}", payloadId, exception);
       throw new ArmoniKException("Payload contains invalid JSON: " + payloadId, exception);
     } catch (IllegalArgumentException exception) {
+      logger.error("Payload JSON structure is incorrect: blobId={}, error={}", payloadId, exception.getMessage());
       throw new ArmoniKException("Payload JSON structure is incorrect: " + payloadId, exception);
     }
   }

@@ -17,6 +17,8 @@ package fr.aneo.armonik.worker;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 
@@ -75,6 +77,7 @@ import static java.util.Objects.requireNonNull;
  * @see TaskOutput
  */
 public class BlobsMapping {
+  private static final Logger logger = LoggerFactory.getLogger(BlobsMapping.class);
   private static final Gson gson = new Gson();
 
   private final Map<String, Map<String, String>> mapping;
@@ -97,7 +100,7 @@ public class BlobsMapping {
    * </p>
    *
    * @return an immutable map of logical input names to blob IDs; never {@code null},
-   *         may be empty if the task has no inputs
+   * may be empty if the task has no inputs
    */
   Map<String, String> inputsMapping() {
     return Map.copyOf(mapping.get("inputs"));
@@ -117,7 +120,7 @@ public class BlobsMapping {
    * </p>
    *
    * @return an immutable map of logical output names to blob IDs; never {@code null},
-   *         may be empty if the task has no outputs
+   * may be empty if the task has no outputs
    */
   Map<String, String> outputsMapping() {
     return Map.copyOf(mapping.get("outputs"));
@@ -160,8 +163,8 @@ public class BlobsMapping {
    *
    * @param jsonString the JSON string to parse; must not be {@code null}
    * @return a validated blobs mapping; never {@code null}
-   * @throws NullPointerException if {@code jsonString} is {@code null}
-   * @throws IllegalArgumentException if the JSON structure is invalid or missing required keys
+   * @throws NullPointerException                if {@code jsonString} is {@code null}
+   * @throws IllegalArgumentException            if the JSON structure is invalid or missing required keys
    * @throws com.google.gson.JsonSyntaxException if the JSON is malformed
    */
   static BlobsMapping fromJson(String jsonString) {
@@ -178,23 +181,30 @@ public class BlobsMapping {
 
   private static void validateMapping(Map<String, Map<String, String>> mapping) {
     if (mapping == null) {
-      throw new IllegalArgumentException("BlobsMapping JSON cannot be null or empty");
+      logger.error("mapping cannot be null or empty");
+      throw new IllegalArgumentException("mapping cannot be null or empty");
     }
 
     if (!mapping.containsKey("inputs")) {
-      throw new IllegalArgumentException("BlobsMapping JSON must contain 'inputs' key");
+      logger.error("mapping must contain 'inputs' key. Available keys: {}", mapping.keySet());
+      throw new IllegalArgumentException("mapping must contain 'inputs' key");
     }
 
     if (!mapping.containsKey("outputs")) {
-      throw new IllegalArgumentException("BlobsMapping JSON must contain 'outputs' key");
+      logger.error("mapping must contain 'outputs' key. Available keys: {}", mapping.keySet());
+      throw new IllegalArgumentException("mapping must contain 'outputs' key");
     }
 
     if (mapping.get("inputs") == null) {
-      throw new IllegalArgumentException("BlobsMapping 'inputs' value cannot be null");
+      logger.error("'inputs' value cannot be null");
+      throw new IllegalArgumentException("'inputs' value cannot be null");
     }
 
     if (mapping.get("outputs") == null) {
-      throw new IllegalArgumentException("BlobsMapping 'outputs' value cannot be null");
+      logger.error("'outputs' value cannot be null");
+      throw new IllegalArgumentException("'outputs' value cannot be null");
     }
+
+    logger.debug("BlobsMapping validated: {} inputs, {} outputs", mapping.get("inputs").size(), mapping.get("outputs").size());
   }
 }

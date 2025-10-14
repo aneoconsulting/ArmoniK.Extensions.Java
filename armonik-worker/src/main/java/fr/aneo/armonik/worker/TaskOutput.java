@@ -15,12 +15,16 @@
  */
 package fr.aneo.armonik.worker;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static java.nio.file.StandardOpenOption.*;
 
@@ -131,6 +135,7 @@ import static java.nio.file.StandardOpenOption.*;
  * @see BlobListener
  */
 public final class TaskOutput {
+  private static final Logger logger = LoggerFactory.getLogger(TaskOutput.class);
 
   private final BlobId id;
   private final Path path;
@@ -170,10 +175,20 @@ public final class TaskOutput {
    * @throws ArmoniKException if the file cannot be written due to I/O errors
    */
   public void write(byte[] data) {
+    long startTime = System.nanoTime();
+
     try {
+      logger.info("Writing output: logicalName='{}', blobId={}, size={} bytes", logicalName, id.asString(), data.length);
       Files.write(path, data, CREATE, TRUNCATE_EXISTING, WRITE);
+
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      logger.info("Output written in {}ms: logicalName='{}', size={} bytes", duration, logicalName, data.length);
+
       listener.onBlobReady(id);
     } catch (IOException e) {
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      logger.error("Failed to write output after {}ms: logicalName='{}', blobId={}", duration, logicalName, id.asString(), e);
+
       throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
     }
   }
@@ -209,10 +224,20 @@ public final class TaskOutput {
    *                          input stream fails
    */
   public void write(InputStream in) {
+    long startTime = System.nanoTime();
+    logger.debug("Writing output from stream: logicalName='{}', blobId={}", logicalName, id.asString());
+
     try (var out = Files.newOutputStream(path, CREATE, TRUNCATE_EXISTING, WRITE)) {
-      in.transferTo(out);
+      long bytesWritten = in.transferTo(out);
       listener.onBlobReady(id);
+
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      logger.info("Output written from stream in {}ms: logicalName='{}', size={} bytes", duration, logicalName, bytesWritten);
+
     } catch (IOException e) {
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      logger.error("Failed to write output stream after {}ms: logicalName='{}', blobId={}", duration, logicalName, id.asString(), e);
+
       throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
     }
   }

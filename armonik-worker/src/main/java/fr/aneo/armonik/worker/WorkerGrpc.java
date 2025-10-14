@@ -19,7 +19,11 @@ import fr.aneo.armonik.api.grpc.v1.Objects.Output.Error;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerGrpc.WorkerImplBase;
 import io.grpc.stub.StreamObserver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.Empty;
@@ -92,6 +96,8 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  * @see ArmoniKWorker
  */
 public class WorkerGrpc extends WorkerImplBase {
+  private static final Logger logger = LoggerFactory.getLogger(WorkerGrpc.class);
+
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
   private final TaskHandlerFactory taskHandlerFactory;
@@ -147,21 +153,44 @@ public class WorkerGrpc extends WorkerImplBase {
    */
   @Override
   public void process(ProcessRequest request, StreamObserver<ProcessReply> responseObserver) {
+    MDC.put("taskId", request.getTaskId());
+    MDC.put("sessionId", request.getSessionId());
+
+    long startTime = System.nanoTime();
     servingStatus.set(NOT_SERVING);
+
     try {
+      logger.info("Received task processing request: payloadId={}, dataFolder={}", request.getPayloadId(), request.getDataFolder());
       var taskHandler = taskHandlerFactory.create(agentStub, request);
+
+      logger.info("Starting task processing");
       var outcome = taskProcessor.processTask(taskHandler);
+
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      if (outcome instanceof TaskOutcome.Success) {
+        logger.info("Task processing completed successfully in {}ms", duration);
+      } else if (outcome instanceof TaskOutcome.Error error) {
+        logger.warn("Task processing completed with error in {}ms: {}", duration, error.message());
+      }
+
       responseObserver.onNext(ProcessReply.newBuilder()
                                           .setOutput(toOutput(outcome))
                                           .build());
     } catch (Exception exception) {
-      var message = exception.getMessage() != null ? exception.getMessage() : exception.toString();
+      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+      String errorMessage = exception.getMessage() != null
+        ? exception.getMessage()
+        : exception.toString();
+
+      logger.error("Task processing failed after {}ms with exception: {}",
+        duration, errorMessage, exception);
       responseObserver.onNext(ProcessReply.newBuilder()
-                                          .setOutput(toOutput(new TaskOutcome.Error(message)))
+                                          .setOutput(toOutput(new TaskOutcome.Error(errorMessage)))
                                           .build());
     } finally {
       servingStatus.set(SERVING);
       responseObserver.onCompleted();
+      MDC.clear();
     }
   }
 

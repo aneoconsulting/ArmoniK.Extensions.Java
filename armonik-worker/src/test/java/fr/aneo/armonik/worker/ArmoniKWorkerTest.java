@@ -70,7 +70,7 @@ class ArmoniKWorkerTest {
 
   @Test
   @DisplayName("should start the server with IP and port from environment variable")
-  void should_parse_valid_ip_port() throws Exception {
+  void should_start_the_server_with_ip_and_port_from_env_variable() throws Exception {
     // Given
     withEnvironmentVariables(
       "ComputePlane__AgentChannel__Address", "127.0.0.1:50052",

@@ -15,31 +15,19 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import com.google.common.net.HostAndPort;
+import com.google.common.net.InetAddresses;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.util.Arrays;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Optional;
 
 /**
- * Utility for parsing network addresses in {@code host:port} format.
- *
- * <h2>Usage</h2>
- * <pre>{@code
- * // Valid addresses
- * Optional<InetSocketAddress> addr1 = AddressResolver.resolve("192.168.1.100:8080");
- * Optional<InetSocketAddress> addr2 = AddressResolver.resolve("localhost:9090");
- *
- * // Missing address returns empty
- * Optional<InetSocketAddress> empty = AddressResolver.resolve(null);
- *
- * // Invalid format throws exception
- * AddressResolver.resolve("192.168.1.1");           // missing port
- * AddressResolver.resolve("host:abc");              // invalid port
- * }</pre>
- *
- * @see fr.aneo.armonik.worker.ArmoniKWorker
+ * Utility for parsing network addresses in various formats.
  */
 public class AddressResolver {
 
@@ -48,7 +36,6 @@ public class AddressResolver {
   private AddressResolver() {
   }
 
-
   /**
    * Resolves an address string into an {@link InetSocketAddress}.
    * <p>
@@ -56,36 +43,99 @@ public class AddressResolver {
    * Throws an exception if the address format is invalid.
    * </p>
    *
-   * <h4>Format</h4>
-   * <p>Address must be: {@code host:port}</p>
+   * <h4>Supported Formats</h4>
    * <ul>
-   *   <li><strong>host</strong>: IP address or hostname</li>
-   *   <li><strong>port</strong>: Integer port number</li>
+   *   <li><strong>IPv4:</strong> {@code host:port} (e.g., {@code 192.168.1.1:8080})</li>
+   *   <li><strong>IPv6:</strong> {@code [host]:port} (e.g., {@code [::1]:8080})</li>
+   *   <li><strong>Hostname:</strong> {@code host:port} (e.g., {@code localhost:9090})</li>
+   *   <li><strong>With protocol:</strong> {@code http://host:port}, {@code tcp://host:port}</li>
    * </ul>
+   * <p>
+   * Port must be a valid integer between 0 and 65535.
+   * Protocol prefixes (http://, https://, tcp://, grpc://) are automatically stripped if present.
+   * </p>
    *
-   * @param address the address string in {@code host:port} format; may be {@code null} or blank
+   * @param rawAddress the address string; may be {@code null} or blank
    * @return {@link Optional} containing the resolved address, or {@link Optional#empty()} if address is {@code null} or blank
    * @throws IllegalArgumentException if the address format is invalid or port is not numeric
    */
-  public static Optional<InetSocketAddress> resolve(String address) {
-    if (address == null || address.isBlank()) return Optional.empty();
+  public static Optional<InetSocketAddress> resolve(String rawAddress) {
+    if (rawAddress == null || rawAddress.isBlank()) return Optional.empty();
 
-    String[] parts = address.split(":");
-    if (parts.length != 2) {
-      logger.error("Invalid address {}", address);
-      throw new IllegalArgumentException("Address must be in the form 'ip:port'");
+    if (containsWhitespaceInside(rawAddress)) {
+      throw new IllegalArgumentException("Address contains whitespace: " + rawAddress);
     }
 
-    String host = parts[0];
-    int port;
+    HostPort hostPort = rawAddress.contains("://") ? parseUriStyle(rawAddress) : parseHostAndPort(rawAddress);
+
     try {
-      port = Integer.parseInt(parts[1]);
-    } catch (NumberFormatException e) {
-      logger.error("Invalid port {}", address);
-      throw new IllegalArgumentException("Invalid port: " + parts[1], e);
+      InetAddress inet = isIpLiteral(hostPort.host)
+        ? InetAddresses.forString(hostPort.host)
+        : InetAddress.getByName(hostPort.host);
+      return Optional.of(new InetSocketAddress(inet, hostPort.port));
+    } catch (Exception e) {
+      logger.error("Unable to resolve host: {}", rawAddress, e);
+      throw new IllegalArgumentException("Unable to resolve host: " + rawAddress, e);
     }
-
-    var inetSocketAddress = new InetSocketAddress(host, port);
-    return Optional.of(inetSocketAddress);
   }
+
+  private static HostPort parseUriStyle(String rawAddress) {
+    try {
+      URI uri = new URI(rawAddress.trim());
+      String host = uri.getHost();
+      int port = uri.getPort();
+
+      if (host == null || port == -1) {
+        logger.error("URI must include host and port: {}", rawAddress);
+        throw new IllegalArgumentException("URI must include host and port: " + rawAddress);
+      }
+      if ((uri.getPath() != null && !uri.getPath().isEmpty())
+        || uri.getQuery() != null
+        || uri.getFragment() != null) {
+        logger.error("URI must not include path/query/fragment: {}", rawAddress);
+        throw new IllegalArgumentException("URI must not include path/query/fragment: " + rawAddress);
+      }
+      return new HostPort(host, port);
+    } catch (URISyntaxException e) {
+      logger.error("Invalid URI: {}", rawAddress, e);
+      throw new IllegalArgumentException("Invalid URI: " + rawAddress, e);
+    }
+  }
+
+  private static HostPort parseHostAndPort(String rawAddress) {
+    try {
+      var hostAndPort = HostAndPort.fromString(rawAddress.trim());
+      if (!hostAndPort.hasPort()) {
+        logger.error("Port required in address: {}", rawAddress);
+        throw new IllegalArgumentException("Port required in address: " + rawAddress);
+      }
+      if (hostAndPort.getPort() < 0 || hostAndPort.getPort() > 65535) {
+        logger.error("Invalid port in address: {}", rawAddress);
+        throw new IllegalArgumentException("Port out of range [0–65535]: " + rawAddress);
+      }
+
+      return new HostPort(hostAndPort.getHost(), hostAndPort.getPort());
+    } catch (IllegalArgumentException ex) {
+      logger.error("Invalid host:port address: {}", rawAddress, ex);
+      throw new IllegalArgumentException("Invalid host:port address: " + rawAddress, ex);
+    }
+  }
+
+  private static boolean containsWhitespaceInside(String s) {
+    for (int i = 0; i < s.length(); i++) {
+      if (Character.isWhitespace(s.charAt(i))) return true;
+    }
+    return false;
+  }
+
+  private static boolean isIpLiteral(String host) {
+    try {
+      InetAddresses.forString(host);
+      return true;
+    } catch (IllegalArgumentException e) {
+      return false;
+    }
+  }
+
+  private record HostPort(String host, int port) {}
 }

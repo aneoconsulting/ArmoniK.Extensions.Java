@@ -27,7 +27,7 @@ import java.util.function.Function;
 
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
-import static fr.aneo.armonik.worker.BlobListener.AgentNotifier;
+
 import static fr.aneo.armonik.worker.internal.PathValidator.resolveWithin;
 import static fr.aneo.armonik.worker.internal.PathValidator.validateFile;
 import static java.util.Objects.requireNonNull;

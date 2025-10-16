@@ -15,7 +15,6 @@
  */
 package fr.aneo.armonik.worker;
 
-import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,24 +27,31 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
 
+import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
+import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataResponse;
+import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class TaskHandlerTest {
 
   @TempDir
   private Path tempDir;
-  private AgentGrpc.AgentFutureStub mock;
+  private AgentFutureStub agentStub;
   private String payloadContent;
 
 
   @BeforeEach
   void setUp() {
-    mock = Mockito.mock(AgentGrpc.AgentFutureStub.class);
+    agentStub = Mockito.mock(AgentFutureStub.class);
+    when(agentStub.withDeadlineAfter(anyLong(), eq(MILLISECONDS))).thenReturn(agentStub);
     payloadContent = """
       {
         "inputs": {
@@ -70,8 +76,7 @@ class TaskHandlerTest {
                                 .build();
 
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(mock, request))
-      .isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
@@ -85,8 +90,7 @@ class TaskHandlerTest {
                                 .build();
 
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(mock, request))
-      .isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
@@ -100,8 +104,7 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(mock, request))
-      .isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
@@ -116,7 +119,7 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
 
     // Then
     assertThat(taskHandler).isNotNull();
@@ -133,7 +136,7 @@ class TaskHandlerTest {
                                 .setDataFolder(tempDir.toString())
                                 .setPayloadId("payload-id")
                                 .build();
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
 
     // When - Then
     assertThatThrownBy(() -> taskHandler.getInput("address")).isInstanceOf(IllegalArgumentException.class);
@@ -151,7 +154,7 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
 
     // Then
     assertThat(taskHandler.inputs()).containsOnlyKeys("name", "age");
@@ -174,7 +177,7 @@ class TaskHandlerTest {
                                 .build();
 
     // When
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
 
     // Then
     assertThat(taskHandler.outputs()).containsOnlyKeys("result1", "result2");
@@ -195,7 +198,7 @@ class TaskHandlerTest {
                                 .setDataFolder(tempDir.toString())
                                 .setPayloadId("payload-id")
                                 .build();
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
 
     // When - Then
     assertThatThrownBy(() -> taskHandler.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
@@ -214,14 +217,15 @@ class TaskHandlerTest {
                                 .setCommunicationToken("communication-token")
                                 .setSessionId("session-id")
                                 .build();
-    var taskHandler = TaskHandler.from(mock, request);
+    var taskHandler = TaskHandler.from(agentStub, request);
+    when(agentStub.notifyResultData(any())).thenReturn(immediateFuture(NotifyResultDataResponse.newBuilder().build()));
 
     // When
     taskHandler.getOutput("result1").write("Hello John", UTF_8);
 
     // Then
     var notifyRequestCaptor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);
-    verify(mock).notifyResultData(notifyRequestCaptor.capture());
+    verify(agentStub).notifyResultData(notifyRequestCaptor.capture());
     var notifyRequest = notifyRequestCaptor.getValue();
     assertThat(notifyRequest.getCommunicationToken()).isEqualTo("communication-token");
     assertThat(notifyRequest.getIdsCount()).isEqualTo(1);

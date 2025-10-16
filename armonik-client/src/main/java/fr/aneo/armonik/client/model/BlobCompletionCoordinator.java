@@ -67,6 +67,7 @@ final class BlobCompletionCoordinator {
   private final ScheduledExecutorService scheduler;
   private final Object lock = new Object();
   private final List<BlobHandle> buffer = new ArrayList<>();
+  private final SessionId sessionId;
   private ScheduledFuture<?> timer;
   private CompletableFuture<Void> idleFuture;
 
@@ -87,6 +88,7 @@ final class BlobCompletionCoordinator {
    */
   BlobCompletionCoordinator(SessionId sessionId, ManagedChannel channel, SessionDefinition sessionDefinition) {
     this(
+      sessionId,
       new BlobCompletionEventWatcher(sessionId, channel, sessionDefinition.outputListener()),
       sessionDefinition.outputBatchingPolicy(),
       Schedulers.shared()
@@ -100,6 +102,7 @@ final class BlobCompletionCoordinator {
    * for advanced coordination scenarios. It is primarily used for testing or when
    * specific batching behavior is required.
    *
+   * @param sessionId      the identifier of the session this coordinator serves
    * @param watcher        the event watcher to use for blob completion monitoring
    * @param batchingPolicy the policy defining how blob handles are batched
    * @param scheduler      the executor service for batching timer operations
@@ -107,17 +110,15 @@ final class BlobCompletionCoordinator {
    * @see BatchingPolicy
    * @see ScheduledExecutorService
    */
-  BlobCompletionCoordinator(BlobCompletionEventWatcher watcher,
+  BlobCompletionCoordinator(SessionId sessionId,
+                            BlobCompletionEventWatcher watcher,
                             BatchingPolicy batchingPolicy,
                             ScheduledExecutorService scheduler
   ) {
-    requireNonNull(watcher, "watcher must not be null");
-    requireNonNull(batchingPolicy, "batchingPolicy must not be null");
-    requireNonNull(scheduler, "scheduler must not be null");
-
-    this.watcher = watcher;
-    this.batchingPolicy = batchingPolicy;
-    this.scheduler = scheduler;
+    this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
+    this.watcher = requireNonNull(watcher, "watcher must not be null");
+    this.batchingPolicy = requireNonNull(batchingPolicy, "batchingPolicy must not be null");
+    this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.permits = new Semaphore(batchingPolicy.maxConcurrentBatches());
   }
 
@@ -140,11 +141,6 @@ final class BlobCompletionCoordinator {
    */
   public void enqueue(List<BlobHandle> blobHandles) {
     if (blobHandles != null && !blobHandles.isEmpty()) {
-      logger.atTrace()
-            .addKeyValue("operation", "enqueue")
-            .addKeyValue("added", blobHandles.size())
-            .log("Enqueue blob handles");
-
       boolean shouldArmTimer = false;
       boolean hitSizeTrigger;
 
@@ -153,29 +149,21 @@ final class BlobCompletionCoordinator {
           shouldArmTimer = true;
         }
         buffer.addAll(blobHandles);
+        final int bufferSize = buffer.size();
+
+        if (bufferSize > 1000) {
+          logger.warn("Blob buffer growing large (size={}). " +
+              "This may indicate processing cannot keep up with submission rate.",
+            bufferSize);
+        }
+
         hitSizeTrigger = buffer.size() >= batchingPolicy.batchSize();
 
-        final int sizeNow = buffer.size();
         if (shouldArmTimer && timer == null) {
           timer = scheduler.schedule(this::onTimer, batchingPolicy.maxDelay().toNanos(), NANOSECONDS);
-          logger.atDebug()
-                .addKeyValue("operation", "enqueue")
-                .addKeyValue("bufferSize", sizeNow)
-                .addKeyValue("maxDelayNanos", batchingPolicy.maxDelay().toNanos())
-                .log("Timer armed for batch");
-        } else {
-          logger.atTrace()
-                .addKeyValue("operation", "enqueue")
-                .addKeyValue("bufferSize", sizeNow)
-                .log("Timer already armed or not needed");
         }
       }
       if (hitSizeTrigger) {
-        logger.atDebug()
-              .addKeyValue("operation", "enqueue")
-              .addKeyValue("bufferSize", "triggered")
-              .log("Batch size threshold reached; flushing now");
-
         flush();
       }
     }
@@ -196,12 +184,6 @@ final class BlobCompletionCoordinator {
    * or an already completed stage if no operations are in progress
    */
   public CompletionStage<Void> waitUntilIdle() {
-    logger.atDebug()
-          .addKeyValue("operation", "waitUntilIdle")
-          .addKeyValue("inFlight", inFlightStages.size())
-          .addKeyValue("buffer", buffer.size())
-          .log("Waiting until coordinator becomes idle");
-
     flush();
     synchronized (lock) {
       if (buffer.isEmpty() && inFlightStages.isEmpty()) {
@@ -216,54 +198,32 @@ final class BlobCompletionCoordinator {
   }
 
   private void onTimer() {
-    logger.atDebug()
-          .addKeyValue("operation", "onTimer")
-          .log("Batch timer fired");
-
     flush();
     maybeSignalIdle();
   }
 
   private void flush() {
-    logger.atTrace()
-          .addKeyValue("operation", "flush")
-          .log("Flushing buffer");
-
     var drained = drainBatchLocked();
     if (!drained.isEmpty()) {
-      logger.atDebug()
-            .addKeyValue("operation", "flush")
-            .addKeyValue("drained", drained.size())
-            .log("Drained items from buffer");
-
       var remaining = new ArrayList<List<BlobHandle>>();
       var batches = fixedSizeBatches(drained, batchingPolicy.capPerBatch());
 
       batches.forEach(batch -> {
           if (permits.tryAcquire()) {
-            logger.atDebug()
-                  .addKeyValue("operation", "dispatch")
-                  .addKeyValue("size", batch.size())
-                  .addKeyValue("permitsRemaining", permits.availablePermits() - 1)
-                  .log("Dispatching batch to watcher");
-
             startWatch(batch);
           } else {
-            logger.atTrace()
-                  .addKeyValue("operation", "flush")
-                  .addKeyValue("size", batch.size())
-                  .log("No permit available; re-buffering batch");
-
             remaining.add(batch);
           }
         }
       );
 
       if (!remaining.isEmpty()) {
-        logger.atDebug()
-              .addKeyValue("operation", "flush")
-              .addKeyValue("rebufferedBatches", remaining.size())
-              .log("Re-buffered due to saturation");
+        int totalBlobs = remaining.stream().mapToInt(List::size).sum();
+        logger.warn("Batch concurrency limit reached (maxConcurrent={}). Buffering {} batches ({} blobs). " +
+            "Consider increasing BatchingPolicy.maxConcurrentBatches if this happens frequently.",
+          batchingPolicy.maxConcurrentBatches(),
+          remaining.size(),
+          totalBlobs);
 
         pushBackFront(remaining);
       }
@@ -287,11 +247,6 @@ final class BlobCompletionCoordinator {
   }
 
   private void startWatch(List<BlobHandle> batch) {
-    logger.atTrace()
-          .addKeyValue("operation", "startWatch")
-          .addKeyValue("size", batch.size())
-          .log("Starting watch for batch");
-
     var ticket = watcher.watch(batch);
     var stage = ticket.completion();
     inFlightStages.add(stage);
@@ -299,13 +254,11 @@ final class BlobCompletionCoordinator {
     ticket.leftoversAfterCompletion()
           .exceptionally(ex -> List.of())
           .whenComplete((leftovers, ex) -> {
-            final boolean failed = (ex != null);
-            logger.atDebug()
-                  .addKeyValue("operation", "completion")
-                  .addKeyValue("size", batch.size())
-                  .addKeyValue("status", failed ? "failed" : "ok")
-                  .log("Watcher completion");
             if (leftovers != null && !leftovers.isEmpty()) {
+              logger.warn("Watch completed with {} leftover blobs (not observed). " +
+                  "Blobs will be re-queued for retry. SessionId: {}",
+                leftovers.size(),
+                sessionId.asString());
               pushBackFront(List.of(leftovers));
             }
             permits.release();
@@ -324,11 +277,6 @@ final class BlobCompletionCoordinator {
                            .collect(toCollection(ArrayList::new));
 
       if (!head.isEmpty()) {
-        logger.atTrace()
-              .addKeyValue("operation", "pushBackFront")
-              .addKeyValue("prepended", head.size())
-              .addKeyValue("prevBuffer", buffer.size())
-              .log("Prepending items to buffer");
         head.addAll(buffer);
         buffer.clear();
         buffer.addAll(head);
@@ -350,9 +298,7 @@ final class BlobCompletionCoordinator {
       }
     }
     if (toComplete != null) {
-      logger.atDebug()
-            .addKeyValue("operation", "idle")
-            .log("Coordinator is idle; signaling waiters");
+      logger.info("All blob completion operations finished. SessionId: {}", sessionId.asString());
       toComplete.complete(null);
     }
   }

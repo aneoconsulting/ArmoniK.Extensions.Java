@@ -110,11 +110,9 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   @Override
   public void onError(Throwable throwable) {
     final int pendingCount = pending.size();
+    log.error("Event stream error, publishing leftovers for retry. SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount, throwable);
+
     safePublishLeftovers(new ArrayList<>(pending.values()));
-    log.atError().addKeyValue("sessionId", sessionId.asString())
-       .addKeyValue("error", throwable.getClass().getSimpleName())
-       .setCause(throwable)
-       .log("Blob Event Stream failed");
 
     if (pendingCount > 0) {
       remaining.addAndGet(-pendingCount);
@@ -131,6 +129,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
     safePublishLeftovers(new ArrayList<>(pending.values()));
 
     if (pendingCount > 0) {
+      log.warn("Event stream closed by server with {} pending blobs. Blobs will be retried. SessionId: {}", pendingCount, sessionId.asString());
       remaining.addAndGet(-pendingCount);
     }
 
@@ -144,11 +143,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
       try {
         leftoverSink.accept(leftovers);
       } catch (Throwable throwable) {
-        log.atError()
-           .addKeyValue("sessionId", sessionId.asString())
-           .addKeyValue("error", throwable.getClass().getSimpleName())
-           .setCause(throwable)
-           .log("Failed to publish leftover blobs");
+        log.error("Failed to publish leftover blobs to coordinator. SessionId: {}, leftoverCount: {}", sessionId.asString(), leftovers.size(), throwable);
       }
     }
   }
@@ -177,13 +172,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
                 try {
                   listener.onError(new BlobError(blobInfo, null)); //TODO define exception
                 } catch (Throwable throwable) {
-                  log.atError().addKeyValue("sessionId", sessionId.asString())
-                     .addKeyValue("blobInfo", blobInfo)
-                     .addKeyValue("error", throwable.getClass().getSimpleName())
-                     .setCause(throwable)
-                     .log("BlobCompletionListener throws an Exception");
+                  log.error("Listener threw exception during blob completion callback. SessionId: {}, blobId: {}", sessionId.asString(), blobInfo.id().asString(), throwable);
                 } finally {
                   if (remaining.decrementAndGet() == 0 && !completion.isDone()) {
+                    safePublishLeftovers(new ArrayList<>(pending.values()));
                     completion.complete(null);
                   }
                 }
@@ -200,14 +192,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
             listener.onError(new BlobError(blobInfo, err));
           }
         } catch (Throwable throwable) {
-          log.atError()
-             .addKeyValue("sessionId", sessionId.asString())
-             .addKeyValue("blobInfo", blobInfo)
-             .addKeyValue("error", throwable.getClass().getSimpleName())
-             .setCause(throwable)
-             .log("BlobCompletionListener throws an Exception");
+          log.error("Listener threw exception during blob completion callback. SessionId: {}, blobId: {}", sessionId.asString(), blobInfo.id().asString(), throwable);
         } finally {
           if (remaining.decrementAndGet() == 0 && !completion.isDone()) {
+            safePublishLeftovers(new ArrayList<>(pending.values()));
             completion.complete(null);
           }
         }

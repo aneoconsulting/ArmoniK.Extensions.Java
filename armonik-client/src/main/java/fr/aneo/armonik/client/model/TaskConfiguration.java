@@ -92,6 +92,48 @@ public record TaskConfiguration(
     return !isNullOrEmpty(partitionId);
   }
 
+
+  /**
+   * Creates a new configuration with additional or overridden options merged into the existing options.
+   * <p>
+   * This method produces a new {@code TaskConfiguration} instance with all parameters unchanged
+   * except for {@code options}, which is the result of merging the current options with the
+   * provided options map. When keys conflict, values from the provided map take precedence.
+   * <p>
+   * <strong>Merge Behavior:</strong>
+   * <ul>
+   *   <li>Existing options are preserved unless overridden by the provided map</li>
+   *   <li>New options from the provided map are added to the result</li>
+   *   <li>When keys conflict, values from the provided map win</li>
+   *   <li>If the provided map is null, it is treated as an empty map (no changes)</li>
+   * </ul>
+   * <p>
+   * <strong>Immutability:</strong> This method does not modify the current configuration.
+   * It creates and returns a new instance with the merged options.
+   * <p>
+   * <strong>Usage Example:</strong>
+   * <pre>{@code
+   * TaskConfiguration base = new TaskConfiguration(2, 1, null, null,
+   *     Map.of("app.mode", "fast"));
+   *
+   * // Add worker library options during submission
+   * TaskConfiguration enriched = base.withOptions(
+   *     Map.of("LibraryPath", "worker.dll", "Symbol", "Worker.Main")
+   * );
+   * // Result: {"app.mode": "fast", "LibraryPath": "worker.dll", "Symbol": "Worker.Main"}
+   * }</pre>
+   *
+   * @param options additional options to merge, or null for no changes
+   * @return a new configuration with merged options
+   * @see WorkerLibrary#asDeferredTaskOptions()
+   * @see TaskSubmitter
+   */
+  public TaskConfiguration withOptions(Map<String, String> options) {
+    var allOptions = new HashMap<>(this.options);
+    allOptions.putAll(options == null ? new HashMap<>() : options);
+    return new TaskConfiguration(maxRetries, priority, partitionId, maxDuration, allOptions);
+  }
+
   /**
    * Creates a default TaskConfiguration with:
    * <ul>

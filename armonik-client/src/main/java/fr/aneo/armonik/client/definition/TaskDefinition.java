@@ -15,44 +15,64 @@
  */
 package fr.aneo.armonik.client.definition;
 
-import fr.aneo.armonik.client.model.BlobHandle;
-import fr.aneo.armonik.client.model.SessionHandle;
-import fr.aneo.armonik.client.model.TaskConfiguration;
-import fr.aneo.armonik.client.model.TaskHandle;
+import fr.aneo.armonik.client.model.*;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+
 
 /**
  * Builder-style definition for describing a task to submit to the ArmoniK distributed computing platform.
  * <p>
- * A {@code TaskDefinition} allows you to specify task inputs, declare expected outputs, and configure
- * task-specific execution parameters. This definition is used by {@link SessionHandle#submitTask(TaskDefinition)}
- * to create and submit tasks for execution in the ArmoniK cluster.
+ * A {@code TaskDefinition} specifies the complete description of a computational task, including its inputs,
+ * expected outputs, execution configuration, and optionally a worker library for dynamic code loading.
+ * This definition is used by {@link SessionHandle#submitTask(TaskDefinition)} to create and submit tasks
+ * for execution in the ArmoniK cluster.
+ * <p>
+ * <strong>Core Concepts:</strong>
+ * <ul>
+ *   <li><strong>Inputs:</strong> Data consumed by the task during execution. Can be provided as inline data
+ *       ({@link BlobDefinition}) or references to existing blobs ({@link BlobHandle})</li>
+ *   <li><strong>Outputs:</strong> Expected results that the task will produce. Declared by name and available
+ *       as blob handles after submission</li>
+ *   <li><strong>Configuration:</strong> Task-specific execution parameters (priority, retries, partition, etc.)
+ *       that override session defaults</li>
+ *   <li><strong>Worker Library:</strong> Optional reference to dynamically loaded worker code for task execution</li>
+ * </ul>
+ * <p>
+ * <strong>Input Handling:</strong>
  * <p>
  * Inputs can be provided in two ways:
  * <ul>
- *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, BlobDefinition)}</li>
- *   <li><strong>Existing blobs:</strong> References to already-stored blobs via {@link #withInput(String, BlobHandle)}</li>
+ *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, BlobDefinition)}.
+ *       The data is uploaded to the cluster during task submission</li>
+ *   <li><strong>Existing blobs:</strong> References to already-stored blobs via {@link #withInput(String, BlobHandle)}.
+ *       Useful for sharing data across multiple tasks without re-uploading</li>
  * </ul>
- * If both an inline definition and a blob reference are added under the same name, the latest call takes precedence.
+ * If both an inline definition and a blob reference are added under the same input name, the latest call
+ * takes precedence, replacing the previous value.
+ *
  * <p>
  * This class follows the builder pattern and supports method chaining for fluent configuration.
+ * All builder methods return {@code this} to enable fluent API usage.
  *
  * @see SessionHandle#submitTask(TaskDefinition)
  * @see TaskHandle
  * @see BlobDefinition
  * @see BlobHandle
  * @see TaskConfiguration
+ * @see WorkerLibrary
  */
 public class TaskDefinition {
   private TaskConfiguration configuration;
   private final Map<String, BlobDefinition> inputDefinitions;
   private final Map<String, BlobHandle> inputHandles;
   private final List<String> outputs = new ArrayList<>();
+  private WorkerLibrary workerLibrary = NO_WORKER_LIBRARY;
 
 
   /**
@@ -127,6 +147,24 @@ public class TaskDefinition {
   }
 
   /**
+   * Returns the worker library configuration for dynamic code loading.
+   * <p>
+   * The worker library specifies a dynamically loaded implementation to execute this task,
+   * rather than using the default worker implementation built into the worker container.
+   * This enables flexible application deployment and cross-language task orchestration.
+   * <p>
+   * If no worker library is configured, returns {@link WorkerLibrary#NO_WORKER_LIBRARY},
+   * indicating that the task will be executed by the default worker implementation.
+   *
+   * @return the worker library configuration, or {@link WorkerLibrary#NO_WORKER_LIBRARY} if not configured
+   * @see WorkerLibrary
+   * @see #withWorkerLibrary(WorkerLibrary)
+   */
+  public WorkerLibrary workerLibrary() {
+    return workerLibrary;
+  }
+
+  /**
    * Sets the task configuration to be applied during task execution.
    * <p>
    * The task configuration overrides session-level defaults for execution parameters
@@ -149,10 +187,10 @@ public class TaskDefinition {
    * ArmoniK cluster as part of task submission. If an input with the same name already
    * exists (either from a previous definition or handle), it will be replaced.
    *
-   * @param name the logical input name, used to reference this input within the task
+   * @param name           the logical input name, used to reference this input within the task
    * @param blobDefinition the blob definition containing the input data
    * @return this definition for method chaining
-   * @throws NullPointerException if name or blobDefinition is null
+   * @throws NullPointerException     if name or blobDefinition is null
    * @throws IllegalArgumentException if name is blank
    * @see BlobDefinition
    * @see #withInput(String, BlobHandle)
@@ -171,10 +209,10 @@ public class TaskDefinition {
    * the need to upload the same data multiple times. If an input with the same name
    * already exists (either from a previous definition or handle), it will be replaced.
    *
-   * @param name the logical input name, used to reference this input within the task
+   * @param name       the logical input name, used to reference this input within the task
    * @param blobHandle the handle of an existing blob to use as input
    * @return this definition for method chaining
-   * @throws NullPointerException if name or blobHandle is null
+   * @throws NullPointerException     if name or blobHandle is null
    * @throws IllegalArgumentException if name is blank
    * @see BlobHandle
    * @see #withInput(String, BlobDefinition)
@@ -195,13 +233,33 @@ public class TaskDefinition {
    *
    * @param name the logical output name
    * @return this definition for method chaining
-   * @throws NullPointerException if name is null
+   * @throws NullPointerException     if name is null
    * @throws IllegalArgumentException if name is blank
    * @see TaskHandle#outputs()
    */
   public TaskDefinition withOutput(String name) {
     validateName(name);
     outputs.add(name);
+    return this;
+  }
+
+  /**
+   * Sets the worker library configuration for dynamic code loading.
+   * <p>
+   * When a worker library is specified, the task will be executed by dynamically loaded
+   * worker code rather than the default worker implementation built into the worker container.
+   * If {@code null} is provided, the configuration is not changed. To explicitly specify no
+   * worker library, use {@link WorkerLibrary#NO_WORKER_LIBRARY}.
+   *
+   * @param workerLibrary the worker library configuration, or null to leave unchanged
+   * @return this definition for method chaining
+   * @see WorkerLibrary
+   * @see TaskConfiguration#options()
+   */
+  public TaskDefinition withWorkerLibrary(WorkerLibrary workerLibrary) {
+    if (workerLibrary != null) {
+      this.workerLibrary = workerLibrary;
+    }
     return this;
   }
 

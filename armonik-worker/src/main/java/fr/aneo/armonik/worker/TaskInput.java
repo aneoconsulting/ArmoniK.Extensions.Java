@@ -61,25 +61,25 @@ import static java.nio.file.StandardOpenOption.READ;
  * <h2>Usage Examples</h2>
  * <pre>{@code
  * // Read small text input with UTF-8 encoding
- * TaskInput configInput = taskHandler.getInput("config");
+ * TaskInput configInput = taskContext.getInput("config");
  * String config = configInput.asString(StandardCharsets.UTF_8);
  *
  * // Read text input with specific encoding
- * TaskInput dataInput = taskHandler.getInput("legacy_data");
+ * TaskInput dataInput = taskContext.getInput("legacy_data");
  * String data = dataInput.asString(StandardCharsets.ISO_8859_1);
  *
  * // Read raw binary data
- * TaskInput binaryInput = taskHandler.getInput("image");
+ * TaskInput binaryInput = taskContext.getInput("image");
  * byte[] imageData = binaryInput.rawData();
  *
  * // Stream large binary input
- * TaskInput dataInput = taskHandler.getInput("largeDataset");
+ * TaskInput dataInput = taskContext.getInput("largeDataset");
  * try (InputStream in = dataInput.stream()) {
  *     processStreamingData(in);
  * }
  *
  * // Check size before reading
- * TaskInput input = taskHandler.getInput("data");
+ * TaskInput input = taskContext.getInput("data");
  * if (input.size() < 100_000_000) {
  *     byte[] data = input.rawData(); // Safe for files < 100 MB
  * } else {
@@ -116,7 +116,7 @@ import static java.nio.file.StandardOpenOption.READ;
  *   <li>Use {@link #size()} to check file size before deciding on read strategy</li>
  * </ul>
  *
- * @see TaskHandler
+ * @see TaskContext
  * @see TaskOutput
  * @see TaskProcessor
  */

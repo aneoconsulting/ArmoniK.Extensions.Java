@@ -72,7 +72,7 @@ import static java.util.Objects.requireNonNull;
  * {@link Gson} instance is also thread-safe.
  * </p>
  *
- * @see TaskHandler
+ * @see TaskContext
  * @see TaskInput
  * @see TaskOutput
  */

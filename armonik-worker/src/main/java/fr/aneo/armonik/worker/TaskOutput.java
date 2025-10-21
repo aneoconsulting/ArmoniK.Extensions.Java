@@ -76,27 +76,27 @@ import static java.nio.file.StandardOpenOption.*;
  * <h2>Usage Examples</h2>
  * <pre>{@code
  * // Write computed result as bytes
- * TaskOutput resultOutput = taskHandler.getOutput("result");
+ * TaskOutput resultOutput = taskContext.getOutput("result");
  * byte[] resultData = computeResult();
  * resultOutput.write(resultData);
  *
  * // Write text output with UTF-8 encoding
- * TaskOutput logOutput = taskHandler.getOutput("log");
+ * TaskOutput logOutput = taskContext.getOutput("log");
  * logOutput.write("Task completed successfully at " + Instant.now(), StandardCharsets.UTF_8);
  *
  * // Write text output with specific encoding
- * TaskOutput legacyOutput = taskHandler.getOutput("legacyReport");
+ * TaskOutput legacyOutput = taskContext.getOutput("legacyReport");
  * legacyOutput.write("Report content", StandardCharsets.ISO_8859_1);
  *
  * // Stream large output
- * TaskOutput dataOutput = taskHandler.getOutput("processedData");
+ * TaskOutput dataOutput = taskContext.getOutput("processedData");
  * try (InputStream in = generateLargeDataset()) {
  *     dataOutput.write(in);
  * }
  *
  * // Conditional output
- * if (taskHandler.hasOutput("errorReport")) {
- *     taskHandler.getOutput("errorReport")
+ * if (taskContext.hasOutput("errorReport")) {
+ *     taskContext.getOutput("errorReport")
  *         .write(generateErrorReport(), StandardCharsets.UTF_8);
  * }
  * }</pre>
@@ -129,7 +129,7 @@ import static java.nio.file.StandardOpenOption.*;
  * task graphs where the graph structure evolves during execution.
  * </p>
  *
- * @see TaskHandler
+ * @see TaskContext
  * @see TaskInput
  * @see TaskProcessor
  * @see BlobListener

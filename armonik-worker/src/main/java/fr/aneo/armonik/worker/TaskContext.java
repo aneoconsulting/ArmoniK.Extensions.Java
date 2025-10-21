@@ -36,7 +36,7 @@ import static java.util.stream.Collectors.toMap;
 /**
  * Provides access to task inputs, outputs, and processing context for ArmoniK tasks.
  * <p>
- * A {@code TaskHandler} is created for each task execution and serves as the primary interface
+ * A {@code TaskContext} is created for each task execution and serves as the primary interface
  * between the {@link TaskProcessor} and the ArmoniK infrastructure. It manages access to input
  * data (payload and data dependencies), output data (expected outputs), and provides methods
  * for interacting with the Agent.
@@ -44,7 +44,7 @@ import static java.util.stream.Collectors.toMap;
  *
  * <h2>Data Model</h2>
  * <p>
- * The task handler operates on a file-based data model where:
+ * The task context operates on a file-based data model where:
  * </p>
  * <ul>
  *   <li><strong>Payload</strong>: A JSON file mapping logical names to blob IDs for inputs and outputs</li>
@@ -59,34 +59,34 @@ import static java.util.stream.Collectors.toMap;
  * </p>
  * <pre>{@code
  * // Read input data
- * if (taskHandler.hasInput("trainingData")) {
- *     InputTask input = taskHandler.getInput("trainingData");
+ * if (taskContext.hasInput("trainingData")) {
+ *     InputTask input = taskContext.getInput("trainingData");
  *     byte[] data = input.rawData();
  * }
  *
  * // Write output data
- * OutputTask output = taskHandler.getOutput("model");
+ * OutputTask output = taskContext.getOutput("model");
  * output.write(modelBytes);
  * }</pre>
  *
  * <h2>File Management</h2>
  * <p>
- * The handler manages file I/O through {@link TaskInput} and {@link TaskOutput}:
+ * The context manages file I/O through {@link TaskInput} and {@link TaskOutput}:
  * </p>
  * <ul>
  *   <li>{@link TaskInput}: Provides read-only access to input files with various read methods</li>
  *   <li>{@link TaskOutput}: Provides write-only access to output files with notification to Agent</li>
  * </ul>
  * <p>
- * Files are located in the data folder specified in the {@link ProcessRequest}. The handler
+ * Files are located in the data folder specified in the {@link ProcessRequest}. The context
  * validates that all file paths are within this folder to prevent directory traversal attacks.
  * </p>
  *
  * <h2>Resource Management</h2>
  * <p>
- * The handler maintains references to the data folder and file paths but does not manage
+ * The context maintains references to the data folder and file paths but does not manage
  * file lifecycle. Files are created and cleaned up by the Agent infrastructure, not by
- * the handler.
+ * the context.
  * </p>
  *
  * <h2>Error Handling</h2>
@@ -101,13 +101,13 @@ import static java.util.stream.Collectors.toMap;
  * @see TaskOutput
  * @see BlobsMapping
  */
-public class TaskHandler {
-  private static final Logger logger = LoggerFactory.getLogger(TaskHandler.class);
+public class TaskContext {
+  private static final Logger logger = LoggerFactory.getLogger(TaskContext.class);
 
   private final Map<String, TaskInput> inputs;
   private final Map<String, TaskOutput> outputs;
 
-  private TaskHandler(Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
+  private TaskContext(Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
     this.inputs = inputs;
     this.outputs = outputs;
   }
@@ -116,7 +116,7 @@ public class TaskHandler {
    * Returns an immutable view of all input tasks indexed by their logical names.
    * <p>
    * The returned map contains all inputs defined in the task's payload. Changes to the
-   * returned map do not affect the handler's internal state.
+   * returned map do not affect the context's internal state.
    * </p>
    *
    * @return an immutable map of input names to {@link TaskInput} instances; never {@code null},
@@ -202,7 +202,7 @@ public class TaskHandler {
    * Returns an immutable view of all output tasks indexed by their logical names.
    * <p>
    * The returned map contains all outputs defined in the task's payload. Changes to the
-   * returned map do not affect the handler's internal state.
+   * returned map do not affect the context's internal state.
    * </p>
    *
    * @return an immutable map of output names to {@link TaskOutput} instances; never {@code null},
@@ -213,9 +213,9 @@ public class TaskHandler {
   }
 
   /**
-   * Creates a new task handler from an Agent request.
+   * Creates a new task context from an Agent request.
    * <p>
-   * This is the standard factory method used by {@link WorkerGrpc} to create task handlers
+   * This is the standard factory method used by {@link WorkerGrpc} to create task contexts
    * for each incoming task. The method:
    * </p>
    * <ol>
@@ -223,7 +223,7 @@ public class TaskHandler {
    *   <li>Reads and parses the payload file containing input/output mappings</li>
    *   <li>Creates {@link TaskInput} instances for all inputs, validating file existence</li>
    *   <li>Creates {@link TaskOutput} instances for all outputs with Agent notification</li>
-   *   <li>Returns a fully initialized task handler</li>
+   *   <li>Returns a fully initialized task context</li>
    * </ol>
    *
    * <h3>Validation</h3>
@@ -253,13 +253,13 @@ public class TaskHandler {
    *                  the Agent when outputs are ready; must not be {@code null}
    * @param request   the task processing request from the Agent containing the data folder path,
    *                  payload ID, session ID, and communication token; must not be {@code null}
-   * @return a fully initialized task handler with access to all inputs and outputs;
+   * @return a fully initialized task context with access to all inputs and outputs;
    * never {@code null}
    * @throws NullPointerException if any parameter is {@code null}
    * @throws ArmoniKException     if payload reading fails, JSON parsing fails, payload structure
    *                              is invalid, input files are missing, or path validation fails
    */
-  static TaskHandler from(AgentFutureStub agentStub, ProcessRequest request) {
+  static TaskContext from(AgentFutureStub agentStub, ProcessRequest request) {
     requireNonNull(agentStub, "agentStub");
     requireNonNull(request, "request");
 
@@ -267,7 +267,7 @@ public class TaskHandler {
     var blobsMapping = createBlobsMapping(dataFolderPath, request.getPayloadId());
     var inputs = createInputs(blobsMapping, dataFolderPath);
     var outputs = createOutputs(blobsMapping, dataFolderPath, new AgentNotifier(agentStub, request.getSessionId(), request.getCommunicationToken()));
-    return new TaskHandler(inputs, outputs);
+    return new TaskContext(inputs, outputs);
   }
 
 

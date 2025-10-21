@@ -43,7 +43,7 @@ class WorkerGrpcTest {
   void setUp() {
     var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
     taskProcessor = mock(TaskProcessor.class);
-    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> mock(TaskHandler.class));
+    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> mock(TaskContext.class));
   }
 
   @SuppressWarnings("unchecked")
@@ -126,7 +126,6 @@ class WorkerGrpcTest {
   @Test
   void should_report_serving_when_idle() {
     // given
-    TaskProcessor taskProcessor = handler -> new TaskOutcome.Success();
     var observer = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
 
     // when
@@ -193,8 +192,8 @@ class WorkerGrpcTest {
 
     SingleTaskProcessingScenario() {
       this.agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
-      TaskHandlerFactory taskHandlerFactory = (a, r) -> mock(TaskHandler.class);
-      TaskProcessor taskProcessor = handler -> {
+      TaskContextFactory taskContextFactory = (a, r) -> mock(TaskContext.class);
+      TaskProcessor taskProcessor = context -> {
         processingStarted.countDown();
         try {
           allowCompletion.await(2, SECONDS);
@@ -204,7 +203,7 @@ class WorkerGrpcTest {
         return new TaskOutcome.Success();
       };
 
-      this.workerUnderTest = new WorkerGrpc(agentStub, taskProcessor, taskHandlerFactory);
+      this.workerUnderTest = new WorkerGrpc(agentStub, taskProcessor, taskContextFactory);
     }
 
     void startProcessingAsync() {

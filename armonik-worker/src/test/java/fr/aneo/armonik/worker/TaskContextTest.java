@@ -40,7 +40,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class TaskHandlerTest {
+class TaskContextTest {
 
   @TempDir
   private Path tempDir;
@@ -67,8 +67,8 @@ class TaskHandlerTest {
   }
 
   @Test
-  @DisplayName("Should not create TaskHandler when payload does not exist")
-  void should_not_create_TaskHandler_when_Payload_does_not_exist() {
+  @DisplayName("Should not create task context when payload does not exist")
+  void should_not_create_task_context_when_Payload_does_not_exist() {
     // Given
     var request = ProcessRequest.newBuilder()
                                 .setDataFolder(tempDir.toString())
@@ -76,12 +76,12 @@ class TaskHandlerTest {
                                 .build();
 
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
-  @DisplayName("Should not create TaskHandler when payload does not follow the convention")
-  void should_not_create_TaskHandler_when_Payload_does_not_follow_convention() throws IOException {
+  @DisplayName("Should not create task context when payload does not follow the convention")
+  void should_not_create_task_context_when_Payload_does_not_follow_convention() throws IOException {
     // Given
     writeString("payload-id", "payload not following convention");
     var request = ProcessRequest.newBuilder()
@@ -90,12 +90,12 @@ class TaskHandlerTest {
                                 .build();
 
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
-  @DisplayName("Should not create TaskHandler when input file is missing")
-  void should_not_create_TaskHandler_when_input_file_is_missing() throws IOException {
+  @DisplayName("Should not create task context when input file is missing")
+  void should_not_create_task_context_when_input_file_is_missing() throws IOException {
     // Given
     writeString("payload-id", payloadContent);
     writeRandomBytes("name-id");
@@ -104,12 +104,12 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When - Then
-    assertThatThrownBy(() -> TaskHandler.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
-  @DisplayName("Should create TaskHandler when payload follows the convention")
-  void should_create_TaskHandler_when_payload_follows_convention() throws IOException {
+  @DisplayName("Should create task context when payload follows the convention")
+  void should_create_task_context_when_payload_follows_convention() throws IOException {
     // Given
     writeString("payload-id", payloadContent);
     writeRandomBytes("name-id");
@@ -119,10 +119,10 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
 
     // Then
-    assertThat(taskHandler).isNotNull();
+    assertThat(taskContext).isNotNull();
   }
 
   @Test
@@ -136,10 +136,10 @@ class TaskHandlerTest {
                                 .setDataFolder(tempDir.toString())
                                 .setPayloadId("payload-id")
                                 .build();
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
 
     // When - Then
-    assertThatThrownBy(() -> taskHandler.getInput("address")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> taskContext.getInput("address")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -154,14 +154,14 @@ class TaskHandlerTest {
                                 .setPayloadId("payload-id")
                                 .build();
     // When
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
 
     // Then
-    assertThat(taskHandler.inputs()).containsOnlyKeys("name", "age");
-    assertThat(taskHandler.hasInput("name")).isTrue();
-    assertThat(taskHandler.getInput("name").asString(UTF_8)).isEqualTo("John Doe");
-    assertThat(taskHandler.hasInput("age")).isTrue();
-    assertThat(taskHandler.getInput("age").asString(UTF_8)).isEqualTo("42");
+    assertThat(taskContext.inputs()).containsOnlyKeys("name", "age");
+    assertThat(taskContext.hasInput("name")).isTrue();
+    assertThat(taskContext.getInput("name").asString(UTF_8)).isEqualTo("John Doe");
+    assertThat(taskContext.hasInput("age")).isTrue();
+    assertThat(taskContext.getInput("age").asString(UTF_8)).isEqualTo("42");
   }
 
   @Test
@@ -177,14 +177,14 @@ class TaskHandlerTest {
                                 .build();
 
     // When
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
 
     // Then
-    assertThat(taskHandler.outputs()).containsOnlyKeys("result1", "result2");
-    assertThat(taskHandler.hasOutput("result1")).isTrue();
-    assertThat(taskHandler.getOutput("result1")).isNotNull();
-    assertThat(taskHandler.getOutput("result2")).isNotNull();
-    assertThat(taskHandler.hasOutput("result2")).isTrue();
+    assertThat(taskContext.outputs()).containsOnlyKeys("result1", "result2");
+    assertThat(taskContext.hasOutput("result1")).isTrue();
+    assertThat(taskContext.getOutput("result1")).isNotNull();
+    assertThat(taskContext.getOutput("result2")).isNotNull();
+    assertThat(taskContext.hasOutput("result2")).isTrue();
   }
 
   @Test
@@ -198,10 +198,10 @@ class TaskHandlerTest {
                                 .setDataFolder(tempDir.toString())
                                 .setPayloadId("payload-id")
                                 .build();
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
 
     // When - Then
-    assertThatThrownBy(() -> taskHandler.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> taskContext.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -217,11 +217,11 @@ class TaskHandlerTest {
                                 .setCommunicationToken("communication-token")
                                 .setSessionId("session-id")
                                 .build();
-    var taskHandler = TaskHandler.from(agentStub, request);
+    var taskContext = TaskContext.from(agentStub, request);
     when(agentStub.notifyResultData(any())).thenReturn(immediateFuture(NotifyResultDataResponse.newBuilder().build()));
 
     // When
-    taskHandler.getOutput("result1").write("Hello John", UTF_8);
+    taskContext.getOutput("result1").write("Hello John", UTF_8);
 
     // Then
     var notifyRequestCaptor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);

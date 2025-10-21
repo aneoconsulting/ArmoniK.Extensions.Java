@@ -61,8 +61,7 @@ class AgentNotifierTest {
     notifier.onBlobReady(testBlobId);
 
     // Then
-    ArgumentCaptor<NotifyResultDataRequest> captor =
-      ArgumentCaptor.forClass(NotifyResultDataRequest.class);
+    ArgumentCaptor<NotifyResultDataRequest> captor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);
     verify(agentStub).notifyResultData(captor.capture());
 
     NotifyResultDataRequest request = captor.getValue();

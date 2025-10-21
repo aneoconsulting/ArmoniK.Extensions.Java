@@ -15,23 +15,12 @@
  */
 package fr.aneo.armonik.worker;
 
-import com.google.gson.JsonParseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Map;
-import java.util.function.Function;
 
-import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
-
-import static fr.aneo.armonik.worker.internal.PathValidator.resolveWithin;
-import static fr.aneo.armonik.worker.internal.PathValidator.validateFile;
-import static java.util.Objects.requireNonNull;
-import static java.util.stream.Collectors.toMap;
 
 /**
  * Provides access to task inputs, outputs, and processing context for ArmoniK tasks.
@@ -107,7 +96,7 @@ public class TaskContext {
   private final Map<String, TaskInput> inputs;
   private final Map<String, TaskOutput> outputs;
 
-  private TaskContext(Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
+  TaskContext(Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
     this.inputs = inputs;
     this.outputs = outputs;
   }
@@ -210,128 +199,5 @@ public class TaskContext {
    */
   public Map<String, TaskOutput> outputs() {
     return Map.copyOf(outputs);
-  }
-
-  /**
-   * Creates a new task context from an Agent request.
-   * <p>
-   * This is the standard factory method used by {@link WorkerGrpc} to create task contexts
-   * for each incoming task. The method:
-   * </p>
-   * <ol>
-   *   <li>Resolves the data folder path from the request</li>
-   *   <li>Reads and parses the payload file containing input/output mappings</li>
-   *   <li>Creates {@link TaskInput} instances for all inputs, validating file existence</li>
-   *   <li>Creates {@link TaskOutput} instances for all outputs with Agent notification</li>
-   *   <li>Returns a fully initialized task context</li>
-   * </ol>
-   *
-   * <h3>Validation</h3>
-   * <p>
-   * The method performs several validation checks:
-   * </p>
-   * <ul>
-   *   <li>All file paths must be within the data folder (prevents directory traversal)</li>
-   *   <li>All input files must exist and be readable</li>
-   *   <li>The payload file must exist and contain valid JSON</li>
-   *   <li>The payload JSON must conform to the expected structure</li>
-   * </ul>
-   *
-   * <h3>Error Cases</h3>
-   * <p>
-   * This method throws {@link ArmoniKException} if:
-   * </p>
-   * <ul>
-   *   <li>The payload file cannot be read ({@link IOException})</li>
-   *   <li>The payload contains invalid JSON ({@link JsonParseException})</li>
-   *   <li>The payload JSON structure is incorrect ({@link IllegalArgumentException})</li>
-   *   <li>Any input file does not exist or is not readable</li>
-   *   <li>Any file path attempts directory traversal</li>
-   * </ul>
-   *
-   * @param agentStub the gRPC stub for communicating with the Agent; used to notify
-   *                  the Agent when outputs are ready; must not be {@code null}
-   * @param request   the task processing request from the Agent containing the data folder path,
-   *                  payload ID, session ID, and communication token; must not be {@code null}
-   * @return a fully initialized task context with access to all inputs and outputs;
-   * never {@code null}
-   * @throws NullPointerException if any parameter is {@code null}
-   * @throws ArmoniKException     if payload reading fails, JSON parsing fails, payload structure
-   *                              is invalid, input files are missing, or path validation fails
-   */
-  static TaskContext from(AgentFutureStub agentStub, ProcessRequest request) {
-    requireNonNull(agentStub, "agentStub");
-    requireNonNull(request, "request");
-
-    var dataFolderPath = Path.of(request.getDataFolder());
-    var blobsMapping = createBlobsMapping(dataFolderPath, request.getPayloadId());
-    var inputs = createInputs(blobsMapping, dataFolderPath);
-    var outputs = createOutputs(blobsMapping, dataFolderPath, new AgentNotifier(agentStub, request.getSessionId(), request.getCommunicationToken()));
-    return new TaskContext(inputs, outputs);
-  }
-
-
-  private static Map<String, TaskInput> createInputs(BlobsMapping blobsMapping, Path dataFolderPath) {
-    return blobsMapping.inputsMapping()
-                       .entrySet()
-                       .stream()
-                       .collect(toMap(Map.Entry::getKey, createInputTask(dataFolderPath)));
-  }
-
-  private static Function<Map.Entry<String, String>, TaskInput> createInputTask(Path dataFolderPath) {
-    return entry -> {
-      String logicalName = entry.getKey();
-      String blobId = entry.getValue();
-      try {
-        var inputFilePath = resolveWithin(dataFolderPath, blobId);
-        validateFile(inputFilePath);
-        long fileSize = Files.size(inputFilePath);
-        logger.info("Input task created: logicalName='{}', blobId={}, size={} bytes", logicalName, blobId, fileSize);
-        return new TaskInput(BlobId.from(entry.getValue()), logicalName, inputFilePath);
-
-      } catch (Exception e) {
-        logger.error("Failed to create input task: logicalName='{}', blobId={}", logicalName, blobId, e);
-        throw new ArmoniKException("Failed to create input task for: " + logicalName, e);
-      }
-    };
-  }
-
-  private static Map<String, TaskOutput> createOutputs(BlobsMapping blobsMapping, Path dataFolderPath, BlobListener listener) {
-    return blobsMapping.outputsMapping()
-                       .entrySet()
-                       .stream()
-                       .collect(toMap(Map.Entry::getKey, createOutputTask(dataFolderPath, listener)));
-  }
-
-  private static Function<Map.Entry<String, String>, TaskOutput> createOutputTask(Path dataFolderPath, BlobListener listener) {
-    return entry -> {
-      String logicalName = entry.getKey();
-      String blobId = entry.getValue();
-      try {
-        logger.info("Output task created: logicalName='{}', blobId={}", logicalName, blobId);
-        return new TaskOutput(BlobId.from(blobId), logicalName, resolveWithin(dataFolderPath, blobId), listener);
-      } catch (Exception e) {
-        logger.error("Failed to create output task: logicalName='{}', blobId={}", logicalName, blobId, e);
-        throw new ArmoniKException("Failed to create output task for: " + entry.getKey(), e);
-      }
-    };
-  }
-
-  private static BlobsMapping createBlobsMapping(Path dataFolderPath, String payloadId) {
-    var payload = resolveWithin(dataFolderPath, payloadId);
-    validateFile(payload);
-    try {
-      var payloadData = Files.readString(payload);
-      return BlobsMapping.fromJson(payloadData);
-    } catch (IOException exception) {
-      logger.error("Failed to read payload file: blobId={}, dataFolder={}", payloadId, dataFolderPath, exception);
-      throw new ArmoniKException("Failed to read payload file: " + payloadId, exception);
-    } catch (JsonParseException exception) {
-      logger.error("Payload contains invalid JSON: blobId={}", payloadId, exception);
-      throw new ArmoniKException("Payload contains invalid JSON: " + payloadId, exception);
-    } catch (IllegalArgumentException exception) {
-      logger.error("Payload JSON structure is incorrect: blobId={}, error={}", payloadId, exception.getMessage());
-      throw new ArmoniKException("Payload JSON structure is incorrect: " + payloadId, exception);
-    }
   }
 }

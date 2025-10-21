@@ -15,190 +15,46 @@
  */
 package fr.aneo.armonik.worker;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Random;
+import java.util.Map;
 
-import static com.google.common.util.concurrent.Futures.immediateFuture;
-import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
-import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataResponse;
-import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
-import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class TaskContextTest {
 
   @TempDir
   private Path tempDir;
-  private AgentFutureStub agentStub;
-  private String payloadContent;
-
-
-  @BeforeEach
-  void setUp() {
-    agentStub = Mockito.mock(AgentFutureStub.class);
-    when(agentStub.withDeadlineAfter(anyLong(), eq(MILLISECONDS))).thenReturn(agentStub);
-    payloadContent = """
-      {
-        "inputs": {
-          "name": "name-id",
-          "age": "age-id"
-        },
-        "outputs": {
-          "result1": "result1-id",
-          "result2": "result2-id"
-        }
-      }
-      """;
-  }
-
-  @Test
-  @DisplayName("Should not create task context when payload does not exist")
-  void should_not_create_task_context_when_Payload_does_not_exist() {
-    // Given
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-
-    // When - Then
-    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
-  }
-
-  @Test
-  @DisplayName("Should not create task context when payload does not follow the convention")
-  void should_not_create_task_context_when_Payload_does_not_follow_convention() throws IOException {
-    // Given
-    writeString("payload-id", "payload not following convention");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-
-    // When - Then
-    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
-  }
-
-  @Test
-  @DisplayName("Should not create task context when input file is missing")
-  void should_not_create_task_context_when_input_file_is_missing() throws IOException {
-    // Given
-    writeString("payload-id", payloadContent);
-    writeRandomBytes("name-id");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-    // When - Then
-    assertThatThrownBy(() -> TaskContext.from(agentStub, request)).isInstanceOf(ArmoniKException.class);
-  }
-
-  @Test
-  @DisplayName("Should create task context when payload follows the convention")
-  void should_create_task_context_when_payload_follows_convention() throws IOException {
-    // Given
-    writeString("payload-id", payloadContent);
-    writeRandomBytes("name-id");
-    writeRandomBytes("age-id");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-    // When
-    var taskContext = TaskContext.from(agentStub, request);
-
-    // Then
-    assertThat(taskContext).isNotNull();
-  }
 
   @Test
   @DisplayName("Should throw an exception when input name is missing")
-  void should_throw_exception_when_input_name_is_missing() throws IOException {
+  void should_throw_exception_when_input_name_is_missing() {
     // Given
-    writeString("payload-id", payloadContent);
-    writeString("name-id", "John Doe");
-    writeString("age-id", "42");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-    var taskContext = TaskContext.from(agentStub, request);
+    var taskContext = new TaskContext(
+      Map.of("name", new TaskInput(BlobId.from("name-id"), "name", tempDir.resolve("name-id"))),
+      Map.of("result", new TaskOutput(BlobId.from("result-id"), "age", tempDir.resolve("age-id"), mock(BlobListener.class)))
+    );
 
     // When - Then
     assertThatThrownBy(() -> taskContext.getInput("address")).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
-  @DisplayName("Should build inputs from payload association table")
-  void should_build_inputs_from_payload_association_table() throws IOException {
-    // Given
-    writeString("payload-id", payloadContent);
-    writeString("name-id", "John Doe");
-    writeString("age-id", "42");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-    // When
-    var taskContext = TaskContext.from(agentStub, request);
-
-    // Then
-    assertThat(taskContext.inputs()).containsOnlyKeys("name", "age");
-    assertThat(taskContext.hasInput("name")).isTrue();
-    assertThat(taskContext.getInput("name").asString(UTF_8)).isEqualTo("John Doe");
-    assertThat(taskContext.hasInput("age")).isTrue();
-    assertThat(taskContext.getInput("age").asString(UTF_8)).isEqualTo("42");
-  }
-
-  @Test
-  @DisplayName("Should build outputs from payload association table")
-  void should_build_outputs_from_payload_association_table() throws IOException {
-    // Given
-    writeString("payload-id", payloadContent);
-    writeString("name-id", "John Doe");
-    writeString("age-id", "42");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-
-    // When
-    var taskContext = TaskContext.from(agentStub, request);
-
-    // Then
-    assertThat(taskContext.outputs()).containsOnlyKeys("result1", "result2");
-    assertThat(taskContext.hasOutput("result1")).isTrue();
-    assertThat(taskContext.getOutput("result1")).isNotNull();
-    assertThat(taskContext.getOutput("result2")).isNotNull();
-    assertThat(taskContext.hasOutput("result2")).isTrue();
-  }
-
-  @Test
   @DisplayName("Should throw an exception when output name is missing")
-  void should_throw_exception_when_output_name_is_missing() throws IOException {
+  void should_throw_exception_when_output_name_is_missing() {
     // Given
-    writeString("payload-id", payloadContent);
-    writeString("name-id", "John Doe");
-    writeString("age-id", "42");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .build();
-    var taskContext = TaskContext.from(agentStub, request);
+    var taskContext = new TaskContext(
+      Map.of("name", new TaskInput(BlobId.from("name-id"), "name", tempDir.resolve("name-id"))),
+      Map.of("result", new TaskOutput(BlobId.from("result-id"), "result", tempDir.resolve("result-id"), mock(BlobListener.class)))
+    );
 
     // When - Then
     assertThatThrownBy(() -> taskContext.getOutput("address")).isInstanceOf(IllegalArgumentException.class);
@@ -206,42 +62,22 @@ class TaskContextTest {
 
   @Test
   @DisplayName("Should notify Agent when output is written")
-  void should_notify_agent_when_output_is_written() throws IOException {
+  void should_notify_when_output_is_written() {
     // Given
-    writeString("payload-id", payloadContent);
-    writeString("name-id", "John Doe");
-    writeString("age-id", "42");
-    var request = ProcessRequest.newBuilder()
-                                .setDataFolder(tempDir.toString())
-                                .setPayloadId("payload-id")
-                                .setCommunicationToken("communication-token")
-                                .setSessionId("session-id")
-                                .build();
-    var taskContext = TaskContext.from(agentStub, request);
-    when(agentStub.notifyResultData(any())).thenReturn(immediateFuture(NotifyResultDataResponse.newBuilder().build()));
+    var listener = mock(BlobListener.class);
+    var taskContext = new TaskContext(
+      Map.of("name", new TaskInput(BlobId.from("name-id"), "name", tempDir.resolve("name-id"))),
+      Map.of("result", new TaskOutput(BlobId.from("result-id"), "result", tempDir.resolve("result-id"), listener))
+    );
 
     // When
-    taskContext.getOutput("result1").write("Hello John", UTF_8);
+    taskContext.getOutput("result").write("Hello John", UTF_8);
 
     // Then
-    var notifyRequestCaptor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);
-    verify(agentStub).notifyResultData(notifyRequestCaptor.capture());
-    var notifyRequest = notifyRequestCaptor.getValue();
-    assertThat(notifyRequest.getCommunicationToken()).isEqualTo("communication-token");
-    assertThat(notifyRequest.getIdsCount()).isEqualTo(1);
-    assertThat(notifyRequest.getIds(0).getResultId()).isEqualTo("result1-id");
-    assertThat(notifyRequest.getIds(0).getSessionId()).isEqualTo("session-id");
-  }
+    var blobIdCaptor = ArgumentCaptor.forClass(BlobId.class);
+    verify(listener).onBlobReady(blobIdCaptor.capture());
 
-  private void writeString(String name, String content) throws IOException {
-    var path = tempDir.resolve(name);
-    Files.writeString(path, content, UTF_8);
-  }
-
-  private void writeRandomBytes(String name) throws IOException {
-    var path = tempDir.resolve(name);
-    byte[] data = new byte[10];
-    new Random(1234).nextBytes(data);
-    Files.write(path, data);
+    var blobId = blobIdCaptor.getValue();
+    assertThat(blobId).isEqualTo(BlobId.from("result-id"));
   }
 }

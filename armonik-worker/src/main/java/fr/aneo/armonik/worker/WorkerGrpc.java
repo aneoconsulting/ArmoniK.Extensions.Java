@@ -111,7 +111,7 @@ public class WorkerGrpc extends WorkerImplBase {
   }
 
   WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
-    this(agentStub, taskProcessor, TaskContext::from);
+    this(agentStub, taskProcessor, new DefaultTaskContextFactory());
   }
 
   /**

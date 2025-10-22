@@ -15,6 +15,9 @@
  */
 package fr.aneo.armonik.worker.definition.blob;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -24,12 +27,28 @@ import static java.util.Objects.requireNonNull;
  * when the blob is created.
  * </p>
  *
- * @param name the Result name in ArmoniK; may be {@code null}
- * @param data the blob data in memory; never {@code null}
  */
-record InMemoryBlob(String name, byte[] data) implements BlobDefinition {
+public final class InMemoryBlob implements BlobDefinition {
+  private final String name;
+  private final byte[] data;
 
-  InMemoryBlob {
-    requireNonNull(data, "data cannot be null");
+
+  InMemoryBlob(String name, byte[] data) {
+    this.data = requireNonNull(data, "data cannot be null");
+    this.name = requireNonNull(name, "name cannot be null");
+  }
+
+  @Override
+  public String name() {
+    return name;
+  }
+
+  public byte[] data() {
+    return data;
+  }
+
+  @Override
+  public InputStream asStream() {
+    return new ByteArrayInputStream(data);
   }
 }

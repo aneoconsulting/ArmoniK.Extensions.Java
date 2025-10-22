@@ -1,3 +1,18 @@
+/*
+ * Copyright © 2025 ANEO (armonik@aneo.fr)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package fr.aneo.armonik.worker;
 
 import com.google.gson.JsonParseException;
@@ -66,9 +81,11 @@ public class DefaultTaskContextFactory implements TaskContextFactory {
     requireNonNull(request, "request");
 
     var dataFolderPath = Path.of(request.getDataFolder());
+    var agentNotifier = new AgentNotifier(agentStub, SessionId.from(request.getSessionId()), request.getCommunicationToken());
+    var blobFileWriter = new BlobFileWriter(dataFolderPath, agentNotifier);
     var blobsMapping = createBlobsMapping(dataFolderPath, request.getPayloadId());
     var inputs = createInputs(blobsMapping, dataFolderPath);
-    var outputs = createOutputs(blobsMapping, dataFolderPath, new AgentNotifier(agentStub, request.getSessionId(), request.getCommunicationToken()));
+    var outputs = createOutputs(blobsMapping, blobFileWriter);
     return new TaskContext(inputs, outputs);
   }
 
@@ -98,20 +115,20 @@ public class DefaultTaskContextFactory implements TaskContextFactory {
     };
   }
 
-  private static Map<String, TaskOutput> createOutputs(BlobsMapping blobsMapping, Path dataFolderPath, BlobListener listener) {
+  private static Map<String, TaskOutput> createOutputs(BlobsMapping blobsMapping, BlobFileWriter writer) {
     return blobsMapping.outputsMapping()
                        .entrySet()
                        .stream()
-                       .collect(toMap(Map.Entry::getKey, createOutputTask(dataFolderPath, listener)));
+                       .collect(toMap(Map.Entry::getKey, createOutputTask(writer)));
   }
 
-  private static Function<Map.Entry<String, String>, TaskOutput> createOutputTask(Path dataFolderPath, BlobListener listener) {
+  private static Function<Map.Entry<String, String>, TaskOutput> createOutputTask(BlobFileWriter writer) {
     return entry -> {
       String logicalName = entry.getKey();
       String blobId = entry.getValue();
       try {
         logger.info("Output task created: logicalName='{}', blobId={}", logicalName, blobId);
-        return new TaskOutput(BlobId.from(blobId), logicalName, resolveWithin(dataFolderPath, blobId), listener);
+        return new TaskOutput(BlobId.from(blobId), logicalName, writer);
       } catch (Exception e) {
         logger.error("Failed to create output task: logicalName='{}', blobId={}", logicalName, blobId, e);
         throw new ArmoniKException("Failed to create output task for: " + entry.getKey(), e);

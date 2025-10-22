@@ -26,12 +26,24 @@ import static java.util.Objects.requireNonNull;
  * remains valid until creation.
  * </p>
  *
- * @param name   the Result name in ArmoniK; may be {@code null}
- * @param stream the input stream providing blob data; never {@code null}
  */
-record StreamBlob(String name, InputStream stream) implements BlobDefinition {
+public final class StreamBlob implements BlobDefinition {
+  private final String name;
+  private final InputStream stream;
 
-  StreamBlob {
-    requireNonNull(stream, "stream cannot be null");
+
+  StreamBlob(String name, InputStream stream) {
+    this.name = requireNonNull(name, "name cannot be null");
+    this.stream = requireNonNull(stream, "stream cannot be null");
+  }
+
+  @Override
+  public String name() {
+    return name;
+  }
+
+  @Override
+  public InputStream asStream() {
+    return stream;
   }
 }

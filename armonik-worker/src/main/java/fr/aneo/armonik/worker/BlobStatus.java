@@ -31,7 +31,7 @@ public enum BlobStatus {
     this.statusCode = statusCode;
   }
 
-  BlobStatus fromStatusCode(int statusCode) {
+  public static BlobStatus fromStatusCode(int statusCode) {
     return Arrays.stream(values())
                  .filter(value -> value.statusCode == statusCode)
                  .findFirst()

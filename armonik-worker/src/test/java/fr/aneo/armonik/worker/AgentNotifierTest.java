@@ -46,7 +46,7 @@ class AgentNotifierTest {
   void setUp() {
     agentStub = mock(AgentFutureStub.class);
     when(agentStub.withDeadlineAfter(anyLong(), eq(MILLISECONDS))).thenReturn(agentStub);
-    notifier = new AgentNotifier(agentStub, "test-session", "test-token");
+    notifier = new AgentNotifier(agentStub, SessionId.from("test-session"), "test-token");
     testBlobId = BlobId.from("test-blob-id");
   }
 

@@ -6,6 +6,7 @@ on:
     branches: [ main ]
     paths:
       - 'armonik-client/**'
+      - 'armonik-worker/**'
       - '.github/workflows/ci.yml'
 
 permissions:
@@ -16,8 +17,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
+  build-modules:
+    name: Build ${{ matrix.module }}
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        module: [armonik-client, armonik-worker]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,28 +37,27 @@ jobs:
           cache: maven
 
       - name: Show tool versions
-        working-directory: armonik-client
+        working-directory: ${{ matrix.module }}
         run: |
           java -version
           ./mvnw -v
 
-      - name: Verify armonik-client
-        working-directory: armonik-client
+      - name: Verify ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: ./mvnw -B -ntp verify
 
-      - name: Upload surefire reports on failure
+      - name: Upload ${{ matrix.module }} surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
-          path: |
-            armonik-client/target/surefire-reports/**
+          name: ${{ matrix.module }}-surefire-reports
+          path: ${{ matrix.module }}/target/surefire-reports/**
 
-      - name: Upload build artifacts (jars & poms)
+      - name: Upload ${{ matrix.module }} artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
+          name: ${{ matrix.module }}-artifacts
           path: |
-            armonik-client/target/*.jar
-            armonik-client/target/*.pom
+            ${{ matrix.module }}/target/*.jar
+            ${{ matrix.module }}/target/*.pom

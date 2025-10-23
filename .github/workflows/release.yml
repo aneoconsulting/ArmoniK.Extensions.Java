@@ -13,9 +13,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  publish-armonik-client:
-    name: Publish armonik-client
+  extract-version:
+    name: Extract version from tag
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get-version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+  validate-modules:
+    name: Validate ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    needs: extract-version
+
+    strategy:
+      matrix:
+        module: [armonik-client, armonik-worker]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Set project version
+        working-directory: ${{ matrix.module }}
+        run: ./mvnw -B -ntp versions:set -DnewVersion=${{ needs.extract-version.outputs.version }} -DgenerateBackupPoms=false
+
+      - name: Verify build
+        working-directory: ${{ matrix.module }}
+        run: ./mvnw -B -ntp verify
+
+  publish-modules:
+    name: Publish ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    needs: [extract-version, validate-modules]
+
+    strategy:
+      matrix:
+        module: [armonik-client, armonik-worker]
 
     steps:
       - name: Checkout
@@ -35,17 +78,13 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_SIGNING_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Extract version from tag
-        id: vers
-        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-
       - name: Set project version
-        working-directory: armonik-client
-        run: ./mvnw -B -ntp versions:set -DnewVersion=${{ steps.vers.outputs.version }} -DgenerateBackupPoms=false
+        working-directory: ${{ matrix.module }}
+        run: ./mvnw -B -ntp versions:set -DnewVersion=${{ needs.extract-version.outputs.version }} -DgenerateBackupPoms=false
 
       - name: Deploy to Sonatype Central
-        working-directory: armonik-client
-        run: ./mvnw -B -ntp -Pci-release deploy -DskipTests"
+        working-directory: ${{ matrix.module }}
+        run: ./mvnw -B -ntp -Pci-release deploy -DskipTests
         env:
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}

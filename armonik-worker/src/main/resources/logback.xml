@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <!-- Disable Logback's internal status messages -->
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+
+  <property name="LOG_LEVEL" value="${ARMONIK_WORKER_LOG_LEVEL:-INFO}"/>
+
+  <appender name="CLEF_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+      <providers>
+        <timestamp>
+          <fieldName>@t</fieldName>
+          <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
+          <timeZone>UTC</timeZone>
+        </timestamp>
+        <message>
+          <fieldName>@m</fieldName>
+        </message>
+        <logLevel>
+          <fieldName>@l</fieldName>
+        </logLevel>
+        <loggerName>
+          <fieldName>SourceContext</fieldName>
+        </loggerName>
+
+        <mdc>
+          <includeMdcKeyName>taskId</includeMdcKeyName>
+          <includeMdcKeyName>sessionId</includeMdcKeyName>
+        </mdc>
+
+        <stackTrace>
+          <fieldName>@x</fieldName>
+          <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+            <maxDepthPerThrowable>30</maxDepthPerThrowable>
+            <maxLength>3072</maxLength>
+            <rootCauseFirst>true</rootCauseFirst>
+          </throwableConverter>
+        </stackTrace>
+      </providers>
+    </encoder>
+  </appender>
+
+  <logger name="fr.aneo.armonik.worker" level="${LOG_LEVEL}" additivity="false">
+    <appender-ref ref="CLEF_STDOUT"/>
+  </logger>
+
+  <!-- Reduce framework noise -->
+  <logger name="io.grpc" level="WARN"/>
+  <logger name="io.grpc.netty" level="WARN"/>
+  <logger name="io.netty" level="WARN"/>
+
+  <!-- Root Logger - Configurable level -->
+  <root level="${LOG_LEVEL}">
+    <appender-ref ref="CLEF_STDOUT"/>
+  </root>
+
+</configuration>

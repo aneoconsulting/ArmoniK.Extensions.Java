@@ -16,20 +16,18 @@
 package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
-import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest.TaskCreation;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
+import fr.aneo.armonik.client.internal.concurrent.Futures;
+import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
 import fr.aneo.armonik.client.definition.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
-import fr.aneo.armonik.client.internal.concurrent.Futures;
-import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.CompletionStage;
-import java.util.function.BiFunction;
 import java.util.function.IntFunction;
 import java.util.stream.Collector;
 import java.util.stream.IntStream;
@@ -39,10 +37,10 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMet
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ResultRaw;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.ResultsFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.newFutureStub;
+import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc.TasksFutureStub;
 import static fr.aneo.armonik.client.internal.concurrent.Futures.toCompletionStage;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
-import static fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper.toSubmitTasksRequest;
 import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -142,56 +140,42 @@ final class TaskSubmitter {
    */
   TaskHandle submit(TaskDefinition taskDefinition) {
     requireNonNull(taskDefinition, "taskDefinition must not be null");
-    logger.atDebug()
-          .addKeyValue("operation", "submit")
-          .addKeyValue("sessionId", sessionId.asString())
-          .addKeyValue("inputs", taskDefinition.inputDefinitions().size() + taskDefinition.inputHandles().size())
-          .addKeyValue("outputs", taskDefinition.outputs().size())
-          .log("Submitting task");
 
     var allocation = allocateBlobHandles(taskDefinition);
     uploadInputs(allocation, taskDefinition.inputDefinitions());
-    var allInputHandles = Stream.concat(allocation.inputHandlesByName().entrySet().stream(), taskDefinition.inputHandles().entrySet().stream())
-                                .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
-    uploadPayload(allInputHandles, allocation);
+    var allInputHandlesByName = Stream.concat(
+                                        allocation.inputHandlesByName().entrySet().stream(),
+                                        taskDefinition.inputHandles().entrySet().stream())
+                                      .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
+    uploadPayload(allInputHandlesByName, allocation);
 
     if (blobCompletionCoordinator != null) {
       blobCompletionCoordinator.enqueue(allocation.outputHandlesByName().values().stream().toList());
     }
 
-    var inputIdStages = getIdsFrom(allInputHandles.values());
-    var outputIdStages = getIdsFrom(allocation.outputHandlesByName().values());
-    var deferredTaskInfo = allocation.payloadHandle()
-                                     .deferredBlobInfo()
-                                     .thenApply(BlobInfo::id)
-                                     .thenCombine(inputIdStages, AllInputs::new)
-                                     .thenCombine(outputIdStages, toTaskCreation(taskDefinition))
-                                     .thenApply(taskCreation -> toSubmitTasksRequest(sessionId, defaultTaskConfiguration, taskCreation))
-                                     .thenCompose(request -> toCompletionStage(tasksStub.submitTasks(request)))
-                                     .thenApply(response -> new TaskInfo(TaskId.from(response.getTaskInfos(0).getTaskId())));
+    var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
+    var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
+    var payloadIdStage = allocation.payloadHandle.deferredBlobInfo().thenApply(BlobInfo::id);
 
-    deferredTaskInfo.whenComplete((info, ex) -> {
-      if (ex == null) {
-        logger.atDebug()
-              .addKeyValue("operation", "submit")
-              .addKeyValue("sessionId", sessionId.asString())
-              .addKeyValue("taskId", info.id().asString())
-              .log("Task submitted");
-      } else {
-        logger.atError()
-              .addKeyValue("operation", "submit")
-              .addKeyValue("sessionId", sessionId.asString())
-              .addKeyValue("error", ex.getClass().getSimpleName())
-              .setCause(ex)
-              .log("Task submission failed");
-      }
-    });
+    var deferredTaskInfo = payloadIdStage.thenApply(id -> new TaskSubmissionData(sessionId, id))
+                                         .thenCombine(inputIdsStage, TaskSubmissionData::withInputIds)
+                                         .thenCombine(outputIdsStage, TaskSubmissionData::withOutputIds)
+                                         .thenCombine(taskDefinition.workerLibrary().asDeferredTaskOptions(), TaskSubmissionData::withWorkerLibraryOptions)
+                                         .thenApply(submission -> submission.withSessionTaskConfig(defaultTaskConfiguration))
+                                         .thenApply(submission -> submission.withTaskConfig(taskDefinition.configuration()))
+                                         .thenApply(TaskSubmissionData::toSubmitTasksRequest)
+                                         .thenCompose(request -> toCompletionStage(tasksStub.submitTasks(request)))
+                                         .thenApply(response -> new TaskInfo(TaskId.from(response.getTaskInfos(0).getTaskId())))
+                                         .whenComplete((info, ex) -> {
+                                           if (ex != null)
+                                             logger.error("Task submission failed. Session id:{}", sessionId.asString(), ex);
+                                         });
 
     return new TaskHandle(
       sessionId,
       taskDefinition.configuration() != null ? taskDefinition.configuration() : defaultTaskConfiguration,
       deferredTaskInfo,
-      allInputHandles,
+      allInputHandlesByName,
       allocation.outputHandlesByName()
     );
   }
@@ -216,25 +200,11 @@ final class TaskSubmitter {
     return blobCompletionCoordinator.waitUntilIdle();
   }
 
-  private static BiFunction<AllInputs, List<BlobId>, TaskCreation> toTaskCreation(TaskDefinition taskDefinition) {
-    return (allInputs, outputIds) -> TaskMapper.toTaskCreation(allInputs.inputIds, outputIds, allInputs.payloadId, taskDefinition.configuration());
-  }
 
   private BlobHandlesAllocation allocateBlobHandles(TaskDefinition taskDefinition) {
-    logger.atDebug()
-          .addKeyValue("operation", "allocateBlobHandles")
-          .addKeyValue("sessionId", sessionId.asString())
-          .log("Allocating Blob Handles");
-
     int inputDefinitionCount = taskDefinition.inputDefinitions().size();
     int outputCount = taskDefinition.outputs().size();
     int totalHandleCount = inputDefinitionCount + outputCount + 1;
-    logger.atTrace()
-          .addKeyValue("operation", "allocateBlobHandles")
-          .addKeyValue("inputs", inputDefinitionCount)
-          .addKeyValue("outputs", outputCount)
-          .addKeyValue("total", totalHandleCount)
-          .log("Requesting blob handles");
 
     var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionId, totalHandleCount)))
                             .thenApply(CreateResultsMetaDataResponse::getResultsList);
@@ -251,10 +221,6 @@ final class TaskSubmitter {
   }
 
   private void uploadPayload(Map<String, BlobHandle> allInputHandlesByName, BlobHandlesAllocation allocation) {
-    logger.atTrace()
-          .addKeyValue("operation", "uploadPayload")
-          .log("Payload upload initiated");
-
     var inputIdByName = allInputHandlesByName.entrySet().stream().collect(ids());
     var outputIdByName = allocation.outputHandlesByName().entrySet().stream().collect(ids());
 
@@ -264,11 +230,6 @@ final class TaskSubmitter {
   }
 
   private void uploadInputs(BlobHandlesAllocation allocation, Map<String, BlobDefinition> inputDefinitions) {
-    logger.atTrace()
-          .addKeyValue("operation", "uploadInputs")
-          .addKeyValue("count", allocation.inputHandlesByName().size())
-          .log("Input uploads initiated");
-
     allocation.inputHandlesByName()
               .entrySet()
               .stream()
@@ -276,34 +237,6 @@ final class TaskSubmitter {
                 Map.Entry::getValue,
                 entry -> inputDefinitions.get(entry.getKey())))
               .forEach(BlobHandle::uploadData);
-  }
-
-  /**
-   * Internal record representing task inputs after blob ID resolution.
-   * <p>
-   * This record contains the resolved blob identifiers needed for task creation,
-   * combining the payload ID with all input dependencies.
-   *
-   * @param payloadId the blob ID of the task's JSON payload
-   * @param inputIds  the list of blob IDs for all task input dependencies
-   */
-  private record AllInputs(BlobId payloadId, List<BlobId> inputIds) {
-  }
-
-  /**
-   * Internal record representing the allocated blob handles for a task submission.
-   * <p>
-   * This record groups all blob handles allocated during task submission, providing
-   * organized access to payload, input, and output blob handles by their logical names.
-   *
-   * @param payloadHandle       the blob handle for the task's JSON payload containing input/output mappings
-   * @param inputHandlesByName  map of input blob handles keyed by their logical input names
-   * @param outputHandlesByName map of output blob handles keyed by their logical output names
-   * @see #allocateBlobHandles(TaskDefinition)
-   */
-  private record BlobHandlesAllocation(BlobHandle payloadHandle,
-                                       Map<String, BlobHandle> inputHandlesByName,
-                                       Map<String, BlobHandle> outputHandlesByName) {
   }
 
   private BlobDefinition serializeToJson(Map<String, BlobId> inputIds, Map<String, BlobId> outputIds) {
@@ -352,5 +285,96 @@ final class TaskSubmitter {
       map.put(keyIt.next(), valIt.next());
     }
     return map;
+  }
+
+  /**
+   * Internal record representing the allocated blob handles for a task submission.
+   * <p>
+   * This record groups all blob handles allocated during task submission, providing
+   * organized access to payload, input, and output blob handles by their logical names.
+   *
+   * @param payloadHandle       the blob handle for the task's JSON payload containing input/output mappings
+   * @param inputHandlesByName  map of input blob handles keyed by their logical input names
+   * @param outputHandlesByName map of output blob handles keyed by their logical output names
+   * @see #allocateBlobHandles(TaskDefinition)
+   */
+  private record BlobHandlesAllocation(BlobHandle payloadHandle,
+                                       Map<String, BlobHandle> inputHandlesByName,
+                                       Map<String, BlobHandle> outputHandlesByName) {
+  }
+
+  /**
+   * Internal record representing the staged assembly of task submission data.
+   * <p>
+   * This record models the progressive accumulation of data required for task submission,
+   * supporting a functional, immutable assembly pipeline. Each stage of the submission
+   * process adds data to the record through immutable transformations, eventually producing
+   * a complete {@link SubmitTasksRequest} for the Tasks service.
+   * <p>
+   * <strong>Assembly Pipeline Stages:</strong>
+   * <ol>
+   *   <li><strong>Initial:</strong> Session ID and payload ID</li>
+   *   <li><strong>+ Input IDs:</strong> Add resolved input blob IDs</li>
+   *   <li><strong>+ Output IDs:</strong> Add resolved output blob IDs</li>
+   *   <li><strong>+ Worker Library Options:</strong> Add SDK convention options from {@link WorkerLibrary}</li>
+   *   <li><strong>+ Session Config:</strong> Add default task configuration from session</li>
+   *   <li><strong>+ Task Config:</strong> Add task-specific configuration (if present)</li>
+   *   <li><strong>Final:</strong> Convert to gRPC {@link SubmitTasksRequest}</li>
+   * </ol>
+   * <p>
+   * <strong>Immutability Pattern:</strong>
+   * <p>
+   * Each {@code with*()} method creates a new record instance with the additional data,
+   * preserving the original record. This functional approach ensures thread safety and
+   * enables clean composition in the asynchronous submission pipeline.
+   * <p>
+   *
+   * @param sessionId                 the session ID for task ownership
+   * @param payloadId                 the blob ID of the JSON name-to-ID mapping payload
+   * @param inputBlobIds              list of input blob IDs (data dependencies)
+   * @param outputBlobIds             list of output blob IDs (expected results)
+   * @param sessionTaskConfig         default task configuration from session definition
+   * @param taskConfig                task-specific configuration (may be null if using session defaults)
+   * @param taskWorkerLibraryOptions  worker library options to merge into configuration
+   * @see #submit(TaskDefinition)
+   */
+  private record TaskSubmissionData(
+    SessionId sessionId,
+    BlobId payloadId,
+    List<BlobId> inputBlobIds,
+    List<BlobId> outputBlobIds,
+    TaskConfiguration sessionTaskConfig,
+    TaskConfiguration taskConfig,
+    Map<String, String> taskWorkerLibraryOptions
+  ) {
+
+    TaskSubmissionData(SessionId sessionId, BlobId payloadId) {
+      this(sessionId, payloadId, List.of(), List.of(), null, null, Map.of());
+    }
+
+    TaskSubmissionData withInputIds(List<BlobId> inputBlobIds) {
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+    }
+
+    TaskSubmissionData withOutputIds(List<BlobId> outputBlobIds) {
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+    }
+
+    TaskSubmissionData withSessionTaskConfig(TaskConfiguration sessionTaskConfig) {
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+    }
+
+    TaskSubmissionData withTaskConfig(TaskConfiguration taskConfig) {
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+    }
+
+    TaskSubmissionData withWorkerLibraryOptions(Map<String, String> workerLibraryOptions) {
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
+    }
+
+    SubmitTasksRequest toSubmitTasksRequest() {
+      var taskCreation = TaskMapper.toTaskCreation(inputBlobIds, outputBlobIds, payloadId, taskConfig.withOptions(taskWorkerLibraryOptions));
+      return TaskMapper.toSubmitTasksRequest(sessionId, sessionTaskConfig, taskCreation);
+    }
   }
 }

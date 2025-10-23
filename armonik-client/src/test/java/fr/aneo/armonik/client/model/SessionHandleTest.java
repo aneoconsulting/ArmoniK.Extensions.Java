@@ -36,7 +36,9 @@ import java.util.concurrent.CountDownLatch;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
+import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.model.TestDataFactory.sessionInfo;
+import static fr.aneo.armonik.client.model.WorkerLibrary.*;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -75,6 +77,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var taskConfiguration = new TaskConfiguration(10, 4, "partition_1", Duration.ofMinutes(30), Map.of("option2", "value2"));
     var taskDefinition = new TaskDefinition().withInput("name", BlobDefinition.from("John".getBytes()))
                                              .withOutput("result")
+                                             .withWorkerLibrary(new WorkerLibrary("my_library.jar", "fr.aneo.MyClass", blobHandle("sessionId", "libraryBlobId")))
                                              .withConfiguration(taskConfiguration);
 
     // When
@@ -237,7 +240,14 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getTaskOptions().getMaxDuration().getSeconds()).isEqualTo(1_800);
     assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getTaskOptions().getMaxDuration().getNanos()).isEqualTo(0);
     assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getTaskOptions().getPriority()).isEqualTo(4);
-    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getTaskOptions().getOptionsMap()).isEqualTo(Map.of("option2", "value2"));
+    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getTaskOptions().getOptionsMap()).containsExactlyInAnyOrderEntriesOf(
+      Map.of(
+        "option2", "value2",
+        CONVENTION_VERSION, "v1",
+        LIBRARY_PATH, "my_library.jar",
+        SYMBOL, "fr.aneo.MyClass",
+        LIBRARY_BLOB_ID, "libraryBlobId"
+      ));
   }
 
   private void validateSubmittedTask(TaskHandle taskHandle) {

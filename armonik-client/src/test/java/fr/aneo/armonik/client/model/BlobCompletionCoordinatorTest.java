@@ -28,6 +28,7 @@ import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.client.model.BlobCompletionEventWatcher.WatchTicket;
 import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
+import static fr.aneo.armonik.client.model.TestDataFactory.sessionId;
 import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.DAYS;
@@ -62,7 +63,7 @@ class BlobCompletionCoordinatorTest {
   void should_flush_immediately_when_batch_size_threshold_is_reached() {
     // Given
     var policy = new BatchingPolicy(3, ofSeconds(10), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(3));
@@ -78,7 +79,7 @@ class BlobCompletionCoordinatorTest {
   void should_flush_when_timer_expires_and_batch_size_not_reached() {
     // Given
     var policy = new BatchingPolicy(10, ofSeconds(1), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(2));
@@ -99,7 +100,7 @@ class BlobCompletionCoordinatorTest {
   void should_aggregate_multiple_enqueues_into_single_batch_when_timer_fires() {
     // Given
     var policy = new BatchingPolicy(10, ofSeconds(1), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(1));
@@ -121,7 +122,7 @@ class BlobCompletionCoordinatorTest {
   void should_cancel_timer_after_size_triggered_flush_and_not_fire_later() {
     // Given
     var policy = new BatchingPolicy(3, ofSeconds(1), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(3));
@@ -141,7 +142,7 @@ class BlobCompletionCoordinatorTest {
   void should_rearm_timer_for_new_epoch_after_flush() {
     // Given
     var policy = new BatchingPolicy(10, ofSeconds(1), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(2));
@@ -166,7 +167,7 @@ class BlobCompletionCoordinatorTest {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 2, 3);
     when(watcher.watch(anyList())).thenReturn(new WatchTicket(completedFuture(null), List.of()));
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(7));
@@ -187,7 +188,7 @@ class BlobCompletionCoordinatorTest {
     // Given
     var policy = new BatchingPolicy(1000, ofSeconds(1), 2, 3);
     when(watcher.watch(anyList())).thenReturn(new WatchTicket(completedFuture(null), List.of()));
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(7));
@@ -210,7 +211,7 @@ class BlobCompletionCoordinatorTest {
   void should_not_exceed_max_concurrent_batches() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 2, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     coordinator.enqueue(blobHandles(1));
@@ -234,7 +235,7 @@ class BlobCompletionCoordinatorTest {
   void should_accumulate_while_saturated_and_flush_on_completion_respecting_cap() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 2, 3);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     coordinator.enqueue(blobHandles(1));
     coordinator.enqueue(blobHandles(1));
@@ -268,7 +269,7 @@ class BlobCompletionCoordinatorTest {
   void should_not_dispatch_on_timer_while_saturated() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(1), 2, 3);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     coordinator.enqueue(blobHandles(1));
     coordinator.enqueue(blobHandles(1));
@@ -301,7 +302,7 @@ class BlobCompletionCoordinatorTest {
   void should_resend_leftover_handles_on_success_completion() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
     when(watcher.watch(anyList()))
       .thenReturn(successWatchTicket(blobHandles(1), 1), successWatchTicket(2));
 
@@ -322,7 +323,7 @@ class BlobCompletionCoordinatorTest {
   void should_resend_leftover_handles_on_failure_completion() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 100);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
     when(watcher.watch(anyList()))
       .thenReturn(errorWatchTicket(blobHandles(1), 1), successWatchTicket(2));
 
@@ -343,7 +344,7 @@ class BlobCompletionCoordinatorTest {
   void should_prepend_leftovers_before_existing_buffer() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 10);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
     var A = blobHandle("sessionId", "A");
     var B1 = blobHandle("sessionId", "B1");
     var B2 = blobHandle("sessionId", "B2");
@@ -373,7 +374,7 @@ class BlobCompletionCoordinatorTest {
   void waitUntilIdle_should_drain_buffer_and_inflight() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 3);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
     coordinator.enqueue(blobHandles(7));
 
     // When
@@ -389,7 +390,7 @@ class BlobCompletionCoordinatorTest {
   void waitUntilIdle_should_complete_successfully_even_if_some_batches_fail() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 3);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
     when(watcher.watch(anyList())).thenReturn(
       errorWatchTicket(1),
       successWatchTicket(2),
@@ -411,7 +412,7 @@ class BlobCompletionCoordinatorTest {
   void waitUntilIdle_should_return_immediately_when_no_work() {
     // Given
     var policy = new BatchingPolicy(1, ofSeconds(10), 1, 3);
-    var coordinator = new BlobCompletionCoordinator(watcher, policy, scheduler);
+    var coordinator = new BlobCompletionCoordinator(sessionId(), watcher, policy, scheduler);
 
     // When
     var idle = coordinator.waitUntilIdle();

@@ -104,43 +104,16 @@ final class BlobCompletionEventWatcher {
    */
   public WatchTicket watch(List<BlobHandle> blobHandles) {
     requireNonNull(blobHandles, "blobHandles must not be null");
-    logger.atDebug()
-          .addKeyValue("operation", "watch")
-          .addKeyValue("sessionId", sessionId.asString())
-          .addKeyValue("count", blobHandles.size())
-          .log("Starting watch for blob handles");
 
     var ticket = new WatchTicket();
-    handlesById(blobHandles).thenAccept(handlesById -> {
-      logger.atTrace()
-            .addKeyValue("operation", "subscribe")
-            .addKeyValue("sessionId", sessionId.asString())
-            .addKeyValue("ids", handlesById.size())
-            .log("Subscribing to event stream");
-
-      eventsStub.getEvents(
-        createEventSubscriptionRequest(sessionId, handlesById.keySet()),
-        new BlobCompletionEventObserver(sessionId, handlesById, ticket.completion, listener, ticket::setLeftoverHandles)
-      );
-    }).exceptionally(ex -> {
-      logger.atError()
-            .addKeyValue("operation", "watchError")
-            .addKeyValue("sessionId", sessionId.asString())
-            .addKeyValue("error", ex.getClass().getSimpleName())
-            .setCause(ex)
-            .log("Failed to set up event subscription");
+    handlesById(blobHandles).thenAccept(handlesById -> eventsStub.getEvents(
+      createEventSubscriptionRequest(sessionId, handlesById.keySet()),
+      new BlobCompletionEventObserver(sessionId, handlesById, ticket.completion, listener, ticket::setLeftoverHandles)
+    )).exceptionally(ex -> {
+      logger.error("Failed to set up event subscription. SessionId: {}", sessionId, ex);
 
       ticket.completion.completeExceptionally(ex);
       return null;
-    });
-
-    ticket.completion.whenComplete((ok, ex) -> {
-      boolean failed = (ex != null);
-      logger.atDebug()
-            .addKeyValue("operation", "watchComplete")
-            .addKeyValue("sessionId", sessionId.asString())
-            .addKeyValue("status", failed ? "failed" : "ok")
-            .log("Watch completed");
     });
 
     return ticket;

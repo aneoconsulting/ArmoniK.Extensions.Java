@@ -16,7 +16,8 @@
 package fr.aneo.armonik.worker;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
-import fr.aneo.armonik.worker.definition.blob.BlobDefinition;
+import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.worker.testutils.AgentGrpcMock;
 import fr.aneo.armonik.worker.testutils.InProcessGrpcTestBase;
 import io.grpc.BindableService;
@@ -63,7 +64,7 @@ class BlobServiceTest extends InProcessGrpcTestBase {
     byte[] data1 = new byte[MAX_UPLOAD_SIZE];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
-    var inputs = Map.of("input1", BlobDefinition.from("blobName1", data1));
+    var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
 
     // When
     blobService.createBlobs(inputs);
@@ -81,7 +82,7 @@ class BlobServiceTest extends InProcessGrpcTestBase {
     byte[] data1 = new byte[MAX_UPLOAD_SIZE + 1];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
-    var inputs = Map.of("input1", BlobDefinition.from("blobName1", data1));
+    var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
 
     // When
     var inputHandles = blobService.createBlobs(inputs);
@@ -113,7 +114,7 @@ class BlobServiceTest extends InProcessGrpcTestBase {
   @DisplayName("should write blob data in a file for StreamBlob")
   void should_write_blob_data_in_a_file_for_StreamBlob() {
     // Given
-    var inputs = Map.of("input1", BlobDefinition.from("blobName1", new ByteArrayInputStream("Hello John !".getBytes())));
+    var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", new ByteArrayInputStream("Hello John !".getBytes())));
 
     // When
     var inputHandles = blobService.createBlobs(inputs);
@@ -139,5 +140,87 @@ class BlobServiceTest extends InProcessGrpcTestBase {
     assertThat(agentGrpcMock.notifyBlobs.ids()).containsExactly(Map.entry(blobHandle.sessionId().asString(), blobInfo.id().asString()));
 
     assertThat(tempDir.resolve(blobInfo.id().asString())).exists().isRegularFile();
+  }
+
+  @Test
+  @DisplayName("should prepare output blob metadata without data")
+  void should_prepare_output_blob_metadata_without_data() {
+    // Given
+    var outputs = Map.of(
+      "output1", OutputBlobDefinition.from("resultName1"),
+      "output2", OutputBlobDefinition.create()
+    );
+
+    // When
+    var outputHandles = blobService.prepareBlobs(outputs);
+
+    // Then
+    assertThat(outputHandles).hasSize(2);
+    assertThat(outputHandles).containsOnlyKeys("output1", "output2");
+
+    var output1Handle = outputHandles.get("output1");
+    assertThat(output1Handle.name()).isEqualTo("resultName1");
+    assertThat(output1Handle.sessionId().asString()).isEqualTo("sessionId");
+
+    var output2Handle = outputHandles.get("output2");
+    assertThat(output2Handle.name()).isEmpty();
+    assertThat(output2Handle.sessionId().asString()).isEqualTo("sessionId");
+
+    var blobInfo1 = output1Handle.deferredBlobInfo().toCompletableFuture().join();
+    assertThat(blobInfo1.id()).isNotNull();
+    assertThat(blobInfo1.status()).isNotNull();
+    assertThat(blobInfo1.creationDate()).isNotNull();
+
+    var blobInfo2 = output2Handle.deferredBlobInfo().toCompletableFuture().join();
+    assertThat(blobInfo2.id()).isNotNull();
+    assertThat(blobInfo2.status()).isNotNull();
+    assertThat(blobInfo2.creationDate()).isNotNull();
+
+    assertThat(agentGrpcMock.uploadedBlobs).isNull();
+    assertThat(agentGrpcMock.notifyBlobs).isNull();
+    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo("sessionId");
+    assertThat(agentGrpcMock.blobMetadata.communicationToken()).isEqualTo("communicationToken");
+    assertThat(agentGrpcMock.blobMetadata.names()).containsExactlyInAnyOrder("resultName1", "");
+
+    assertThat(tempDir.resolve(blobInfo1.id().asString())).doesNotExist();
+    assertThat(tempDir.resolve(blobInfo2.id().asString())).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("should prepare mixed blob metadata for both inputs and outputs")
+  void should_prepare_mixed_blob_metadata_for_both_inputs_and_outputs() {
+    // Given
+    var mixed = Map.of(
+      "input1", InputBlobDefinition.from("inputName1", new byte[100]),
+      "output1", OutputBlobDefinition.from("outputName1")
+    );
+
+    // When
+    var handles = blobService.prepareBlobs(mixed);
+
+    // Then
+    assertThat(handles).hasSize(2);
+    assertThat(handles).containsOnlyKeys("input1", "output1");
+
+    var inputHandle = handles.get("input1");
+    assertThat(inputHandle.name()).isEqualTo("inputName1");
+
+    var outputHandle = handles.get("output1");
+    assertThat(outputHandle.name()).isEqualTo("outputName1");
+
+    var inputBlobInfo = inputHandle.deferredBlobInfo().toCompletableFuture().join();
+    assertThat(inputBlobInfo.id()).isNotNull();
+
+    var outputBlobInfo = outputHandle.deferredBlobInfo().toCompletableFuture().join();
+    assertThat(outputBlobInfo.id()).isNotNull();
+
+    assertThat(agentGrpcMock.uploadedBlobs).isNull();
+    assertThat(agentGrpcMock.notifyBlobs).isNull();
+    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo("sessionId");
+    assertThat(agentGrpcMock.blobMetadata.communicationToken()).isEqualTo("communicationToken");
+    assertThat(agentGrpcMock.blobMetadata.names()).containsExactlyInAnyOrder("inputName1", "outputName1");
+
+    assertThat(tempDir.resolve(inputBlobInfo.id().asString())).doesNotExist();
+    assertThat(tempDir.resolve(outputBlobInfo.id().asString())).doesNotExist();
   }
 }

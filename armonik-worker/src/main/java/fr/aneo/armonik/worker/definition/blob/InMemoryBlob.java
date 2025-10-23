@@ -21,18 +21,29 @@ import java.io.InputStream;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Blob definition backed by an in-memory byte array.
+ * Input blob definition backed by an in-memory byte array.
  * <p>
  * The data is already loaded in memory and will be written directly to the shared folder
  * when the blob is created.
  * </p>
+ * <p>
+ * This implementation is suitable for small to medium-sized data (typically &lt; 10 MB).
+ * For larger datasets, consider using {@link StreamBlob} instead.
+ * </p>
  *
+ * @see InputBlobDefinition
+ * @see StreamBlob
  */
-public final class InMemoryBlob implements BlobDefinition {
+public final class InMemoryBlob implements InputBlobDefinition {
   private final String name;
   private final byte[] data;
 
-
+  /**
+   * Package-private constructor to enforce factory method usage.
+   *
+   * @param name the blob name; must not be {@code null}
+   * @param data the blob data; must not be {@code null}
+   */
   InMemoryBlob(String name, byte[] data) {
     this.data = requireNonNull(data, "data cannot be null");
     this.name = requireNonNull(name, "name cannot be null");
@@ -43,6 +54,15 @@ public final class InMemoryBlob implements BlobDefinition {
     return name;
   }
 
+  /**
+   * Returns the byte array containing the blob data.
+   * <p>
+   * This method provides direct access to the internal byte array for optimization
+   * purposes (e.g., inline upload without stream overhead).
+   * </p>
+   *
+   * @return the blob data; never {@code null}
+   */
   public byte[] data() {
     return data;
   }
@@ -50,5 +70,10 @@ public final class InMemoryBlob implements BlobDefinition {
   @Override
   public InputStream asStream() {
     return new ByteArrayInputStream(data);
+  }
+
+  @Override
+  public String toString() {
+    return "InMemoryBlob[name='" + name + "', size=" + data.length + " bytes]";
   }
 }

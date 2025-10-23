@@ -20,18 +20,33 @@ import java.io.InputStream;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Blob definition backed by an input stream.
+ * Input blob definition backed by an input stream.
  * <p>
  * The stream will be consumed when the blob is created. The caller must ensure the stream
- * remains valid until creation.
+ * remains valid until creation completes.
+ * </p>
+ * <p>
+ * This implementation is suitable for large datasets that should not be loaded entirely
+ * into memory. The stream is consumed lazily during blob creation.
+ * </p>
+ * <p>
+ * <strong>Resource Management:</strong> The caller is responsible for closing the stream
+ * after blob creation. Use try-with-resources to ensure proper cleanup.
  * </p>
  *
+ * @see InputBlobDefinition
+ * @see InMemoryBlob
  */
-public final class StreamBlob implements BlobDefinition {
+public final class StreamBlob implements InputBlobDefinition {
   private final String name;
   private final InputStream stream;
 
-
+  /**
+   * Package-private constructor to enforce factory method usage.
+   *
+   * @param name   the blob name; must not be {@code null}
+   * @param stream the input stream providing blob data; must not be {@code null}
+   */
   StreamBlob(String name, InputStream stream) {
     this.name = requireNonNull(name, "name cannot be null");
     this.stream = requireNonNull(stream, "stream cannot be null");
@@ -46,4 +61,10 @@ public final class StreamBlob implements BlobDefinition {
   public InputStream asStream() {
     return stream;
   }
+
+  @Override
+  public String toString() {
+    return "StreamBlob[name='" + name + "', stream=" + stream.getClass().getSimpleName() + "]";
+  }
 }
+

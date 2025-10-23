@@ -19,14 +19,17 @@ import com.google.protobuf.UnsafeByteOperations;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import fr.aneo.armonik.worker.definition.blob.BlobDefinition;
 import fr.aneo.armonik.worker.definition.blob.InMemoryBlob;
+import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.*;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
@@ -37,21 +40,36 @@ import static java.util.stream.Collectors.toMap;
 /**
  * Service responsible for creating blobs in ArmoniK's object storage.
  * <p>
- * This service handles two upload strategies:
+ * This service handles blob creation in two modes:
  * </p>
  * <ul>
- *   <li><strong>Inline upload</strong>: For small blobs (≤ 4 MB), data is sent
- *       directly via RPC</li>
- *   <li><strong>File-based upload</strong>: For large blobs (> 4 MB) or streams,
- *       data is written to shared folder and the Agent is notified</li>
+ *   <li><strong>Input blobs with data</strong>: Create blobs and upload data immediately</li>
+ *   <li><strong>Blob metadata preparation</strong>: Create blob metadata, provide data later</li>
+ * </ul>
+ *
+ * <h2>Upload Strategies for Input Blobs (createBlobs)</h2>
+ * <ul>
+ *   <li><strong>Inline upload</strong>: For small blobs (≤ 4 MB), data is sent directly via RPC</li>
+ *   <li><strong>File-based upload</strong>: For large blobs (> 4 MB) or streams, data is written to shared folder</li>
+ * </ul>
+ *
+ * <h2>Metadata Preparation (prepareBlobs)</h2>
+ * <p>
+ * Use {@link #prepareBlobs(Map)} when you need to:
+ * </p>
+ * <ul>
+ *   <li>Create output blob metadata (data will be provided by task execution)</li>
+ *   <li>Create input blob metadata (data will be written to files later)</li>
+ *   <li>Enable task graph construction before all data is available</li>
  * </ul>
  *
  * <h2>Thread Safety</h2>
  * <p>
- * This class is thread-safe. Multiple blob creations can be performed concurrently.
+ * This class is thread-safe. Multiple blob operations can be performed concurrently.
  * </p>
  *
- * @see BlobDefinition
+ * @see InputBlobDefinition
+ * @see OutputBlobDefinition
  * @see BlobHandle
  * @see BlobFileWriter
  */
@@ -65,7 +83,15 @@ public class BlobService {
   private final String communicationToken;
   private final SessionId sessionId;
 
-
+  /**
+   * Creates a new blob service for managing blobs within a session.
+   *
+   * @param agentFutureStub    the gRPC stub for communicating with the Agent
+   * @param blobFileWriter     the writer for writing blob data to shared folder
+   * @param communicationToken the communication token for this execution context
+   * @param sessionId          the session identifier
+   * @throws NullPointerException if any parameter is null
+   */
   public BlobService(AgentGrpc.AgentFutureStub agentFutureStub, BlobFileWriter blobFileWriter, String communicationToken, SessionId sessionId) {
     this.agentFutureStub = requireNonNull(agentFutureStub, "agentFutureStub cannot be null");
     this.blobFileWriter = requireNonNull(blobFileWriter, "blobFileWriter cannot be null");
@@ -74,26 +100,38 @@ public class BlobService {
   }
 
   /**
-   * Creates multiple blobs from their definitions.
+   * Creates multiple input blobs with their data from input blob definitions.
    * <p>
    * This method automatically partitions blobs into two groups:
    * </p>
    * <ul>
    *   <li>Small in-memory blobs (≤ 4 MB) are uploaded inline via {@code CreateResults}</li>
-   *   <li>Large blobs or streams are written to the shared folder</li>
+   *   <li>Large blobs or streams are written to the shared folder via {@code CreateResultsMetaData} + file write</li>
+   * </ul>
+   * <p>
+   * Input blobs are typically used as:
+   * </p>
+   * <ul>
+   *   <li>Data dependencies for tasks</li>
+   *   <li>Task payloads</li>
    * </ul>
    *
-   * @param blobDefinitions map of logical names to blob definitions
+   * @param inputBlobDefinitions map of logical names to input blob definitions
    * @return map of logical names to blob handles
+   * @throws NullPointerException if inputBlobDefinitions is null
+   * @see InputBlobDefinition
+   * @see #prepareBlobs(Map)
    */
-  public Map<String, BlobHandle> createBlobs(Map<String, BlobDefinition> blobDefinitions) {
-    logger.debug("Creating {} blobs", blobDefinitions.size());
-    var partitioned = blobDefinitions.entrySet()
-                                     .stream()
-                                     .collect(partitioningBy(
-                                       entry -> isUploadable(entry.getValue()),
-                                       toMap(Map.Entry::getKey, Map.Entry::getValue)
-                                     ));
+  public Map<String, BlobHandle> createBlobs(Map<String, InputBlobDefinition> inputBlobDefinitions) {
+    requireNonNull(inputBlobDefinitions, "inputBlobDefinitions cannot be null");
+
+    logger.debug("Creating {} input blobs", inputBlobDefinitions.size());
+    var partitioned = inputBlobDefinitions.entrySet()
+                                          .stream()
+                                          .collect(partitioningBy(
+                                            entry -> isUploadable(entry.getValue()),
+                                            toMap(Map.Entry::getKey, Map.Entry::getValue)
+                                          ));
 
     var uploadableBlobs = partitioned.get(true);
     var fileBasedBlobs = partitioned.get(false);
@@ -103,8 +141,70 @@ public class BlobService {
     result.putAll(uploadBlobs(uploadableBlobs));
     result.putAll(writeBlobsToFile(fileBasedBlobs));
 
-    logger.info("Created {} blobs: {} uploaded inline, {} via file", result.size(), uploadableBlobs.size(), fileBasedBlobs.size());
+    logger.info("Created {} input blobs: {} uploaded inline, {} via file", result.size(), uploadableBlobs.size(), fileBasedBlobs.size());
 
+    return result;
+  }
+
+  /**
+   * Prepares multiple blobs by creating their metadata without uploading data.
+   * <p>
+   * This method creates blob metadata. The actual data will be provided later, either:
+   * </p>
+   * <ul>
+   *   <li>By task execution (for output blobs)</li>
+   *   <li>By writing to files in the shared folder (for input blobs)</li>
+   * </ul>
+   * <p>
+   * Common use cases:
+   * </p>
+   * <ul>
+   *   <li><strong>Output blobs</strong>: Expected outputs that tasks will produce</li>
+   *   <li><strong>Input blobs</strong>: Large input data written to files after metadata creation</li>
+   *   <li><strong>Delayed upload</strong>: Create metadata early, provide data later</li>
+   * </ul>
+   * <p>
+   * The returned blob handles can be used as data dependencies for downstream tasks,
+   * enabling task graph construction before all data is available.
+   * </p>
+   *
+   * @param blobDefinitions map of logical names to blob definitions
+   * @return map of logical names to blob handles
+   * @throws NullPointerException if blobDefinitions is null
+   * @see BlobDefinition
+   * @see OutputBlobDefinition
+   * @see InputBlobDefinition
+   * @see #createBlobs(Map)
+   */
+  public <T extends BlobDefinition> Map<String, BlobHandle> prepareBlobs(Map<String, T> blobDefinitions) {
+    requireNonNull(blobDefinitions, "blobDefinitions cannot be null");
+
+    logger.debug("Preparing {} blob metadata", blobDefinitions.size());
+    var entries = new ArrayList<>(blobDefinitions.entrySet());
+    var metadata = entries.stream()
+                          .map(entry -> CreateResultsMetaDataRequest.ResultCreate.newBuilder()
+                                                                                 .setName(entry.getValue().name())
+                                                                                 .build())
+                          .toList();
+    var request = CreateResultsMetaDataRequest.newBuilder()
+                                              .setCommunicationToken(communicationToken)
+                                              .setSessionId(sessionId.asString())
+                                              .addAllResults(metadata)
+                                              .build();
+
+    var response = Futures.toCompletionStage(agentFutureStub.createResultsMetaData(request));
+
+    var deferredBlobInfos = IntStream.range(0, entries.size())
+                                     .mapToObj(i -> response.thenApply(r -> toBlobInfo(r.getResults(i))))
+                                     .toList();
+
+    var result = new HashMap<String, BlobHandle>(entries.size());
+    IntStream.range(0, entries.size()).forEach(i -> {
+      var entry = entries.get(i);
+      result.put(entry.getKey(), new BlobHandle(sessionId, entry.getValue().name(), deferredBlobInfos.get(i)));
+    });
+
+    logger.info("Prepared {} blob metadata", result.size());
     return result;
   }
 
@@ -121,10 +221,10 @@ public class BlobService {
    * Casting to {@link InMemoryBlob} is safe because partitioning guarantees type.
    * </p>
    */
-  private Map<String, BlobHandle> uploadBlobs(Map<String, BlobDefinition> uploadableBlobs) {
+  private Map<String, BlobHandle> uploadBlobs(Map<String, InputBlobDefinition> uploadableBlobs) {
     return uploadableBlobs.entrySet()
                           .stream()
-                          .collect(Collectors.toMap(
+                          .collect(toMap(
                             Map.Entry::getKey,
                             entry -> uploadBlob((InMemoryBlob) entry.getValue())
                           ));
@@ -133,15 +233,27 @@ public class BlobService {
   /**
    * Writes large blobs or streams to the shared folder via file-based upload.
    */
-  private Map<String, BlobHandle> writeBlobsToFile(Map<String, BlobDefinition> fileBasedBlobs) {
-    return fileBasedBlobs.entrySet()
-                         .stream()
-                         .collect(Collectors.toMap(
-                           Map.Entry::getKey,
-                           entry -> writeBlob(entry.getValue())
-                         ));
+  private Map<String, BlobHandle> writeBlobsToFile(Map<String, InputBlobDefinition> fileBasedBlobs) {
+    return prepareBlobs(fileBasedBlobs).entrySet()
+                                       .stream()
+                                       .collect(toMap(
+                                         Map.Entry::getKey,
+                                         entry -> {
+                                           var name = entry.getKey();
+                                           var handle = entry.getValue();
+                                           var blobInfoAfterWrite = handle.deferredBlobInfo()
+                                                                          .thenApply(blobInfo -> {
+                                                                            blobFileWriter.write(blobInfo.id(), fileBasedBlobs.get(name).asStream());
+                                                                            return blobInfo;
+                                                                          });
+                                           return new BlobHandle(sessionId, handle.name(), blobInfoAfterWrite);
+                                         }
+                                       ));
   }
 
+  /**
+   * Uploads a small in-memory blob inline via CreateResults RPC.
+   */
   private BlobHandle uploadBlob(InMemoryBlob blob) {
     var resultCreate = CreateResultsRequest.ResultCreate.newBuilder()
                                                         .setName(blob.name())
@@ -159,26 +271,9 @@ public class BlobService {
     return new BlobHandle(sessionId, blob.name(), deferredBlobInfo);
   }
 
-
-  private BlobHandle writeBlob(BlobDefinition blobDefinition) {
-    var request = CreateResultsMetaDataRequest.newBuilder()
-                                              .setCommunicationToken(communicationToken)
-                                              .setSessionId(sessionId.asString())
-                                              .addResults(CreateResultsMetaDataRequest.ResultCreate.newBuilder()
-                                                                                                   .setName(blobDefinition.name())
-                                                                                                   .build())
-                                              .build();
-
-    var deferredBlobInfo = Futures.toCompletionStage(agentFutureStub.createResultsMetaData(request))
-                                  .thenApply(response -> toBlobInfo(response.getResults(0)))
-                                  .thenApply(blobInfo -> {
-                                    blobFileWriter.write(blobInfo.id(), blobDefinition.asStream());
-                                    return blobInfo;
-                                  });
-
-    return new BlobHandle(sessionId, blobDefinition.name(), deferredBlobInfo);
-  }
-
+  /**
+   * Converts gRPC result metadata to domain blob info.
+   */
   private static BlobInfo toBlobInfo(ResultMetaData metaData) {
     return new BlobInfo(
       BlobId.from(metaData.getResultId()),

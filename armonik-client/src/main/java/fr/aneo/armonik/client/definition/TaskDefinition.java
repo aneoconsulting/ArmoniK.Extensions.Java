@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client.definition;
 
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.model.*;
 
 import java.util.ArrayList;
@@ -49,7 +50,7 @@ import static fr.aneo.armonik.client.model.WorkerLibrary.*;
  * <p>
  * Inputs can be provided in two ways:
  * <ul>
- *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, BlobDefinition)}.
+ *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, InputBlobDefinition)}.
  *       The data is uploaded to the cluster during task submission</li>
  *   <li><strong>Existing blobs:</strong> References to already-stored blobs via {@link #withInput(String, BlobHandle)}.
  *       Useful for sharing data across multiple tasks without re-uploading</li>
@@ -70,7 +71,7 @@ import static fr.aneo.armonik.client.model.WorkerLibrary.*;
  */
 public class TaskDefinition {
   private TaskConfiguration configuration;
-  private final Map<String, BlobDefinition> inputDefinitions;
+  private final Map<String, InputBlobDefinition> inputDefinitions;
   private final Map<String, BlobHandle> inputHandles;
   private final List<String> outputs = new ArrayList<>();
   private WorkerLibrary workerLibrary = NO_WORKER_LIBRARY;
@@ -80,7 +81,7 @@ public class TaskDefinition {
    * Creates an empty task definition with no inputs, outputs, or configuration.
    * <p>
    * Inputs, outputs, and configuration can be added using the fluent builder methods
-   * {@link #withInput(String, BlobDefinition)}, {@link #withInput(String, BlobHandle)},
+   * {@link #withInput(String, InputBlobDefinition)}, {@link #withInput(String, BlobHandle)},
    * {@link #withOutput(String)}, and {@link #withConfiguration(TaskConfiguration)}.
    */
   public TaskDefinition() {
@@ -91,7 +92,7 @@ public class TaskDefinition {
   /**
    * Returns an immutable view of input definitions provided as inline data.
    * <p>
-   * This map includes only inputs added via {@link #withInput(String, BlobDefinition)} and
+   * This map includes only inputs added via {@link #withInput(String, InputBlobDefinition)} and
    * is keyed by the logical input names. Inputs added via {@link #withInput(String, BlobHandle)}
    * are available through {@link #inputHandles()}.
    *
@@ -99,7 +100,7 @@ public class TaskDefinition {
    * @see #inputHandles()
    * @see BlobDefinition
    */
-  public Map<String, BlobDefinition> inputDefinitions() {
+  public Map<String, InputBlobDefinition> inputDefinitions() {
     return Map.copyOf(inputDefinitions);
   }
 
@@ -107,7 +108,7 @@ public class TaskDefinition {
    * Returns an immutable view of inputs referenced by existing blob handles.
    * <p>
    * This map includes only inputs added via {@link #withInput(String, BlobHandle)} and
-   * is keyed by the logical input names. Inputs added via {@link #withInput(String, BlobDefinition)}
+   * is keyed by the logical input names. Inputs added via {@link #withInput(String, InputBlobDefinition)}
    * are available through {@link #inputDefinitions()}.
    *
    * @return an immutable map of input handles, keyed by input name
@@ -196,7 +197,7 @@ public class TaskDefinition {
    * @see BlobDefinition
    * @see #withInput(String, BlobHandle)
    */
-  public TaskDefinition withInput(String name, BlobDefinition blobDefinition) {
+  public TaskDefinition withInput(String name, InputBlobDefinition blobDefinition) {
     validateName(name);
     inputDefinitions.put(name, blobDefinition);
     inputHandles.remove(name);
@@ -216,7 +217,7 @@ public class TaskDefinition {
    * @throws NullPointerException     if name or blobHandle is null
    * @throws IllegalArgumentException if name is blank
    * @see BlobHandle
-   * @see #withInput(String, BlobDefinition)
+   * @see #withInput(String, InputBlobDefinition)
    */
   public TaskDefinition withInput(String name, BlobHandle blobHandle) {
     validateName(name);

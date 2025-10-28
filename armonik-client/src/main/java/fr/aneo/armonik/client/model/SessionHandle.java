@@ -19,6 +19,7 @@ import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
 
@@ -172,7 +173,7 @@ public final class SessionHandle {
    * @see BlobDefinition
    * @see TaskDefinition#withInput(String, BlobHandle)
    */
-  public BlobHandle createBlob(BlobDefinition blobDefinition) {
+  public BlobHandle createBlob(InputBlobDefinition blobDefinition) {
     requireNonNull(blobDefinition, "blobDefinition must not be null");
 
     var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionInfo.id(), 1)))

@@ -15,72 +15,48 @@
  */
 package fr.aneo.armonik.client.definition.blob;
 
-import fr.aneo.armonik.client.definition.TaskDefinition;
-
-import static java.util.Objects.requireNonNull;
-
+import fr.aneo.armonik.client.model.BlobHandle;
 
 /**
- * Definition of inline data content to be stored as a blob in the ArmoniK cluster.
+ * Interface representing a blob definition in the ArmoniK cluster.
  * <p>
- * A {@code BlobDefinition} encapsulates raw byte data that can be associated with task
- * inputs or used for blob creation. It represents data that will be uploaded to the
- * ArmoniK cluster.
- * <p>
- * This class is immutable and thread-safe, making it suitable for concurrent use
- * across multiple task definitions or blob operations.
+ * A blob represents data content that can be associated with tasks as inputs or outputs.
+ * This base class provides common properties for all types of blob definitions:
+ * <ul>
+ *   <li><b>Name</b>: A user-defined identifier for the blob</li>
+ *   <li><b>Manual Deletion</b>: A flag indicating whether the user is responsible for
+ *       explicitly deleting the blob data from the underlying object storage</li>
+ * </ul>
  *
- * @see TaskDefinition#withInput(String, BlobDefinition)
+ * <h2>Manual Deletion Policy</h2>
+ * When {@code manualDeletion} is set to {@code true}, the user must explicitly delete the blob data from the
+ * underlying object storage. When set to {@code false} (default), ArmoniK automatically manages the blob lifecycle and
+ * cleans up data when no longer needed.
+ *
+ * @see InputBlobDefinition
+ * @see OutputBlobDefinition
+ * @see BlobHandle
  */
-public class BlobDefinition {
-  private final BlobData data;
-
-  private BlobDefinition(BlobData data) {
-    this.data = data;
-  }
+public sealed interface BlobDefinition permits InputBlobDefinition, OutputBlobDefinition {
 
   /**
-   * Returns the raw data content of this blob definition.
+   * Returns the user-defined name of this blob.
    * <p>
-   * The returned byte array contains the actual data that will be uploaded to
-   * the ArmoniK cluster when this definition is used in blob operations.
-   * <p>
-   * <strong>Note:</strong> The returned array is the internal array
-   * used by this definition. <strong>Do not modify the returned array</strong> as it may affect
-   * other operations using this definition. This is especially critical during upload operations
-   * where the array is accessed directly using zero-copy optimizations - modifications during
-   * upload can cause data corruption.
-   * <p>
-   * <strong>Thread Safety:</strong> While this class is thread-safe for read operations,
-   * concurrent modification of the underlying data array is not safe and can lead to
-   * unpredictable behavior during upload operations.
+   * The name serves as a logical identifier and is never {@code null}.
+   * An empty string indicates an unnamed blob.
    *
-   * @return the data content as a byte array, never null
+   * @return the blob name, never null
    */
-  public BlobData data() {
-    return data;
-  }
+  String name();
 
   /**
-   * Creates a blob definition from the specified data content.
+   * Returns whether manual deletion is required for this blob.
    * <p>
-   * This factory method wraps the provided byte array in a blob definition
-   * suitable for use in task input specifications or direct blob uploads.
-   * <p>
-   * <strong>Note:</strong> No defensive copy of the provided array is made. The array is used directly by
-   * the definition and <strong>should not be modified after passing it to this method</strong>. The array will
-   * be accessed directly during upload operations using zero-copy optimizations for performance.
-   * Any modifications to the array after creating this definition can lead to data
-   * corruption during upload.
+   * When {@code true}, the user must explicitly delete the blob data from the
+   * underlying object storage. When {@code false}, ArmoniK automatically manages
+   * the blob lifecycle.
    *
-   * @param data the data content to wrap in a blob definition
-   * @return a new blob definition containing the specified data
-   * @throws NullPointerException if data is null
-   * @see TaskDefinition#withInput(String, BlobDefinition)
+   * @return true if manual deletion is required, false for automatic cleanup
    */
-  public static BlobDefinition from(byte[] data) {
-    requireNonNull(data, "data must not be null");
-
-    return new BlobDefinition(InMemoryBlobData.from(data));
-  }
+  boolean manualDeletion();
 }

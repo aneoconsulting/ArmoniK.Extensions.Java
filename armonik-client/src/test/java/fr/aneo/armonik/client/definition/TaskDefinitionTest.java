@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.definition;
 
-import fr.aneo.armonik.client.definition.blob.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -42,10 +42,10 @@ class TaskDefinitionTest {
   @Test
   void should_replace_inline_input_by_new_one_when_using_an_existing_name() throws IOException {
     // Given
-    var taskDefinition = new TaskDefinition().withInput("prop1", BlobDefinition.from("Hello".getBytes()));
+    var taskDefinition = new TaskDefinition().withInput("prop1", InputBlobDefinition.from("Hello".getBytes()));
 
     // When
-    taskDefinition.withInput("prop1", BlobDefinition.from("World".getBytes()));
+    taskDefinition.withInput("prop1", InputBlobDefinition.from("World".getBytes()));
 
     // Then
     assertThat(taskDefinition.inputDefinitions()).hasSize(1);
@@ -58,7 +58,7 @@ class TaskDefinitionTest {
     var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("sessionId", "blobId1"));
 
     // When
-    taskDefinition.withInput("prop1", BlobDefinition.from("World".getBytes()));
+    taskDefinition.withInput("prop1", InputBlobDefinition.from("World".getBytes()));
 
     // Then
     assertThat(taskDefinition.inputHandles()).isEmpty();
@@ -69,7 +69,7 @@ class TaskDefinitionTest {
   @Test
   void should_remove_inline_input_when_adding_handle_input_with_the_same_name() {
     // Given
-    var taskDefinition = new TaskDefinition().withInput("prop1", BlobDefinition.from("Hello".getBytes()));
+    var taskDefinition = new TaskDefinition().withInput("prop1", InputBlobDefinition.from("Hello".getBytes()));
 
     // When
     taskDefinition.withInput("prop1", blobHandle("sessionId", "blobId"));

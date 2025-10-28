@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.model;
 
 import fr.aneo.armonik.client.definition.blob.BlobData;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.grpc.observers.DownloadBlobDataObserver;
 import fr.aneo.armonik.client.internal.grpc.observers.UploadBlobDataObserver;
 import io.grpc.ManagedChannel;
@@ -40,7 +41,7 @@ import static java.util.Objects.requireNonNull;
  * BlobHandles can be created in two ways:
  * <ul>
  *   <li><strong>Task-specific blobs:</strong> Created automatically during task submission for inputs and outputs</li>
- *   <li><strong>Session-scoped blobs:</strong> Created explicitly via {@link SessionHandle#createBlob(BlobDefinition)}
+ *   <li><strong>Session-scoped blobs:</strong> Created explicitly via {@link SessionHandle#createBlob(InputBlobDefinition)}
  *       for sharing across multiple tasks within the same session</li>
  * </ul>
  * <p>
@@ -58,7 +59,7 @@ import static java.util.Objects.requireNonNull;
  *
  * @see BlobInfo
  * @see BlobDefinition
- * @see SessionHandle#createBlob(BlobDefinition)
+ * @see SessionHandle#createBlob(InputBlobDefinition)
  * @see TaskHandle
  */
 public final class BlobHandle {
@@ -138,23 +139,12 @@ public final class BlobHandle {
    * This method transfers the data content to the ArmoniK cluster using chunked streaming
    * for efficient network utilization. The upload is performed asynchronously,
    * and the returned completion stage completes when the entire data transfer is finished.
-   * <p>
-   * <strong>Note:</strong> This method uses optimized zero-copy
-   * operations for performance. The data array from {@link BlobDefinition#data()} is accessed
-   * directly during the upload process without creating defensive copies. <strong>Do not modify
-   * the original byte array</strong> returned by {@code BlobDefinition.data()} while the upload
-   * is in progress, as this can lead to data corruption or unpredictable behavior.
-   * <p>
-   * <strong>Best Practice:</strong> Treat the {@code BlobDefinition} and its underlying data
-   * as immutable once passed to this method. If you need to reuse or modify the data,
-   * create a copy before creating the {@code BlobDefinition}.
    *
    * @param blobData  the data to upload
    * @return a completion stage that completes when the upload is finished
-   * @throws NullPointerException if blobDefinition is null
+   * @throws NullPointerException if blobData is null
    * @throws RuntimeException     if upload fails due to cluster communication issues
-   * @see BlobDefinition
-   * @see BlobDefinition#data()
+   * @see BlobData
    */
   public CompletionStage<Void> uploadData(BlobData blobData) {
     requireNonNull(blobData, "blobData must not be null");

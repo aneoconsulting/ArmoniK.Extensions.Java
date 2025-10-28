@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
@@ -230,7 +231,7 @@ final class TaskSubmitter {
            .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition.data()));
   }
 
-  private void uploadInputs(BlobHandlesAllocation allocation, Map<String, BlobDefinition> inputDefinitions) {
+  private void uploadInputs(BlobHandlesAllocation allocation, Map<String, InputBlobDefinition> inputDefinitions) {
     allocation.inputHandlesByName()
               .entrySet()
               .stream()
@@ -240,7 +241,7 @@ final class TaskSubmitter {
               .forEach(BlobHandle::uploadData);
   }
 
-  private BlobDefinition serializeToJson(Map<String, BlobId> inputIds, Map<String, BlobId> outputIds) {
+  private InputBlobDefinition serializeToJson(Map<String, BlobId> inputIds, Map<String, BlobId> outputIds) {
     var in = inputIds.entrySet()
                      .stream()
                      .collect(toMap(Map.Entry::getKey, e -> e.getValue().asString()));
@@ -251,7 +252,7 @@ final class TaskSubmitter {
     var payload = Map.of("inputs", in, "outputs", out);
     byte[] bytes = gson.toJson(payload).getBytes(UTF_8);
 
-    return BlobDefinition.from(bytes);
+    return InputBlobDefinition.from(bytes);
   }
 
   private static Collector<Map.Entry<String, BlobHandle>, ?, Map<String, CompletionStage<BlobId>>> ids() {

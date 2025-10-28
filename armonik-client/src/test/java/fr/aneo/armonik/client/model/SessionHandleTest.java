@@ -16,9 +16,9 @@
 package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
-import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
@@ -78,7 +78,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     // Given
     var taskConfiguration = new TaskConfiguration(10, 4, "partition_1", Duration.ofMinutes(30), Map.of("option2", "value2"));
     var workerLibrary = new WorkerLibrary("my_library.jar", "fr.aneo.MyClass", blobHandle("sessionId", "libraryBlobId"));
-    var taskDefinition = new TaskDefinition().withInput("name", BlobDefinition.from("John".getBytes()))
+    var taskDefinition = new TaskDefinition().withInput("name", InputBlobDefinition.from("John".getBytes()))
                                              .withOutput("result")
                                              .withWorkerLibrary(workerLibrary)
                                              .withConfiguration(taskConfiguration);
@@ -106,11 +106,11 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var awaitDone = new CountDownLatch(1);
 
     var taskDefinition1 = new TaskDefinition()
-      .withInput("input1", BlobDefinition.from("data1".getBytes()))
+      .withInput("input1", InputBlobDefinition.from("data1".getBytes()))
       .withOutput("output1");
 
     var taskDefinition2 = new TaskDefinition()
-      .withInput("input2", BlobDefinition.from("data2".getBytes()))
+      .withInput("input2", InputBlobDefinition.from("data2".getBytes()))
       .withOutput("output2");
 
     var task1 = sessionHandle.submitTask(taskDefinition1);
@@ -145,11 +145,11 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var awaitDone = new CountDownLatch(1);
 
     var taskDefinition1 = new TaskDefinition()
-      .withInput("input1", BlobDefinition.from("data1".getBytes()))
+      .withInput("input1", InputBlobDefinition.from("data1".getBytes()))
       .withOutput("output1");
 
     var taskDefinition2 = new TaskDefinition()
-      .withInput("input2", BlobDefinition.from("data2".getBytes()))
+      .withInput("input2", InputBlobDefinition.from("data2".getBytes()))
       .withOutput("output2");
 
     var task1 = sessionHandle.submitTask(taskDefinition1);
@@ -182,7 +182,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   @Test
   void should_create_a_blob_handle() {
     // Given
-    var blobDefinition = BlobDefinition.from("Hello World".getBytes());
+    var blobDefinition = InputBlobDefinition.from("Hello World".getBytes());
 
     // when
     var blobHandle = sessionHandle.createBlob(blobDefinition);

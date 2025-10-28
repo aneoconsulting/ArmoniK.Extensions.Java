@@ -42,6 +42,7 @@ import static fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc.TasksFutureStub;
 import static fr.aneo.armonik.client.internal.concurrent.Futures.toCompletionStage;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
+import static fr.aneo.armonik.client.model.WorkerLibrary.*;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
@@ -369,11 +370,19 @@ final class TaskSubmitter {
     }
 
     TaskSubmissionData withWorkerLibraryOptions(Map<String, String> workerLibraryOptions) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
+      var effectiveOptions = workerLibraryOptions != null ? workerLibraryOptions : Map.<String, String>of();
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, effectiveOptions);
     }
 
     SubmitTasksRequest toSubmitTasksRequest() {
-      var taskCreation = TaskMapper.toTaskCreation(inputBlobIds, outputBlobIds, payloadId, taskConfig.withOptions(taskWorkerLibraryOptions));
+      var effectiveTaskConfig = taskConfig != null ? taskConfig.withOptions(taskWorkerLibraryOptions) : null;
+      var dataDependencies = new ArrayList<>(inputBlobIds);
+
+      if (taskWorkerLibraryOptions != null && !taskWorkerLibraryOptions.isEmpty()) {
+        dataDependencies.add(BlobId.from(taskWorkerLibraryOptions.get(LIBRARY_BLOB_ID)));
+      }
+
+      var taskCreation = TaskMapper.toTaskCreation(dataDependencies, outputBlobIds, payloadId, effectiveTaskConfig);
       return TaskMapper.toSubmitTasksRequest(sessionId, sessionTaskConfig, taskCreation);
     }
   }

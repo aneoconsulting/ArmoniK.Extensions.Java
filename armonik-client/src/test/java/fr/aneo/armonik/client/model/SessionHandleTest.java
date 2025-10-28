@@ -25,6 +25,7 @@ import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import fr.aneo.armonik.client.testutils.TasksGrpcMock;
 import io.grpc.BindableService;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -72,12 +73,14 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should submit a Task")
   void should_submit_a_task() {
     // Given
     var taskConfiguration = new TaskConfiguration(10, 4, "partition_1", Duration.ofMinutes(30), Map.of("option2", "value2"));
+    var workerLibrary = new WorkerLibrary("my_library.jar", "fr.aneo.MyClass", blobHandle("sessionId", "libraryBlobId"));
     var taskDefinition = new TaskDefinition().withInput("name", BlobDefinition.from("John".getBytes()))
                                              .withOutput("result")
-                                             .withWorkerLibrary(new WorkerLibrary("my_library.jar", "fr.aneo.MyClass", blobHandle("sessionId", "libraryBlobId")))
+                                             .withWorkerLibrary(workerLibrary)
                                              .withConfiguration(taskConfiguration);
 
     // When
@@ -92,7 +95,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     validateUploadedData(taskHandle);
     validateSubmittedSession();
     validateSubmittedDefaultTaskOptions();
-    validateSubmittedTask(taskHandle);
+    validateSubmittedTask(taskHandle, workerLibrary);
     validateSubmittedTaskOptions();
     validateTaskOutputListener(outputTaskListener);
   }
@@ -250,16 +253,18 @@ class SessionHandleTest extends InProcessGrpcTestBase {
       ));
   }
 
-  private void validateSubmittedTask(TaskHandle taskHandle) {
+  private void validateSubmittedTask(TaskHandle taskHandle, WorkerLibrary workerLibrary) {
     assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreationsList()).hasSize(1);
     assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getPayloadId()).isNotIn(
       idFrom(taskHandle.inputs().get("name")).asString(),
       idFrom(taskHandle.outputs().get("result")).asString()
     );
-    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getExpectedOutputKeysList()).hasSize(1);
-    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getExpectedOutputKeys(0)).isEqualTo(idFrom(taskHandle.outputs().get("result")).asString());
-    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getDataDependenciesList()).hasSize(1);
-    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getDataDependencies(0)).isEqualTo(idFrom(taskHandle.inputs().get("name")).asString());
+    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getExpectedOutputKeysList())
+      .containsExactly(idFrom(taskHandle.outputs().get("result")).asString());
+
+    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreations(0).getDataDependenciesList()).containsExactly(
+      idFrom(taskHandle.inputs().get("name")).asString(),
+      idFrom(workerLibrary.libraryHandle()).asString());
   }
 
   private void validateSubmittedDefaultTaskOptions() {

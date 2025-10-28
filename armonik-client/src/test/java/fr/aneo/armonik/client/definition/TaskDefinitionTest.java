@@ -15,7 +15,10 @@
  */
 package fr.aneo.armonik.client.definition;
 
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
 
 import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,7 +40,7 @@ class TaskDefinitionTest {
   }
 
   @Test
-  void should_replace_inline_input_by_new_one_when_using_an_existing_name() {
+  void should_replace_inline_input_by_new_one_when_using_an_existing_name() throws IOException {
     // Given
     var taskDefinition = new TaskDefinition().withInput("prop1", BlobDefinition.from("Hello".getBytes()));
 
@@ -46,11 +49,11 @@ class TaskDefinitionTest {
 
     // Then
     assertThat(taskDefinition.inputDefinitions()).hasSize(1);
-    assertThat(taskDefinition.inputDefinitions().get("prop1").data()).asString().isEqualTo("World");
+    assertThat(taskDefinition.inputDefinitions().get("prop1").data().stream().readAllBytes()).asString().isEqualTo("World");
   }
 
   @Test
-  void should_remove_input_handle_when_adding_inline_input_with_the_same_name() {
+  void should_remove_input_handle_when_adding_inline_input_with_the_same_name() throws IOException {
     // Given
     var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("sessionId", "blobId1"));
 
@@ -60,7 +63,7 @@ class TaskDefinitionTest {
     // Then
     assertThat(taskDefinition.inputHandles()).isEmpty();
     assertThat(taskDefinition.inputDefinitions()).hasSize(1);
-    assertThat(taskDefinition.inputDefinitions().get("prop1").data()).asString().isEqualTo("World");
+    assertThat(taskDefinition.inputDefinitions().get("prop1").data().stream().readAllBytes()).asString().isEqualTo("World");
   }
 
   @Test

@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.definition;
+package fr.aneo.armonik.client.definition.blob;
 
-import fr.aneo.armonik.client.model.BlobHandle;
+import fr.aneo.armonik.client.definition.TaskDefinition;
 
 import static java.util.Objects.requireNonNull;
 
@@ -25,18 +25,17 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * A {@code BlobDefinition} encapsulates raw byte data that can be associated with task
  * inputs or used for blob creation. It represents data that will be uploaded to the
- * ArmoniK cluster and serves as the content source for {@link BlobHandle#uploadData(BlobDefinition)}.
+ * ArmoniK cluster.
  * <p>
  * This class is immutable and thread-safe, making it suitable for concurrent use
  * across multiple task definitions or blob operations.
  *
- * @see BlobHandle#uploadData(BlobDefinition)
  * @see TaskDefinition#withInput(String, BlobDefinition)
  */
 public class BlobDefinition {
-  private final byte[] data;
+  private final BlobData data;
 
-  private BlobDefinition(byte[] data) {
+  private BlobDefinition(BlobData data) {
     this.data = data;
   }
 
@@ -57,9 +56,8 @@ public class BlobDefinition {
    * unpredictable behavior during upload operations.
    *
    * @return the data content as a byte array, never null
-   * @see BlobHandle#uploadData(BlobDefinition)
    */
-  public byte[] data() {
+  public BlobData data() {
     return data;
   }
 
@@ -79,11 +77,10 @@ public class BlobDefinition {
    * @return a new blob definition containing the specified data
    * @throws NullPointerException if data is null
    * @see TaskDefinition#withInput(String, BlobDefinition)
-   * @see BlobHandle#uploadData(BlobDefinition)
    */
   public static BlobDefinition from(byte[] data) {
     requireNonNull(data, "data must not be null");
 
-    return new BlobDefinition(data);
+    return new BlobDefinition(InMemoryBlobData.from(data));
   }
 }

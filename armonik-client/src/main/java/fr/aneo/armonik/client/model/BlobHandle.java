@@ -15,7 +15,8 @@
  */
 package fr.aneo.armonik.client.model;
 
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobData;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.internal.grpc.observers.DownloadBlobDataObserver;
 import fr.aneo.armonik.client.internal.grpc.observers.UploadBlobDataObserver;
 import io.grpc.ManagedChannel;
@@ -134,10 +135,9 @@ public final class BlobHandle {
   /**
    * Uploads data to this blob in the ArmoniK cluster.
    * <p>
-   * This method transfers the data content specified in the blob definition to the
-   * ArmoniK cluster using chunked streaming for efficient network utilization. The upload
-   * is performed asynchronously, and the returned completion stage completes when the
-   * entire data transfer is finished.
+   * This method transfers the data content to the ArmoniK cluster using chunked streaming
+   * for efficient network utilization. The upload is performed asynchronously,
+   * and the returned completion stage completes when the entire data transfer is finished.
    * <p>
    * <strong>Note:</strong> This method uses optimized zero-copy
    * operations for performance. The data array from {@link BlobDefinition#data()} is accessed
@@ -149,24 +149,20 @@ public final class BlobHandle {
    * as immutable once passed to this method. If you need to reuse or modify the data,
    * create a copy before creating the {@code BlobDefinition}.
    *
-   * @param blobDefinition the definition containing the data to upload
+   * @param blobData  the data to upload
    * @return a completion stage that completes when the upload is finished
    * @throws NullPointerException if blobDefinition is null
    * @throws RuntimeException     if upload fails due to cluster communication issues
    * @see BlobDefinition
    * @see BlobDefinition#data()
    */
-  public CompletionStage<Void> uploadData(BlobDefinition blobDefinition) {
-    requireNonNull(blobDefinition, "blobDefinition must not be null");
+  public CompletionStage<Void> uploadData(BlobData blobData) {
+    requireNonNull(blobData, "blobData must not be null");
 
-    logger.atDebug()
-          .addKeyValue("operation", "uploadBlobData")
-          .addKeyValue("sessionId", sessionId().asString())
-          .addKeyValue("blobSize", blobDefinition.data().length)
-          .log("Starting blob upload");
+    logger.debug("Starting blob upload. SessionId: {}", sessionId.asString());
 
     return deferredBlobInfo().thenCompose(blobInfo -> {
-      var uploadObserver = new UploadBlobDataObserver(sessionId(), blobInfo.id(), blobDefinition, UPLOAD_CHUNK_SIZE);
+      var uploadObserver = new UploadBlobDataObserver(sessionId(), blobInfo.id(), blobData, UPLOAD_CHUNK_SIZE);
       //noinspection ResultOfMethodCallIgnored
       resultsStub.uploadResultData(uploadObserver);
       return uploadObserver.completion();
@@ -182,15 +178,15 @@ public final class BlobHandle {
    *
    * @return a completion stage that completes with the blob data as a byte array
    * @throws RuntimeException if download fails due to cluster communication issues
-   * @see #uploadData(BlobDefinition)
+   * @see #uploadData(BlobData)
    */
   public CompletionStage<byte[]> downloadData() {
     return deferredBlobInfo.thenCompose(blobInfo -> {
       logger.atDebug()
-            .addKeyValue("operation", "downloadBlob")
-            .addKeyValue("sessionId", sessionId.asString())
-            .addKeyValue("blobId", blobInfo.id().asString())
-            .log("Starting blob download");
+        .addKeyValue("operation", "downloadBlob")
+        .addKeyValue("sessionId", sessionId.asString())
+        .addKeyValue("blobId", blobInfo.id().asString())
+        .log("Starting blob download");
 
       var request = toDownloadResultDataRequest(sessionId(), blobInfo.id());
       var responseObserver = new DownloadBlobDataObserver(sessionId(), blobInfo.id());

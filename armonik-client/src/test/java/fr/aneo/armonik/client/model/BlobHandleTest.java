@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.model;
 
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InMemoryBlobData;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import io.grpc.BindableService;
@@ -43,10 +43,10 @@ class BlobHandleTest extends InProcessGrpcTestBase {
   @Test
   void should_successfully_upload_blob_data() {
     // Given
-    var blobDefinition = BlobDefinition.from("Hello".getBytes());
+    var blobData = InMemoryBlobData.from("Hello".getBytes());
 
     // When
-    blobHandle.uploadData(blobDefinition).toCompletableFuture().join();
+    blobHandle.uploadData(blobData).toCompletableFuture().join();
 
     // Then
     assertThat(resultsGrpcMock.uploadedDataInfos).hasSize(1);
@@ -63,7 +63,7 @@ class BlobHandleTest extends InProcessGrpcTestBase {
     IntStream.range(0, payload.length).forEach(i -> payload[i] = (byte) (i % 251));
 
     // When
-    blobHandle.uploadData(BlobDefinition.from(payload)).toCompletableFuture().join();
+    blobHandle.uploadData(InMemoryBlobData.from(payload)).toCompletableFuture().join();
 
     // Then
     assertThat(resultsGrpcMock.uploadedDataInfos).hasSize(1);

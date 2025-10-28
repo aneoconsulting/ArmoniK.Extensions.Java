@@ -19,7 +19,7 @@ import com.google.gson.Gson;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import io.grpc.ManagedChannel;
@@ -227,7 +227,7 @@ final class TaskSubmitter {
 
     Futures.allOf(inputIdByName)
            .thenCombine(Futures.allOf(outputIdByName), this::serializeToJson)
-           .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition));
+           .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition.data()));
   }
 
   private void uploadInputs(BlobHandlesAllocation allocation, Map<String, BlobDefinition> inputDefinitions) {
@@ -236,7 +236,7 @@ final class TaskSubmitter {
               .stream()
               .collect(toMap(
                 Map.Entry::getValue,
-                entry -> inputDefinitions.get(entry.getKey())))
+                entry -> inputDefinitions.get(entry.getKey()).data()))
               .forEach(BlobHandle::uploadData);
   }
 

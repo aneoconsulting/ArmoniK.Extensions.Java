@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client.model;
 
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
@@ -179,7 +179,7 @@ public final class SessionHandle {
                                   .thenApply(response -> new BlobInfo(BlobId.from(response.getResults(0).getResultId())));
 
     var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channel);
-    blobHandle.uploadData(blobDefinition);
+    blobHandle.uploadData(blobDefinition.data());
     return blobHandle;
   }
 }

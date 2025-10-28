@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.testutils.EventsGrpcMock;

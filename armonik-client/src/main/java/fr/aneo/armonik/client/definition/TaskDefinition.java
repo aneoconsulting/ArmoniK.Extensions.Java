@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client.definition;
 
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.model.*;
 
 import java.util.ArrayList;

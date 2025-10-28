@@ -23,6 +23,7 @@ import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
 
+import java.time.Instant;
 import java.util.List;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
@@ -180,7 +181,14 @@ public final class SessionHandle {
 
     var request = toResultMetaDataRequest(sessionInfo.id(), List.of(blobDefinition));
     var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(request))
-                                  .thenApply(response -> new BlobInfo(BlobId.from(response.getResults(0).getResultId())));
+                                  .thenApply(response -> new BlobInfo(
+                                    BlobId.from(response.getResults(0).getResultId()),
+                                    sessionInfo.id(),
+                                    response.getResults(0).getName(),
+                                    response.getResults(0).getManualDeletion(),
+                                    response.getResults(0).getCreatedBy().isBlank() ? null : TaskId.from(response.getResults(0).getCreatedBy()),
+                                    Instant.ofEpochSecond(response.getResults(0).getCreatedAt().getSeconds(), response.getResults(0).getCreatedAt().getNanos())
+                                  ));
 
     var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channel);
     blobHandle.uploadData(blobDefinition.data());

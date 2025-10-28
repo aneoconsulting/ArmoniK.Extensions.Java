@@ -30,7 +30,7 @@ public final class BlobMapper {
   private BlobMapper() {
   }
 
-  public static <T extends BlobDefinition> CreateResultsMetaDataRequest toResultMetaDataRequest(SessionId sessionId, List<T> blobDefinitions) {
+  public static CreateResultsMetaDataRequest toResultMetaDataRequest(SessionId sessionId, List<BlobDefinition> blobDefinitions) {
     var metadata = blobDefinitions.stream()
                               .map(blobDefinition -> ResultCreate.newBuilder()
                                                                  .setName(blobDefinition.name())

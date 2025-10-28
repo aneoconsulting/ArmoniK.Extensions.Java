@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client.testutils;
 
+import com.google.protobuf.Timestamp;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.model.BlobId;
@@ -23,13 +24,13 @@ import io.grpc.stub.StreamObserver;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static com.google.protobuf.ByteString.copyFrom;
 import static fr.aneo.armonik.client.model.TestDataFactory.blobId;
-import static java.util.stream.IntStream.range;
 
 public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private BlobId downloadFailedId;
@@ -64,7 +65,17 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
                                    .map(metadata -> new MetadataRequest(request.getSessionId(), metadata.getName(), metadata.getManualDeletion()))
                                    .toList());
 
-    range(0, request.getResultsCount()).forEach(i -> builder.addResults(ResultRaw.newBuilder().setResultId(UUID.randomUUID().toString()).build()));
+
+    builder.addAllResults(request.getResultsList()
+                                 .stream()
+                                 .map(metadata -> ResultRaw.newBuilder()
+                                                           .setResultId(UUID.randomUUID().toString())
+                                                           .setName(metadata.getName())
+                                                           .setManualDeletion(metadata.getManualDeletion())
+                                                           .setCreatedBy(UUID.randomUUID().toString())
+                                                           .setCreatedAt(Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()).build())
+                                                           .build())
+                                 .toList());
     responseObserver.onNext(builder.build());
     responseObserver.onCompleted();
   }
@@ -133,5 +144,6 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     private boolean firstCall = true;
   }
 
-  public record MetadataRequest(String sessionId, String blobName, boolean manualDeletion) {}
+  public record MetadataRequest(String sessionId, String blobName, boolean manualDeletion) {
+  }
 }

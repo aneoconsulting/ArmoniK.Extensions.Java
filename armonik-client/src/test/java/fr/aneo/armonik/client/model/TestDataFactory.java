@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.model;
 
 import io.grpc.ManagedChannel;
 
+import java.time.Instant;
 import java.util.Set;
 
 import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
@@ -41,7 +42,14 @@ public class TestDataFactory {
   }
 
   public static BlobInfo blobInfo(String id) {
-    return new BlobInfo(blobId(id));
+    return new BlobInfo(
+      blobId(id),
+      sessionId("sessionId"),
+      "",
+      false,
+      TaskId.from("taskId"),
+      Instant.now()
+    );
   }
 
   public static BlobHandle blobHandle(String sessionId, String blobId) {

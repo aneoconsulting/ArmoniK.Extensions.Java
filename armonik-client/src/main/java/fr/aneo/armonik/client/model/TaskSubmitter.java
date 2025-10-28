@@ -27,6 +27,7 @@ import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
 import java.util.function.IntFunction;
@@ -272,7 +273,7 @@ final class TaskSubmitter {
     var payload = Map.of("inputs", in, "outputs", out);
     byte[] bytes = gson.toJson(payload).getBytes(UTF_8);
 
-    return InputBlobDefinition.from(bytes);
+    return InputBlobDefinition.from(bytes).withName("payload");
   }
 
   private static Collector<Map.Entry<String, BlobHandle>, ?, Map<String, CompletionStage<BlobId>>> ids() {
@@ -290,9 +291,22 @@ final class TaskSubmitter {
   private IntFunction<BlobHandle> toBlobHandle(SessionId sessionId, CompletionStage<List<ResultRaw>> resultRaws) {
     return index -> new BlobHandle(
       sessionId,
-      resultRaws.thenApply(resultRaw -> new BlobInfo(BlobId.from(resultRaw.get(index).getResultId()))),
+      resultRaws.thenApply(raws -> toBlobInfo(sessionId, raws.get(index))),
       channel
     );
+  }
+
+  private static BlobInfo toBlobInfo(SessionId sessionId, ResultRaw resultRaw) {
+    var resultId = BlobId.from(resultRaw.getResultId());
+    var name = resultRaw.getName();
+    var manualDeletion = resultRaw.getManualDeletion();
+    var createdBy = resultRaw.getCreatedBy();
+    var createdAt = resultRaw.getCreatedAt();
+
+    var createdByTask = createdBy.isBlank() ? null : TaskId.from(createdBy);
+    var createdAtInstant = Instant.ofEpochSecond(createdAt.getSeconds(), createdAt.getNanos());
+
+    return new BlobInfo(resultId, sessionId, name, manualDeletion, createdByTask, createdAtInstant);
   }
 
   private static <K, V, U> Map<K, U> zip(List<Map.Entry<K, V>> keys, List<U> values) {
@@ -356,7 +370,7 @@ final class TaskSubmitter {
    * @param outputBlobIds            list of output blob IDs (expected results)
    * @param sessionTaskConfig        default task configuration from session definition
    * @param taskConfig               task-specific configuration (may be null if using session defaults)
-   * @param taskWorkerLibraryOptions worker library options to merge into configuration
+   * @param workerLibraryOptions worker library options to merge into configuration
    * @see #submit(TaskDefinition)
    */
   private record TaskSubmissionData(
@@ -366,7 +380,7 @@ final class TaskSubmitter {
     List<BlobId> outputBlobIds,
     TaskConfiguration sessionTaskConfig,
     TaskConfiguration taskConfig,
-    Map<String, String> taskWorkerLibraryOptions
+    Map<String, String> workerLibraryOptions
   ) {
 
     TaskSubmissionData(SessionId sessionId, BlobId payloadId) {
@@ -374,19 +388,19 @@ final class TaskSubmitter {
     }
 
     TaskSubmissionData withInputIds(List<BlobId> inputBlobIds) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withOutputIds(List<BlobId> outputBlobIds) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withSessionTaskConfig(TaskConfiguration sessionTaskConfig) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withTaskConfig(TaskConfiguration taskConfig) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withWorkerLibraryOptions(Map<String, String> workerLibraryOptions) {
@@ -395,11 +409,13 @@ final class TaskSubmitter {
     }
 
     SubmitTasksRequest toSubmitTasksRequest() {
-      var effectiveTaskConfig = taskConfig != null ? taskConfig.withOptions(taskWorkerLibraryOptions) : null;
-      var dataDependencies = new ArrayList<>(inputBlobIds);
+      var effectiveTaskConfig = taskConfig != null ?
+        taskConfig.withOptions(workerLibraryOptions) :
+        sessionTaskConfig.withOptions(workerLibraryOptions);
 
-      if (taskWorkerLibraryOptions != null && !taskWorkerLibraryOptions.isEmpty()) {
-        dataDependencies.add(BlobId.from(taskWorkerLibraryOptions.get(LIBRARY_BLOB_ID)));
+      var dataDependencies = new ArrayList<>(inputBlobIds);
+      if (!workerLibraryOptions.isEmpty()) {
+        dataDependencies.add(BlobId.from(workerLibraryOptions.get(LIBRARY_BLOB_ID)));
       }
 
       var taskCreation = TaskMapper.toTaskCreation(dataDependencies, outputBlobIds, payloadId, effectiveTaskConfig);

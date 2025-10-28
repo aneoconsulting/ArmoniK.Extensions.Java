@@ -36,7 +36,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private BlobId downloadSuccessId;
   private byte[] downloadContent;
   public List<UploadedDataInfo> uploadedDataInfos = new ArrayList<>();
-  public int blobAllocationsCount = 0;
+  public List<MetadataRequest> metadataRequests = new ArrayList<>();
 
 
   public void failDownloadFor(BlobId id) {
@@ -53,13 +53,17 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.downloadSuccessId = null;
     this.downloadContent = null;
     this.uploadedDataInfos = new ArrayList<>();
-    this.blobAllocationsCount = 0;
+    this.metadataRequests = new ArrayList<>();
   }
 
   @Override
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
     var builder = CreateResultsMetaDataResponse.newBuilder();
-    blobAllocationsCount = request.getResultsCount();
+    metadataRequests.addAll(request.getResultsList()
+                                   .stream()
+                                   .map(metadata -> new MetadataRequest(request.getSessionId(), metadata.getName(), metadata.getManualDeletion()))
+                                   .toList());
+
     range(0, request.getResultsCount()).forEach(i -> builder.addResults(ResultRaw.newBuilder().setResultId(UUID.randomUUID().toString()).build()));
     responseObserver.onNext(builder.build());
     responseObserver.onCompleted();
@@ -128,4 +132,6 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
     private boolean firstCall = true;
   }
+
+  public record MetadataRequest(String sessionId, String blobName, boolean manualDeletion) {}
 }

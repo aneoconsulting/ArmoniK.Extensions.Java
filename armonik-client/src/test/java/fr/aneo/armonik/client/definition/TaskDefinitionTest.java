@@ -78,4 +78,18 @@ class TaskDefinitionTest {
     assertThat(taskDefinition.inputHandles()).hasSize(1);
     assertThat(taskDefinition.inputHandles().get("prop1").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobId");
   }
+
+  @Test
+  void should_create_output_with_default_name_and_manual_deletion_when_using_simple_withOutput() {
+    // Given
+    var taskDefinition = new TaskDefinition();
+
+    // When
+    taskDefinition.withOutput("result");
+
+    // Then
+    assertThat(taskDefinition.outputDefinitions()).hasSize(1);
+    assertThat(taskDefinition.outputDefinitions().get("result").name()).isEmpty();
+    assertThat(taskDefinition.outputDefinitions().get("result").manualDeletion()).isFalse();
+  }
 }

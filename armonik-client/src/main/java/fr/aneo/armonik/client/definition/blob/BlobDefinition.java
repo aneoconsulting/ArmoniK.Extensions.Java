@@ -15,23 +15,40 @@
  */
 package fr.aneo.armonik.client.definition.blob;
 
+import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.model.BlobHandle;
 
 /**
- * Interface representing a blob definition in the ArmoniK cluster.
+ * Metadata definition for a blob in the ArmoniK cluster.
  * <p>
- * A blob represents data content that can be associated with tasks as inputs or outputs.
- * This base class provides common properties for all types of blob definitions:
+ * A {@code BlobDefinition} specifies cluster-level metadata for blob storage,
+ * including the monitoring name and deletion policy. This metadata is independent
+ * of how the blob is referenced in task definitions.
+ * <p>
+ * <strong>Important Distinction:</strong>
  * <ul>
- *   <li><b>Name</b>: A user-defined identifier for the blob</li>
- *   <li><b>Manual Deletion</b>: A flag indicating whether the user is responsible for
- *       explicitly deleting the blob data from the underlying object storage</li>
+ *   <li><strong>Blob name ({@link #name()}):</strong> Metadata stored in the ArmoniK
+ *       cluster for monitoring and management. This is cluster-wide and visible across
+ *       all tasks that reference this blob.</li>
+ *   <li><strong>Parameter name:</strong> The logical name used in
+ *       {@link TaskDefinition#withInput(String, InputBlobDefinition)} or
+ *       {@link TaskDefinition#withOutput(String, OutputBlobDefinition)} to reference
+ *       the blob within a specific task's contract. This is task-specific.</li>
  * </ul>
+ * <p>
+ * <strong>Example - Shared Blob with Different Parameter Names:</strong>
+ * <pre>{@code
+ * // Create blob with monitoring name "training_dataset"
+ * var dataset = InputBlobDefinition.from("training_dataset", dataBytes);
  *
- * <h2>Manual Deletion Policy</h2>
- * When {@code manualDeletion} is set to {@code true}, the user must explicitly delete the blob data from the
- * underlying object storage. When set to {@code false} (default), ArmoniK automatically manages the blob lifecycle and
- * cleans up data when no longer needed.
+ * // Same blob referenced with different parameter names in different tasks
+ * task1.withInput("trainingData", datasetHandle);  // Parameter name: "trainingData"
+ * task2.withInput("validationSet", datasetHandle); // Parameter name: "validationSet"
+ * task3.withInput("input", datasetHandle);         // Parameter name: "input"
+ *
+ * // All three tasks reference the same blob, which appears in ArmoniK monitoring
+ * // as "training_dataset" regardless of the parameter names used.
+ * }</pre>
  *
  * @see InputBlobDefinition
  * @see OutputBlobDefinition
@@ -40,12 +57,20 @@ import fr.aneo.armonik.client.model.BlobHandle;
 public sealed interface BlobDefinition permits InputBlobDefinition, OutputBlobDefinition {
 
   /**
-   * Returns the user-defined name of this blob.
+   * Returns the cluster-level name for monitoring and management.
    * <p>
-   * The name serves as a logical identifier and is never {@code null}.
-   * An empty string indicates an unnamed blob.
+   * This name is stored as metadata in the ArmoniK cluster and used for:
+   * <ul>
+   *   <li>Monitoring and observability dashboards</li>
+   *   <li>Debugging and diagnostics</li>
+   *   <li>Blob lifecycle management</li>
+   * </ul>
+   * <p>
+   * This is independent of parameter names used in task definitions.
+   * An empty string is a valid value for blobs that don't require
+   * specific monitoring identification.
    *
-   * @return the blob name, never null
+   * @return the blob name for cluster metadata, may be empty
    */
   String name();
 

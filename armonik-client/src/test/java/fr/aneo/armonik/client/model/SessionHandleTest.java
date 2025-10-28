@@ -19,6 +19,7 @@ import com.google.gson.Gson;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.client.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
@@ -40,6 +41,7 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultS
 import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.model.TestDataFactory.sessionInfo;
 import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.*;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -78,8 +80,8 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     // Given
     var taskConfiguration = new TaskConfiguration(10, 4, "partition_1", Duration.ofMinutes(30), Map.of("option2", "value2"));
     var workerLibrary = new WorkerLibrary("my_library.jar", "fr.aneo.MyClass", blobHandle("sessionId", "libraryBlobId"));
-    var taskDefinition = new TaskDefinition().withInput("name", InputBlobDefinition.from("John".getBytes()))
-                                             .withOutput("result")
+    var taskDefinition = new TaskDefinition().withInput("name", InputBlobDefinition.from("John".getBytes()).withName("UserName"))
+                                             .withOutput("result", OutputBlobDefinition.from("resultBlob", true))
                                              .withWorkerLibrary(workerLibrary)
                                              .withConfiguration(taskConfiguration);
 
@@ -225,7 +227,12 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
 
   private void validateBlobAllocations() {
-    assertThat(resultsGrpcMock.blobAllocationsCount).isEqualTo(3);
+    assertThat(resultsGrpcMock.metadataRequests).containsExactly(
+      new MetadataRequest(sessionInfo.id().asString(), "payload", false),
+      new MetadataRequest(sessionInfo.id().asString(), "UserName", false),
+      new MetadataRequest(sessionInfo.id().asString(), "resultBlob", true)
+
+    );
   }
 
   private void validateTaskHandle(TaskHandle taskHandle, TaskConfiguration taskConfiguration) {

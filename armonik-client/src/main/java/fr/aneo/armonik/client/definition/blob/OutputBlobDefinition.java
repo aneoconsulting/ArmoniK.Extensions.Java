@@ -26,6 +26,18 @@ import static java.util.Objects.requireNonNullElse;
  * An {@code OutputBlobDefinition} declares that a task will produce a blob with specific
  * properties (name and deletion policy), but does not contain the actual data content.
  * The data will be generated during task execution by the worker and uploaded to the cluster.
+ * <p>
+ * <strong>Usage Examples:</strong>
+ * <pre>{@code
+ * // Simple output with empty monitoring name (common for temporary results)
+ * task.withOutput("result");
+ *
+ * // Output with meaningful monitoring name for observability
+ * task.withOutput("result", OutputBlobDefinition.from("model_weights_v2", false));
+ *
+ * // Output requiring manual deletion (persistent data)
+ * task.withOutput("checkpoint", OutputBlobDefinition.from("training_checkpoint", true));
+ * }</pre>
  *
  * @see InputBlobDefinition
  * @see BlobDefinition

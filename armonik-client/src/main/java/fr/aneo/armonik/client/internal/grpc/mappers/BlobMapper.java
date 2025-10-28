@@ -17,10 +17,11 @@ package fr.aneo.armonik.client.internal.grpc.mappers;
 
 import com.google.protobuf.UnsafeByteOperations;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMetaDataRequest.ResultCreate;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.model.BlobId;
 import fr.aneo.armonik.client.model.SessionId;
 
-import java.util.stream.IntStream;
+import java.util.List;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
 
@@ -29,12 +30,16 @@ public final class BlobMapper {
   private BlobMapper() {
   }
 
-  public static CreateResultsMetaDataRequest toResultMetaDataRequest(SessionId sessionId, int count) {
+  public static <T extends BlobDefinition> CreateResultsMetaDataRequest toResultMetaDataRequest(SessionId sessionId, List<T> blobDefinitions) {
+    var metadata = blobDefinitions.stream()
+                              .map(blobDefinition -> ResultCreate.newBuilder()
+                                                                 .setName(blobDefinition.name())
+                                                                 .setManualDeletion(blobDefinition.manualDeletion())
+                                                                 .build())
+                              .toList();
     return CreateResultsMetaDataRequest.newBuilder()
                                        .setSessionId(sessionId.asString())
-                                       .addAllResults(IntStream.range(0, count)
-                                                               .mapToObj(index -> ResultCreate.newBuilder().build())
-                                                               .toList())
+                                       .addAllResults(metadata)
                                        .build();
   }
 

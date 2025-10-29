@@ -15,12 +15,18 @@
  */
 package fr.aneo.armonik.worker;
 
+import fr.aneo.armonik.worker.definition.task.TaskDefinition;
+import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Function;
 
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
+import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toMap;
 
 /**
  * Provides access to task inputs, outputs, and processing context for ArmoniK tasks.
@@ -58,6 +64,26 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
  * output.write(modelBytes);
  * }</pre>
  *
+ * <h2>Task Submission</h2>
+ * <p>
+ * Tasks can submit subtasks during execution. This enables dynamic task graphs where the
+ * structure is determined at runtime:
+ * </p>
+ * <pre>{@code
+ * // Create task definition
+ * var taskDef = TaskDefinition.builder()
+ *   .withInput("data", InputBlobDefinition.from(bytes))
+ *   .withOutput("result", OutputBlobDefinition.create())
+ *   .withConfiguration(config)
+ *   .build();
+ *
+ * // Submit subtask
+ * TaskHandle handle = taskContext.submitTask(taskDef);
+ *
+ * // Wait for completion if needed
+ * handle.waitForCompletion();
+ * }</pre>
+ *
  * <h2>File Management</h2>
  * <p>
  * The context manages file I/O through {@link TaskInput} and {@link TaskOutput}:
@@ -85,20 +111,48 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
  * and converted to appropriate {@link TaskOutcome} values.
  * </p>
  *
+ * <h2>Thread Safety</h2>
+ * <p>
+ * This class is thread-safe. Multiple threads can access inputs, outputs, and submit tasks
+ * concurrently.
+ * </p>
+ *
  * @see TaskProcessor
  * @see TaskInput
  * @see TaskOutput
- * @see BlobsMapping
+ * @see Payload
+ * @see TaskDefinition
  */
 public class TaskContext {
   private static final Logger logger = LoggerFactory.getLogger(TaskContext.class);
 
+  private final BlobService blobService;
+  private final TaskService taskService;
+  private final SessionId sessionId;
   private final Map<String, TaskInput> inputs;
   private final Map<String, TaskOutput> outputs;
+  private final Queue<CompletionStage<?>> pendingOperations = new ConcurrentLinkedQueue<>();
 
-  TaskContext(Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
-    this.inputs = inputs;
-    this.outputs = outputs;
+  /**
+   * Creates a task context with full task submission support.
+   * <p>
+   * This is the primary constructor used by the worker infrastructure. It provides access to
+   * all context features including task submission.
+   * </p>
+   *
+   * @param blobService the blob service for managing task data; must not be {@code null}
+   * @param taskService the task service for submitting subtasks; may be {@code null} to disable submission
+   * @param sessionId   the session identifier; may be {@code null} if taskService is {@code null}
+   * @param inputs      map of input names to input tasks; must not be {@code null}
+   * @param outputs     map of output names to output tasks; must not be {@code null}
+   * @throws NullPointerException if blobService, inputs, or outputs is {@code null}
+   */
+  TaskContext(BlobService blobService, TaskService taskService, SessionId sessionId, Map<String, TaskInput> inputs, Map<String, TaskOutput> outputs) {
+    this.blobService = requireNonNull(blobService, "blobService cannot be null");
+    this.taskService = requireNonNull(taskService, "taskService cannot be null");
+    this.sessionId = requireNonNull(sessionId, "sessionId cannot be null");
+    this.inputs = requireNonNull(inputs, "inputs cannot be null");
+    this.outputs = requireNonNull(outputs, "outputs cannot be null");
   }
 
   /**
@@ -199,5 +253,161 @@ public class TaskContext {
    */
   public Map<String, TaskOutput> outputs() {
     return Map.copyOf(outputs);
+  }
+
+  /**
+   * Submits a subtask for execution within the current session.
+   * <p>
+   * This method creates and submits a new task based on the provided definition. The subtask
+   * will execute asynchronously, potentially on a different worker instance.
+   * </p>
+   *
+   * <h4>Task Creation Flow</h4>
+   * <ol>
+   *   <li>Input blobs are created from the task definition's input definitions</li>
+   *   <li>Output blob metadata is prepared for expected outputs</li>
+   *   <li>Existing input handles from the definition are merged with newly created inputs</li>
+   *   <li>A payload blob is created containing the input/output ID mappings</li>
+   *   <li>The task is submitted to the Agent with all dependencies</li>
+   * </ol>
+   *
+   * <h4>Asynchronous Execution</h4>
+   * <p>
+   * This method returns immediately with a {@link TaskHandle}. The actual task submission
+   * completes asynchronously when all input blobs are created and the payload is uploaded.
+   * </p>
+   *
+   * @param taskDefinition the definition of the task to submit; must not be {@code null}
+   * @return a handle to track the submitted task; never {@code null}
+   * @throws NullPointerException          if {@code taskDefinition} is {@code null}
+   * @throws UnsupportedOperationException if this context does not support task submission
+   *                                       (created with the 3-argument constructor)
+   * @see TaskDefinition
+   * @see TaskHandle
+   * @see BlobService
+   */
+  public TaskHandle submitTask(TaskDefinition taskDefinition) {
+    requireNonNull(taskDefinition, "taskDefinition cannot be null");
+
+    logger.debug("Submitting task with {} input definitions and {} output definitions",
+      taskDefinition.inputDefinitions().size(),
+      taskDefinition.outputDefinitions().size());
+
+    var inputHandles = blobService.createBlobs(taskDefinition.inputDefinitions());
+    trackBlobCompletions(inputHandles.values());
+
+    var outputBlobHandles = blobService.prepareBlobs(taskDefinition.outputDefinitions());
+    trackBlobCompletions(outputBlobHandles.values());
+
+    var allInputHandles = new HashMap<>(inputHandles);
+    allInputHandles.putAll(taskDefinition.inputHandles());
+    logger.debug("Total inputs after merging: {}", allInputHandles.size());
+
+    var inputIdsByName = getIdsFrom(allInputHandles);
+    var outputIdsByName = getIdsFrom(outputBlobHandles);
+
+    var deferredTaskInfo = Futures.allOf(List.of(inputIdsByName, outputIdsByName))
+                                  .thenCompose(allIds -> {
+                                    var inputIds = allIds.get(0);
+                                    var outputIds = allIds.get(1);
+                                    logger.debug("Creating payload with input keys:{} and output keys:{}", inputIds.keySet(), outputIds.keySet());
+
+                                    var payload = Payload.from(inputIds, outputIds);
+                                    return blobService.createBlob(payload.asInputBlobDefinition())
+                                                      .deferredBlobInfo()
+                                                      .thenCompose(submitTask(taskDefinition, payload));
+                                  })
+                                  .whenComplete((taskInfo, throwable) -> {
+                                    if (throwable != null) {
+                                      logger.error("Task submission failed", throwable);
+                                    } else {
+                                      logger.debug("Task submitted successfully with id: {}", taskInfo.id());
+                                    }
+                                  });
+    trackTaskCompletion(deferredTaskInfo);
+
+    return new TaskHandle(sessionId, taskDefinition.configuration(), deferredTaskInfo, allInputHandles, outputBlobHandles);
+  }
+
+  void awaitCompletion() {
+    if (pendingOperations.isEmpty()) {
+      logger.debug("No pending operations to wait for");
+      return;
+    }
+
+    int operationCount = pendingOperations.size();
+    logger.info("Waiting for {} pending operations to complete", operationCount);
+
+    try {
+      var allOperations = CompletableFuture.allOf(
+        pendingOperations.stream()
+                         .map(CompletionStage::toCompletableFuture)
+                         .toArray(CompletableFuture[]::new)
+      );
+
+      allOperations.get();
+      logger.info("All {} operations completed successfully", operationCount);
+
+    } catch (ExecutionException e) {
+      logger.error("Operation failed during execution", e.getCause());
+      throw new ArmoniKException("Operation failed during task execution", e.getCause());
+
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      logger.error("Interrupted while waiting for operations to complete");
+      throw new ArmoniKException("Interrupted while waiting for operations", e);
+    }
+  }
+
+  private Function<BlobInfo, CompletionStage<TaskInfo>> submitTask(TaskDefinition taskDefinition, Payload payload) {
+    return payloadInfo -> {
+      logger.debug("Submitting task to Agent with payload id: {}", payloadInfo.id());
+      return taskService.submitTask(payload.inputsMapping().values(), payload.outputsMapping().values(), payloadInfo.id(), taskDefinition.configuration());
+    };
+  }
+
+  private void trackBlobCompletions(Collection<BlobHandle> blobHandles) {
+    logger.debug("Tracking blob completion: size={}", blobHandles.size());
+    pendingOperations.addAll(blobHandles.stream().map(BlobHandle::deferredBlobInfo).toList());
+  }
+
+  private void trackTaskCompletion(CompletionStage<TaskInfo> deferredTaskInfo) {
+    logger.debug("Tracking task completion");
+    pendingOperations.add(deferredTaskInfo);
+  }
+
+  /**
+   * Extracts blob IDs from a map of blob handles.
+   * <p>
+   * This method waits for all blob handles to complete and returns a map of logical names
+   * to blob IDs. The operation is asynchronous and completes when all blob metadata is
+   * available.
+   * </p>
+   *
+   * @param blobHandles map of logical names to blob handles
+   * @return a completion stage that yields a map of names to blob IDs
+   */
+  private static CompletionStage<Map<String, BlobId>> getIdsFrom(Map<String, BlobHandle> blobHandles) {
+    return Futures.allOf(mapValues(blobHandles, BlobHandle::deferredBlobInfo))
+                  .thenApply(blobInfos -> mapValues(blobInfos, BlobInfo::id));
+  }
+
+  /**
+   * Transforms the values of a map using the provided function.
+   * <p>
+   * This is a convenience method for functional-style map transformations.
+   * </p>
+   *
+   * @param map    the source map
+   * @param mapper the transformation function
+   * @param <K>    the key type
+   * @param <V>    the source value type
+   * @param <U>    the target value type
+   * @return a new map with transformed values
+   */
+  private static <K, V, U> Map<K, U> mapValues(Map<K, V> map, Function<V, U> mapper) {
+    return map.entrySet()
+              .stream()
+              .collect(toMap(Map.Entry::getKey, entry -> mapper.apply(entry.getValue())));
   }
 }

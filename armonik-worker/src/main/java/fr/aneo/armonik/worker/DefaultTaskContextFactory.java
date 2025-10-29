@@ -71,7 +71,7 @@ import static java.util.stream.Collectors.toMap;
  * @see TaskInput
  * @see TaskOutput
  */
-public class DefaultTaskContextFactory implements TaskContextFactory {
+final class DefaultTaskContextFactory implements TaskContextFactory {
   private static final Logger logger = LoggerFactory.getLogger(DefaultTaskContextFactory.class);
 
 
@@ -81,32 +81,37 @@ public class DefaultTaskContextFactory implements TaskContextFactory {
     requireNonNull(request, "request");
 
     var dataFolderPath = Path.of(request.getDataFolder());
-    var agentNotifier = new AgentNotifier(agentStub, SessionId.from(request.getSessionId()), request.getCommunicationToken());
+    var sessionId = SessionId.from(request.getSessionId());
+    var communicationToken = request.getCommunicationToken();
+    var agentNotifier = new AgentNotifier(agentStub, sessionId, communicationToken);
     var blobFileWriter = new BlobFileWriter(dataFolderPath, agentNotifier);
-    var blobsMapping = createBlobsMapping(dataFolderPath, request.getPayloadId());
-    var inputs = createInputs(blobsMapping, dataFolderPath);
-    var outputs = createOutputs(blobsMapping, blobFileWriter);
-    return new TaskContext(inputs, outputs);
+    var blobService = new BlobService(agentStub, blobFileWriter, sessionId, communicationToken);
+    var taskService = new TaskService(agentStub, sessionId, communicationToken);
+    var payload = getPayload(dataFolderPath, request.getPayloadId());
+    var inputs = createInputs(payload, dataFolderPath);
+    var outputs = createOutputs(payload, blobFileWriter);
+
+    return new TaskContext(blobService, taskService, sessionId, inputs, outputs);
   }
 
 
-  private static Map<String, TaskInput> createInputs(BlobsMapping blobsMapping, Path dataFolderPath) {
+  private static Map<String, TaskInput> createInputs(Payload blobsMapping, Path dataFolderPath) {
     return blobsMapping.inputsMapping()
                        .entrySet()
                        .stream()
                        .collect(toMap(Map.Entry::getKey, createInputTask(dataFolderPath)));
   }
 
-  private static Function<Map.Entry<String, String>, TaskInput> createInputTask(Path dataFolderPath) {
+  private static Function<Map.Entry<String, BlobId>, TaskInput> createInputTask(Path dataFolderPath) {
     return entry -> {
-      String logicalName = entry.getKey();
-      String blobId = entry.getValue();
+      var logicalName = entry.getKey();
+      var blobId = entry.getValue();
       try {
-        var inputFilePath = resolveWithin(dataFolderPath, blobId);
+        var inputFilePath = resolveWithin(dataFolderPath, blobId.asString());
         validateFile(inputFilePath);
         long fileSize = Files.size(inputFilePath);
         logger.info("Input task created: logicalName='{}', blobId={}, size={} bytes", logicalName, blobId, fileSize);
-        return new TaskInput(BlobId.from(entry.getValue()), logicalName, inputFilePath);
+        return new TaskInput(blobId, logicalName, inputFilePath);
 
       } catch (Exception e) {
         logger.error("Failed to create input task: logicalName='{}', blobId={}", logicalName, blobId, e);
@@ -115,20 +120,20 @@ public class DefaultTaskContextFactory implements TaskContextFactory {
     };
   }
 
-  private static Map<String, TaskOutput> createOutputs(BlobsMapping blobsMapping, BlobFileWriter writer) {
+  private static Map<String, TaskOutput> createOutputs(Payload blobsMapping, BlobFileWriter writer) {
     return blobsMapping.outputsMapping()
                        .entrySet()
                        .stream()
                        .collect(toMap(Map.Entry::getKey, createOutputTask(writer)));
   }
 
-  private static Function<Map.Entry<String, String>, TaskOutput> createOutputTask(BlobFileWriter writer) {
+  private static Function<Map.Entry<String, BlobId>, TaskOutput> createOutputTask(BlobFileWriter writer) {
     return entry -> {
-      String logicalName = entry.getKey();
-      String blobId = entry.getValue();
+      var logicalName = entry.getKey();
+      var blobId = entry.getValue();
       try {
-        logger.info("Output task created: logicalName='{}', blobId={}", logicalName, blobId);
-        return new TaskOutput(BlobId.from(blobId), logicalName, writer);
+        logger.info("Output task created: logicalName='{}', blobId={}", logicalName, blobId.asString());
+        return new TaskOutput(blobId, logicalName, writer);
       } catch (Exception e) {
         logger.error("Failed to create output task: logicalName='{}', blobId={}", logicalName, blobId, e);
         throw new ArmoniKException("Failed to create output task for: " + entry.getKey(), e);
@@ -136,12 +141,12 @@ public class DefaultTaskContextFactory implements TaskContextFactory {
     };
   }
 
-  private static BlobsMapping createBlobsMapping(Path dataFolderPath, String payloadId) {
+  private static Payload getPayload(Path dataFolderPath, String payloadId) {
     var payload = resolveWithin(dataFolderPath, payloadId);
     validateFile(payload);
     try {
       var payloadData = Files.readString(payload);
-      return BlobsMapping.fromJson(payloadData);
+      return Payload.fromJson(payloadData);
     } catch (IOException exception) {
       logger.error("Failed to read payload file: blobId={}, dataFolder={}", payloadId, dataFolderPath, exception);
       throw new ArmoniKException("Failed to read payload file: " + payloadId, exception);

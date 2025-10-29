@@ -48,7 +48,7 @@ class BlobServiceTest extends InProcessGrpcTestBase {
     var agentStub = AgentGrpc.newFutureStub(channel);
     var agentNotifier = new AgentNotifier(agentStub, SessionId.from("sessionId"), "communicationToken");
     var blobFileWriter = new BlobFileWriter(tempDir, agentNotifier);
-    blobService = new BlobService(agentStub, blobFileWriter, "communicationToken", SessionId.from("sessionId"));
+    blobService = new BlobService(agentStub, blobFileWriter, SessionId.from("sessionId"), "communicationToken");
     agentGrpcMock.reset();
   }
 

@@ -101,7 +101,7 @@ public class WorkerGrpc extends WorkerImplBase {
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
   private final TaskContextFactory taskContextFactory;
-  public final AtomicReference<ServingStatus> servingStatus;
+  final AtomicReference<ServingStatus> servingStatus;
 
   WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
     this.agentStub = agentStub;
@@ -166,6 +166,9 @@ public class WorkerGrpc extends WorkerImplBase {
       logger.info("Starting task processing");
       var outcome = taskProcessor.processTask(taskContext);
 
+      logger.info("Task processor returned {}, awaiting completion of pending operations", outcome.getClass().getSimpleName());
+      taskContext.awaitCompletion();
+
       long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
       if (outcome instanceof TaskOutcome.Success) {
         logger.info("Task processing completed successfully in {}ms", duration);
@@ -182,8 +185,7 @@ public class WorkerGrpc extends WorkerImplBase {
         ? exception.getMessage()
         : exception.toString();
 
-      logger.error("Task processing failed after {}ms with exception: {}",
-        duration, errorMessage, exception);
+      logger.error("Task processing failed after {}ms with exception: {}", duration, errorMessage, exception);
       responseObserver.onNext(ProcessReply.newBuilder()
                                           .setOutput(toOutput(new TaskOutcome.Error(errorMessage)))
                                           .build());

@@ -16,7 +16,6 @@
 package fr.aneo.armonik.worker;
 
 import com.google.protobuf.UnsafeByteOperations;
-import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import fr.aneo.armonik.worker.definition.blob.BlobDefinition;
 import fr.aneo.armonik.worker.definition.blob.InMemoryBlob;
 import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
@@ -73,7 +72,7 @@ import static java.util.stream.Collectors.toMap;
  * @see BlobHandle
  * @see BlobFileWriter
  */
-public class BlobService {
+final class BlobService {
   private static final Logger logger = LoggerFactory.getLogger(BlobService.class);
 
   static final int MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
@@ -88,11 +87,11 @@ public class BlobService {
    *
    * @param agentFutureStub    the gRPC stub for communicating with the Agent
    * @param blobFileWriter     the writer for writing blob data to shared folder
-   * @param communicationToken the communication token for this execution context
    * @param sessionId          the session identifier
+   * @param communicationToken the communication token for this execution context
    * @throws NullPointerException if any parameter is null
    */
-  public BlobService(AgentGrpc.AgentFutureStub agentFutureStub, BlobFileWriter blobFileWriter, String communicationToken, SessionId sessionId) {
+  BlobService(AgentFutureStub agentFutureStub, BlobFileWriter blobFileWriter, SessionId sessionId, String communicationToken) {
     this.agentFutureStub = requireNonNull(agentFutureStub, "agentFutureStub cannot be null");
     this.blobFileWriter = requireNonNull(blobFileWriter, "blobFileWriter cannot be null");
     this.communicationToken = requireNonNull(communicationToken, "communicationToken cannot be null");
@@ -108,13 +107,6 @@ public class BlobService {
    *   <li>Small in-memory blobs (≤ 4 MB) are uploaded inline via {@code CreateResults}</li>
    *   <li>Large blobs or streams are written to the shared folder via {@code CreateResultsMetaData} + file write</li>
    * </ul>
-   * <p>
-   * Input blobs are typically used as:
-   * </p>
-   * <ul>
-   *   <li>Data dependencies for tasks</li>
-   *   <li>Task payloads</li>
-   * </ul>
    *
    * @param inputBlobDefinitions map of logical names to input blob definitions
    * @return map of logical names to blob handles
@@ -122,7 +114,7 @@ public class BlobService {
    * @see InputBlobDefinition
    * @see #prepareBlobs(Map)
    */
-  public Map<String, BlobHandle> createBlobs(Map<String, InputBlobDefinition> inputBlobDefinitions) {
+  Map<String, BlobHandle> createBlobs(Map<String, InputBlobDefinition> inputBlobDefinitions) {
     requireNonNull(inputBlobDefinitions, "inputBlobDefinitions cannot be null");
 
     logger.debug("Creating {} input blobs", inputBlobDefinitions.size());
@@ -144,6 +136,29 @@ public class BlobService {
     logger.info("Created {} input blobs: {} uploaded inline, {} via file", result.size(), uploadableBlobs.size(), fileBasedBlobs.size());
 
     return result;
+  }
+
+  /**
+   * Creates a single input blob with its data from an input blob definition.
+   * <p>
+   * This method automatically determines the upload strategy based on blob characteristics:
+   * </p>
+   * <ul>
+   *   <li>Small in-memory blobs (≤ 4 MB) are uploaded inline via {@code CreateResults}</li>
+   *   <li>Large blobs or streams are written to the shared folder via {@code CreateResultsMetaData} + file write</li>
+   * </ul>
+   *
+   * @param inputBlobDefinition input blob definition containing the data to upload
+   * @return blob handle representing the created blob
+   * @throws NullPointerException if inputBlobDefinition is null
+   * @see InputBlobDefinition
+   * @see #createBlobs(Map)
+   * @see #prepareBlobs(Map)
+   */
+  BlobHandle createBlob(InputBlobDefinition inputBlobDefinition) {
+    requireNonNull(inputBlobDefinition, "blobDefinition cannot be null");
+
+    return createBlobs(Map.of("blob", inputBlobDefinition)).get("blob");
   }
 
   /**
@@ -176,7 +191,7 @@ public class BlobService {
    * @see InputBlobDefinition
    * @see #createBlobs(Map)
    */
-  public <T extends BlobDefinition> Map<String, BlobHandle> prepareBlobs(Map<String, T> blobDefinitions) {
+  <T extends BlobDefinition> Map<String, BlobHandle> prepareBlobs(Map<String, T> blobDefinitions) {
     requireNonNull(blobDefinitions, "blobDefinitions cannot be null");
 
     logger.debug("Preparing {} blob metadata", blobDefinitions.size());

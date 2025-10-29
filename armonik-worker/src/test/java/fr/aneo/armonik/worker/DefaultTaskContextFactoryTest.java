@@ -15,8 +15,8 @@
  */
 package fr.aneo.armonik.worker;
 
+import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
-import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,6 +28,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Random;
 
+import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
+import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,14 +45,27 @@ class DefaultTaskContextFactoryTest {
   private AgentGrpc.AgentFutureStub agentStub;
   private String payloadContent;
   private DefaultTaskContextFactory contextFactory;
+  private ProcessRequest request;
 
 
   @BeforeEach
   void setUp() {
     agentStub = Mockito.mock(AgentGrpc.AgentFutureStub.class);
     contextFactory = new DefaultTaskContextFactory();
-
     when(agentStub.withDeadlineAfter(anyLong(), eq(MILLISECONDS))).thenReturn(agentStub);
+    request = ProcessRequest.newBuilder()
+                            .setDataFolder(tempDir.toString())
+                            .setPayloadId("payload-id")
+                            .setSessionId("session-id")
+                            .setCommunicationToken("token")
+                            .setTaskOptions(TaskOptions.newBuilder()
+                                                       .setPartitionId("partition-id")
+                                                       .setPriority(3)
+                                                       .setMaxRetries(5)
+                                                       .setMaxDuration(Duration.newBuilder()
+                                                                               .setSeconds(10)
+                                                                               .setNanos(10)))
+                            .build();
     payloadContent = """
       {
         "inputs": {
@@ -68,13 +83,6 @@ class DefaultTaskContextFactoryTest {
   @Test
   @DisplayName("Should not create task context when payload does not exist")
   void should_not_create_task_context_when_Payload_does_not_exist() {
-    // Given
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
-
-    // When - Then
     assertThatThrownBy(() -> contextFactory.create(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
 
@@ -83,10 +91,6 @@ class DefaultTaskContextFactoryTest {
   void should_not_create_task_context_when_Payload_does_not_follow_convention() throws IOException {
     // Given
     writeString("payload-id", "payload not following convention");
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
 
     // When - Then
     assertThatThrownBy(() -> contextFactory.create(agentStub, request)).isInstanceOf(ArmoniKException.class);
@@ -98,10 +102,7 @@ class DefaultTaskContextFactoryTest {
     // Given
     writeString("payload-id", payloadContent);
     writeRandomBytes("name-id");
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
+
     // When - Then
     assertThatThrownBy(() -> contextFactory.create(agentStub, request)).isInstanceOf(ArmoniKException.class);
   }
@@ -113,10 +114,7 @@ class DefaultTaskContextFactoryTest {
     writeString("payload-id", payloadContent);
     writeRandomBytes("name-id");
     writeRandomBytes("age-id");
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
+
     // When
     var taskContext = contextFactory.create(agentStub, request);
 
@@ -132,10 +130,7 @@ class DefaultTaskContextFactoryTest {
     writeString("payload-id", payloadContent);
     writeString("name-id", "John Doe");
     writeString("age-id", "42");
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
+
     // When
     var taskContext = contextFactory.create(agentStub, request);
 
@@ -154,10 +149,6 @@ class DefaultTaskContextFactoryTest {
     writeString("payload-id", payloadContent);
     writeString("name-id", "John Doe");
     writeString("age-id", "42");
-    var request = WorkerCommon.ProcessRequest.newBuilder()
-                                             .setDataFolder(tempDir.toString())
-                                             .setPayloadId("payload-id")
-                                             .build();
 
     // When
     var taskContext = contextFactory.create(agentStub, request);

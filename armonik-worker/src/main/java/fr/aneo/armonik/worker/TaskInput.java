@@ -136,6 +136,10 @@ public final class TaskInput {
     this.logicalName = logicalName;
   }
 
+  public BlobId id() {
+    return id;
+  }
+
   /**
    * Returns the size of the input file in bytes.
    * <p>

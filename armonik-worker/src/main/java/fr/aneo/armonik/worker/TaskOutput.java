@@ -85,6 +85,10 @@ public final class TaskOutput {
     this.writer = requireNonNull(writer, "writer cannot be null");
   }
 
+  public BlobId id() {
+    return id;
+  }
+
   /**
    * Writes a byte array to this output.
    * <p>

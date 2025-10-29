@@ -96,15 +96,15 @@ class TaskContextTest extends InProcessGrpcTestBase {
   void should_submit_task_with_input_and_output_definitions() {
     // Given
     var taskConfig = new TaskConfiguration(2, 5, "compute-partition", Duration.ofMinutes(10), Map.of("key", "value"));
-    var taskDef = new TaskDefinition()
-      .withInput("data1", InputBlobDefinition.from("inputData1", new byte[100]))
-      .withInput("data2", InputBlobDefinition.from("inputData2", new byte[50]))
-      .withOutput("result1", OutputBlobDefinition.from("resultData"))
-      .withOutput("result2")
-      .withConfiguration(taskConfig);
+    var taskDef = new TaskDefinition().withInput("data1", InputBlobDefinition.from("inputData1", new byte[100]))
+                                      .withInput("data2", InputBlobDefinition.from("inputData2", new byte[50]))
+                                      .withOutput("result1", OutputBlobDefinition.from("resultData"))
+                                      .withOutput("result2")
+                                      .withConfiguration(taskConfig);
 
     // When
     var taskHandle = taskContext.submitTask(taskDef);
+    taskContext.awaitCompletion();
 
     // Then
     assertThat(taskHandle).isNotNull();
@@ -145,6 +145,7 @@ class TaskContextTest extends InProcessGrpcTestBase {
 
     // When
     var taskHandle = taskContext.submitTask(taskDef);
+    taskContext.awaitCompletion();
     var taskInfo = taskHandle.deferredTaskInfo().toCompletableFuture().join();
 
     // Then
@@ -152,6 +153,29 @@ class TaskContextTest extends InProcessGrpcTestBase {
 
     var taskCreation = agentGrpcMock.submittedTasks.taskCreations().get(0);
     assertThat(taskCreation.dataDependencies()).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("should support input reuse and output delegation")
+  void should_support_input_reuse_and_output_delegation() {
+    // Given
+    var parentInput = taskContext.getInput("input1");
+    var parentOutput = taskContext.getOutput("output1");
+
+    var taskDef = new TaskDefinition().withInput("config", parentInput)
+                                      .withOutput("result", parentOutput);
+
+    // When
+    taskContext.submitTask(taskDef);
+    taskContext.awaitCompletion();
+
+    // Then
+    assertThat(agentGrpcMock.submittedTasks.taskCreations()).hasSize(1);
+
+    var taskCreation = agentGrpcMock.submittedTasks.taskCreations().get(0);
+    assertThat(taskCreation.dataDependencies()).contains("input1-id");
+    assertThat(agentGrpcMock.uploadedBlobs.blobs()).doesNotContainKey("input1");
+    assertThat(taskCreation.expectedOutputKeys()).contains("output1-id");
   }
 
   @Test

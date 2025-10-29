@@ -33,15 +33,15 @@ import static java.util.Objects.requireNonNull;
  * Two implementations are provided:
  * </p>
  * <ul>
- *   <li>{@link InMemoryBlob} - for data already loaded in memory (byte arrays)</li>
- *   <li>{@link StreamBlob} - for streaming large datasets from input streams</li>
+ *   <li>{@link InMemoryBlobDefinition} - for data already loaded in memory (byte arrays)</li>
+ *   <li>{@link StreamBlobDefinition} - for streaming large datasets from input streams</li>
  * </ul>
  *
  * @see BlobDefinition
- * @see InMemoryBlob
- * @see StreamBlob
+ * @see InMemoryBlobDefinition
+ * @see StreamBlobDefinition
  */
-public sealed interface InputBlobDefinition extends BlobDefinition permits InMemoryBlob, StreamBlob {
+public sealed interface InputBlobDefinition extends BlobDefinition permits InMemoryBlobDefinition, StreamBlobDefinition {
 
   /**
    * Returns an input stream to read the blob data.
@@ -70,7 +70,7 @@ public sealed interface InputBlobDefinition extends BlobDefinition permits InMem
     requireNonNull(data, "data cannot be null");
     requireNonNull(name, "name cannot be null");
 
-    return new InMemoryBlob(name, data);
+    return new InMemoryBlobDefinition(name, data);
   }
 
   /**
@@ -123,7 +123,7 @@ public sealed interface InputBlobDefinition extends BlobDefinition permits InMem
   static InputBlobDefinition from(String name, InputStream stream) {
     requireNonNull(name, "name cannot be null");
     requireNonNull(stream, "stream cannot be null");
-    return new StreamBlob(name, stream);
+    return new StreamBlobDefinition(name, stream);
   }
 
   /**

@@ -28,13 +28,13 @@ import static java.util.Objects.requireNonNull;
  * </p>
  * <p>
  * This implementation is suitable for small to medium-sized data (typically &lt; 10 MB).
- * For larger datasets, consider using {@link StreamBlob} instead.
+ * For larger datasets, consider using {@link StreamBlobDefinition} instead.
  * </p>
  *
  * @see InputBlobDefinition
- * @see StreamBlob
+ * @see StreamBlobDefinition
  */
-public final class InMemoryBlob implements InputBlobDefinition {
+public final class InMemoryBlobDefinition implements InputBlobDefinition {
   private final String name;
   private final byte[] data;
 
@@ -44,7 +44,7 @@ public final class InMemoryBlob implements InputBlobDefinition {
    * @param name the blob name; must not be {@code null}
    * @param data the blob data; must not be {@code null}
    */
-  InMemoryBlob(String name, byte[] data) {
+  InMemoryBlobDefinition(String name, byte[] data) {
     this.data = requireNonNull(data, "data cannot be null");
     this.name = requireNonNull(name, "name cannot be null");
   }

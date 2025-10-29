@@ -35,9 +35,9 @@ import static java.util.Objects.requireNonNull;
  * </p>
  *
  * @see InputBlobDefinition
- * @see InMemoryBlob
+ * @see InMemoryBlobDefinition
  */
-public final class StreamBlob implements InputBlobDefinition {
+public final class StreamBlobDefinition implements InputBlobDefinition {
   private final String name;
   private final InputStream stream;
 
@@ -47,7 +47,7 @@ public final class StreamBlob implements InputBlobDefinition {
    * @param name   the blob name; must not be {@code null}
    * @param stream the input stream providing blob data; must not be {@code null}
    */
-  StreamBlob(String name, InputStream stream) {
+  StreamBlobDefinition(String name, InputStream stream) {
     this.name = requireNonNull(name, "name cannot be null");
     this.stream = requireNonNull(stream, "stream cannot be null");
   }

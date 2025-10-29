@@ -17,7 +17,7 @@ package fr.aneo.armonik.worker;
 
 import com.google.protobuf.UnsafeByteOperations;
 import fr.aneo.armonik.worker.definition.blob.BlobDefinition;
-import fr.aneo.armonik.worker.definition.blob.InMemoryBlob;
+import fr.aneo.armonik.worker.definition.blob.InMemoryBlobDefinition;
 import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
@@ -227,13 +227,13 @@ final class BlobService {
    * Checks if a blob can be uploaded inline (small in-memory blob).
    */
   private boolean isUploadable(BlobDefinition definition) {
-    return definition instanceof InMemoryBlob blob && blob.data().length <= MAX_UPLOAD_SIZE;
+    return definition instanceof InMemoryBlobDefinition blob && blob.data().length <= MAX_UPLOAD_SIZE;
   }
 
   /**
    * Uploads small in-memory blobs inline via CreateResults RPC.
    * <p>
-   * Casting to {@link InMemoryBlob} is safe because partitioning guarantees type.
+   * Casting to {@link InMemoryBlobDefinition} is safe because partitioning guarantees type.
    * </p>
    */
   private Map<String, BlobHandle> uploadBlobs(Map<String, InputBlobDefinition> uploadableBlobs) {
@@ -241,7 +241,7 @@ final class BlobService {
                           .stream()
                           .collect(toMap(
                             Map.Entry::getKey,
-                            entry -> uploadBlob((InMemoryBlob) entry.getValue())
+                            entry -> uploadBlob((InMemoryBlobDefinition) entry.getValue())
                           ));
   }
 
@@ -269,7 +269,7 @@ final class BlobService {
   /**
    * Uploads a small in-memory blob inline via CreateResults RPC.
    */
-  private BlobHandle uploadBlob(InMemoryBlob blob) {
+  private BlobHandle uploadBlob(InMemoryBlobDefinition blob) {
     var resultCreate = CreateResultsRequest.ResultCreate.newBuilder()
                                                         .setName(blob.name())
                                                         .setData(UnsafeByteOperations.unsafeWrap(blob.data()))

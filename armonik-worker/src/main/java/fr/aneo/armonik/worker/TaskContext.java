@@ -16,113 +16,91 @@
 package fr.aneo.armonik.worker;
 
 import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.worker.definition.task.TaskDefinition;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 
-import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
 
 /**
- * Provides access to task inputs, outputs, and processing context for ArmoniK tasks.
+ * Execution context provided to {@link TaskProcessor} implementations during task processing.
  * <p>
- * A {@code TaskContext} is created for each task execution and serves as the primary interface
- * between the {@link TaskProcessor} and the ArmoniK infrastructure. It manages access to input
- * data (payload and data dependencies), output data (expected outputs), and provides methods
- * for interacting with the Agent.
- * </p>
- *
- * <h2>Data Model</h2>
- * <p>
- * The task context operates on a file-based data model where:
+ * The {@code TaskContext} provides access to:
  * </p>
  * <ul>
- *   <li><strong>Payload</strong>: A JSON file mapping logical names to blob IDs for inputs and outputs</li>
- *   <li><strong>Inputs</strong>: Files in the shared data folder containing task input data</li>
- *   <li><strong>Outputs</strong>: File paths where task results should be written</li>
- *   <li><strong>Data Folder</strong>: A shared directory accessible by both Agent and Worker</li>
+ *   <li><strong>Task inputs</strong>: Read-only access to input data via {@link #getInput(String)}</li>
+ *   <li><strong>Task outputs</strong>: Write access to expected outputs via {@link #getOutput(String)}</li>
+ *   <li><strong>Subtask submission</strong>: Create and submit child tasks via {@link #submitTask(TaskDefinition)}</li>
+ *   <li><strong>Shared blob creation</strong>: Create blobs for reuse across subtasks via {@link #createBlob(InputBlobDefinition)}</li>
  * </ul>
  *
- * <h2>Input/Output Access</h2>
+ * <h2>Subtask Input Sources</h2>
  * <p>
- * Inputs and outputs are accessed by their logical names defined in the payload:
- * </p>
- * <pre>{@code
- * // Read input data
- * if (taskContext.hasInput("trainingData")) {
- *     InputTask input = taskContext.getInput("trainingData");
- *     byte[] data = input.rawData();
- * }
- *
- * // Write output data
- * OutputTask output = taskContext.getOutput("model");
- * output.write(modelBytes);
- * }</pre>
- *
- * <h2>Task Submission</h2>
- * <p>
- * Tasks can submit subtasks during execution. This enables dynamic task graphs where the
- * structure is determined at runtime:
- * </p>
- * <pre>{@code
- * // Create task definition
- * var taskDef = TaskDefinition.builder()
- *   .withInput("data", InputBlobDefinition.from(bytes))
- *   .withOutput("result", OutputBlobDefinition.create())
- *   .withConfiguration(config)
- *   .build();
- *
- * // Submit subtask
- * TaskHandle handle = taskContext.submitTask(taskDef);
- *
- * // Wait for completion if needed
- * handle.waitForCompletion();
- * }</pre>
- *
- * <h2>File Management</h2>
- * <p>
- * The context manages file I/O through {@link TaskInput} and {@link TaskOutput}:
+ * When submitting subtasks, inputs can come from three sources:
  * </p>
  * <ul>
- *   <li>{@link TaskInput}: Provides read-only access to input files with various read methods</li>
- *   <li>{@link TaskOutput}: Provides write-only access to output files with notification to Agent</li>
+ *   <li><strong>{@link InputBlobDefinition}</strong> - New data to be uploaded during submission</li>
+ *   <li><strong>{@link BlobHandle}</strong> - Reference to existing blobs in the cluster</li>
+ *   <li><strong>{@link TaskInput}</strong> - Reuse of the parent task's input data (no upload)</li>
  * </ul>
- * <p>
- * Files are located in the data folder specified in the {@link ProcessRequest}. The context
- * validates that all file paths are within this folder to prevent directory traversal attacks.
- * </p>
  *
- * <h2>Resource Management</h2>
+ * <h2>Subtask Output Types</h2>
  * <p>
- * The context maintains references to the data folder and file paths but does not manage
- * file lifecycle. Files are created and cleaned up by the Agent infrastructure, not by
- * the context.
+ * Subtasks can produce outputs in two ways:
  * </p>
+ * <ul>
+ *   <li><strong>{@link OutputBlobDefinition}</strong> - New outputs the subtask will create</li>
+ *   <li><strong>{@link TaskOutput}</strong> - Delegation of the parent's output to the subtask</li>
+ * </ul>
  *
- * <h2>Error Handling</h2>
+ * <h2>Output Delegation Pattern</h2>
  * <p>
- * Operations that fail due to I/O errors, missing files, or invalid data throw
- * {@link ArmoniKException}. These exceptions should be caught by the {@link TaskProcessor}
- * and converted to appropriate {@link TaskOutcome} values.
+ * A parent task can delegate the responsibility of producing one of its expected outputs
+ * to a subtask, enabling dynamic task graphs:
+ * </p>
+ * <pre>{@code
+ * // Parent task context
+ * TaskOutput resultOutput = taskContext.getOutput("result");
+ * TaskInput configInput = taskContext.getInput("config");
+ *
+ * // Create subtask that produces parent's output
+ * var subtask = new TaskDefinition()
+ *     .withInput("config", configInput)      // Reuse parent's input
+ *     .withOutput("result", resultOutput)    // Subtask produces parent's output
+ *     .withConfiguration(subtaskConfig);
+ *
+ * taskContext.submitTask(subtask);
+ * // Parent doesn't write to resultOutput - subtask will produce it
+ * }</pre>
+ *
+ * <h2>Asynchronous Operations</h2>
+ * <p>
+ * Task submission and blob creation are asynchronous. The {@link #awaitCompletion()} method,
+ * called automatically by {@link WorkerGrpc} after {@link TaskProcessor#processTask(TaskContext)}
+ * returns, ensures all pending operations complete before the task is marked as finished.
  * </p>
  *
  * <h2>Thread Safety</h2>
  * <p>
- * This class is thread-safe. Multiple threads can access inputs, outputs, and submit tasks
- * concurrently.
+ * This class is NOT thread-safe. It is designed to be used by a single thread during
+ * task processing. The Worker processes one task at a time.
  * </p>
  *
  * @see TaskProcessor
+ * @see TaskDefinition
  * @see TaskInput
  * @see TaskOutput
- * @see Payload
- * @see TaskDefinition
+ * @see WorkerGrpc
  */
 public class TaskContext {
   private static final Logger logger = LoggerFactory.getLogger(TaskContext.class);
@@ -334,11 +312,17 @@ public class TaskContext {
 
     var deferredTaskInfo = Futures.allOf(List.of(inputIdsByName, outputIdsByName))
                                   .thenCompose(allIds -> {
-                                    var inputIds = allIds.get(0);
-                                    var outputIds = allIds.get(1);
-                                    logger.debug("Creating payload with input keys:{} and output keys:{}", inputIds.keySet(), outputIds.keySet());
+                                    var taskInputIds = getTaskInputIds(taskDefinition);
+                                    var allInputIds = new HashMap<>(allIds.get(0));
+                                    allInputIds.putAll(taskInputIds);
 
-                                    var payload = Payload.from(inputIds, outputIds);
+                                    var taskOutputIds = getTaskOutputIds(taskDefinition);
+                                    var allOutputIds = new HashMap<>(allIds.get(1));
+                                    allOutputIds.putAll(taskOutputIds);
+
+                                    logger.debug("Creating payload with input keys:{} and output keys:{}", allInputIds.keySet(), allOutputIds.keySet());
+
+                                    var payload = Payload.from(allInputIds, allOutputIds);
                                     return blobService.createBlob(payload.asInputBlobDefinition())
                                                       .deferredBlobInfo()
                                                       .thenCompose(submitTask(taskDefinition, payload));
@@ -353,6 +337,26 @@ public class TaskContext {
     trackTaskCompletion(deferredTaskInfo);
 
     return new TaskHandle(sessionId, taskDefinition.configuration(), deferredTaskInfo, allInputHandles, outputBlobHandles);
+  }
+
+  private Map<String, BlobId> getTaskOutputIds(TaskDefinition taskDefinition) {
+    return taskDefinition.taskOutputs()
+                         .entrySet()
+                         .stream()
+                         .collect(toMap(
+                           Map.Entry::getKey,
+                           entry -> entry.getValue().id()
+                         ));
+  }
+
+  private static Map<String, BlobId> getTaskInputIds(TaskDefinition taskDefinition) {
+    return taskDefinition.taskInputs()
+                         .entrySet()
+                         .stream()
+                         .collect(toMap(
+                           Map.Entry::getKey,
+                           entry -> entry.getValue().id()
+                         ));
   }
 
   void awaitCompletion() {

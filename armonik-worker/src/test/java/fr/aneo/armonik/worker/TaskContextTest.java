@@ -230,6 +230,33 @@ class TaskContextTest extends InProcessGrpcTestBase {
       .hasCause(originalException);
   }
 
+  @Test
+  @DisplayName("should create shared blob that can be reused in multiple tasks")
+  void should_create_shared_blob_for_multiple_tasks() {
+    // Given
+    var sharedBlobDef = InputBlobDefinition.from("sharedData", new byte[100]);
+    var sharedHandle = taskContext.createBlob(sharedBlobDef);
+
+    // When
+    var task1 = new TaskDefinition()
+      .withInput("data", sharedHandle)
+      .withOutput("result1");
+
+    var task2 = new TaskDefinition()
+      .withInput("data", sharedHandle)
+      .withOutput("result2");
+
+    taskContext.submitTask(task1);
+    taskContext.submitTask(task2);
+    taskContext.awaitCompletion();
+
+    // Then
+    assertThat(agentGrpcMock.uploadedBlobs.blobs()).containsKey("sharedData");
+    assertThat(agentGrpcMock.submittedTasks.taskCreations()).hasSize(2);
+    assertThat(agentGrpcMock.submittedTasks.taskCreations().get(0).dataDependencies()).contains("sharedData-id");
+    assertThat(agentGrpcMock.submittedTasks.taskCreations().get(1).dataDependencies()).contains("sharedData-id");
+  }
+
   private CreateResultsResponse buildBlobCreationResponse() {
     return CreateResultsResponse.newBuilder()
                                 .setCommunicationToken("test-token")

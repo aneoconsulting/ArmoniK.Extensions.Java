@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker;
 
+import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.worker.definition.task.TaskDefinition;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
@@ -255,6 +256,31 @@ public class TaskContext {
     return Map.copyOf(outputs);
   }
 
+
+  /**
+   * Creates a blob that can be shared across multiple subtasks.
+   * <p>
+   * This method creates a blob independently of any task submission, allowing the same blob
+   * to be referenced by multiple subtasks. This is useful for:
+   * </p>
+   *
+   * @param inputBlobDefinition the definition of the blob to create; must not be {@code null}
+   * @return a handle to the created blob; never {@code null}
+   * @throws NullPointerException if {@code inputBlobDefinition} is {@code null}
+   * @see BlobHandle
+   * @see InputBlobDefinition
+   */
+  public BlobHandle createBlob(InputBlobDefinition inputBlobDefinition) {
+    requireNonNull(inputBlobDefinition, "inputBlobDefinition cannot be null");
+
+    logger.debug("Creating shared blob: {}", inputBlobDefinition.name());
+
+    var blobHandle = blobService.createBlob(inputBlobDefinition);
+    trackBlobCompletion(blobHandle);
+
+    return blobHandle;
+  }
+
   /**
    * Submits a subtask for execution within the current session.
    * <p>
@@ -367,8 +393,13 @@ public class TaskContext {
   }
 
   private void trackBlobCompletions(Collection<BlobHandle> blobHandles) {
-    logger.debug("Tracking blob completion: size={}", blobHandles.size());
+    logger.debug("Tracking blob completion. size={}", blobHandles.size());
     pendingOperations.addAll(blobHandles.stream().map(BlobHandle::deferredBlobInfo).toList());
+  }
+
+  private void trackBlobCompletion(BlobHandle blobHandle) {
+    logger.debug("Tracking blob completion");
+    pendingOperations.add(blobHandle.deferredBlobInfo());
   }
 
   private void trackTaskCompletion(CompletionStage<TaskInfo> deferredTaskInfo) {

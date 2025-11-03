@@ -16,11 +16,15 @@
 package fr.aneo.armonik.client.model;
 
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
-import fr.aneo.armonik.client.definition.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
+
+import java.time.Instant;
+import java.util.List;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.util.Objects.requireNonNull;
@@ -172,14 +176,22 @@ public final class SessionHandle {
    * @see BlobDefinition
    * @see TaskDefinition#withInput(String, BlobHandle)
    */
-  public BlobHandle createBlob(BlobDefinition blobDefinition) {
+  public BlobHandle createBlob(InputBlobDefinition blobDefinition) {
     requireNonNull(blobDefinition, "blobDefinition must not be null");
 
-    var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionInfo.id(), 1)))
-                                  .thenApply(response -> new BlobInfo(BlobId.from(response.getResults(0).getResultId())));
+    var request = toResultMetaDataRequest(sessionInfo.id(), List.of(blobDefinition));
+    var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(request))
+                                  .thenApply(response -> new BlobInfo(
+                                    BlobId.from(response.getResults(0).getResultId()),
+                                    sessionInfo.id(),
+                                    response.getResults(0).getName(),
+                                    response.getResults(0).getManualDeletion(),
+                                    response.getResults(0).getCreatedBy().isBlank() ? null : TaskId.from(response.getResults(0).getCreatedBy()),
+                                    Instant.ofEpochSecond(response.getResults(0).getCreatedAt().getSeconds(), response.getResults(0).getCreatedAt().getNanos())
+                                  ));
 
     var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channel);
-    blobHandle.uploadData(blobDefinition);
+    blobHandle.uploadData(blobDefinition.data());
     return blobHandle;
   }
 }

@@ -15,14 +15,15 @@
  */
 package fr.aneo.armonik.client.definition;
 
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.client.definition.blob.OutputBlobDefinition;
 import fr.aneo.armonik.client.model.*;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
-import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+import static fr.aneo.armonik.client.model.WorkerLibrary.NO_WORKER_LIBRARY;
 
 
 /**
@@ -48,7 +49,7 @@ import static fr.aneo.armonik.client.model.WorkerLibrary.*;
  * <p>
  * Inputs can be provided in two ways:
  * <ul>
- *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, BlobDefinition)}.
+ *   <li><strong>Inline data:</strong> Direct byte content via {@link #withInput(String, InputBlobDefinition)}.
  *       The data is uploaded to the cluster during task submission</li>
  *   <li><strong>Existing blobs:</strong> References to already-stored blobs via {@link #withInput(String, BlobHandle)}.
  *       Useful for sharing data across multiple tasks without re-uploading</li>
@@ -69,9 +70,9 @@ import static fr.aneo.armonik.client.model.WorkerLibrary.*;
  */
 public class TaskDefinition {
   private TaskConfiguration configuration;
-  private final Map<String, BlobDefinition> inputDefinitions;
+  private final Map<String, InputBlobDefinition> inputDefinitions;
   private final Map<String, BlobHandle> inputHandles;
-  private final List<String> outputs = new ArrayList<>();
+  private final Map<String, OutputBlobDefinition> outputDefinitions;
   private WorkerLibrary workerLibrary = NO_WORKER_LIBRARY;
 
 
@@ -79,18 +80,19 @@ public class TaskDefinition {
    * Creates an empty task definition with no inputs, outputs, or configuration.
    * <p>
    * Inputs, outputs, and configuration can be added using the fluent builder methods
-   * {@link #withInput(String, BlobDefinition)}, {@link #withInput(String, BlobHandle)},
+   * {@link #withInput(String, InputBlobDefinition)}, {@link #withInput(String, BlobHandle)},
    * {@link #withOutput(String)}, and {@link #withConfiguration(TaskConfiguration)}.
    */
   public TaskDefinition() {
     inputDefinitions = new HashMap<>();
     inputHandles = new HashMap<>();
+    outputDefinitions = new HashMap<>();
   }
 
   /**
    * Returns an immutable view of input definitions provided as inline data.
    * <p>
-   * This map includes only inputs added via {@link #withInput(String, BlobDefinition)} and
+   * This map includes only inputs added via {@link #withInput(String, InputBlobDefinition)} and
    * is keyed by the logical input names. Inputs added via {@link #withInput(String, BlobHandle)}
    * are available through {@link #inputHandles()}.
    *
@@ -98,7 +100,7 @@ public class TaskDefinition {
    * @see #inputHandles()
    * @see BlobDefinition
    */
-  public Map<String, BlobDefinition> inputDefinitions() {
+  public Map<String, InputBlobDefinition> inputDefinitions() {
     return Map.copyOf(inputDefinitions);
   }
 
@@ -106,7 +108,7 @@ public class TaskDefinition {
    * Returns an immutable view of inputs referenced by existing blob handles.
    * <p>
    * This map includes only inputs added via {@link #withInput(String, BlobHandle)} and
-   * is keyed by the logical input names. Inputs added via {@link #withInput(String, BlobDefinition)}
+   * is keyed by the logical input names. Inputs added via {@link #withInput(String, InputBlobDefinition)}
    * are available through {@link #inputDefinitions()}.
    *
    * @return an immutable map of input handles, keyed by input name
@@ -117,18 +119,8 @@ public class TaskDefinition {
     return Map.copyOf(inputHandles);
   }
 
-  /**
-   * Returns an immutable list of declared output names.
-   * <p>
-   * Output names specify the expected results that the task will produce. These names
-   * correspond to the blob handles available in {@link TaskHandle#outputs()} after
-   * task submission.
-   *
-   * @return an immutable list of output names, may be empty if no outputs are expected
-   * @see TaskHandle#outputs()
-   */
-  public List<String> outputs() {
-    return List.copyOf(outputs);
+  public Map<String, OutputBlobDefinition> outputDefinitions() {
+    return Map.copyOf(outputDefinitions);
   }
 
   /**
@@ -195,7 +187,7 @@ public class TaskDefinition {
    * @see BlobDefinition
    * @see #withInput(String, BlobHandle)
    */
-  public TaskDefinition withInput(String name, BlobDefinition blobDefinition) {
+  public TaskDefinition withInput(String name, InputBlobDefinition blobDefinition) {
     validateName(name);
     inputDefinitions.put(name, blobDefinition);
     inputHandles.remove(name);
@@ -215,7 +207,7 @@ public class TaskDefinition {
    * @throws NullPointerException     if name or blobHandle is null
    * @throws IllegalArgumentException if name is blank
    * @see BlobHandle
-   * @see #withInput(String, BlobDefinition)
+   * @see #withInput(String, InputBlobDefinition)
    */
   public TaskDefinition withInput(String name, BlobHandle blobHandle) {
     validateName(name);
@@ -225,21 +217,47 @@ public class TaskDefinition {
   }
 
   /**
-   * Declares an expected output by its logical name.
+   * Declares an expected output with default blob metadata.
    * <p>
-   * Output names specify the results that the task is expected to produce during execution.
-   * After task submission, these names will correspond to blob handles available through
-   * {@link TaskHandle#outputs()}.
+   * Creates an output with automatic deletion and empty cluster-level blob name.
+   * <p>
+   * Use {@link #withOutput(String, OutputBlobDefinition)} to specify meaningful blob names
+   * for monitoring purposes in the ArmoniK cluster.
    *
-   * @param name the logical output name
+   * @param name the parameter name for the output in the task's contract
    * @return this definition for method chaining
    * @throws NullPointerException     if name is null
    * @throws IllegalArgumentException if name is blank
    * @see TaskHandle#outputs()
+   * @see #withOutput(String, OutputBlobDefinition)
    */
   public TaskDefinition withOutput(String name) {
     validateName(name);
-    outputs.add(name);
+    outputDefinitions.put(name, OutputBlobDefinition.from(""));
+    return this;
+  }
+
+  /**
+   * Declares an expected output with explicit blob metadata.
+   * <p>
+   * Allows full control over blob metadata including:
+   * <ul>
+   *   <li><strong>Blob name:</strong> Used for monitoring in the ArmoniK cluster
+   *       (independent of parameter name)</li>
+   *   <li><strong>Deletion policy:</strong> Whether the blob requires manual cleanup</li>
+   * </ul>
+   *
+   * @param name           the parameter name for the output in the task's contract
+   * @param blobDefinition the blob metadata for storage in the ArmoniK cluster
+   * @return this definition for method chaining
+   * @throws NullPointerException     if name or blobDefinition is null
+   * @throws IllegalArgumentException if name is blank
+   * @see BlobDefinition
+   * @see #withOutput(String)
+   */
+  public TaskDefinition withOutput(String name, OutputBlobDefinition blobDefinition) {
+    validateName(name);
+    outputDefinitions.put(name, blobDefinition);
     return this;
   }
 

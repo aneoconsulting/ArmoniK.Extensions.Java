@@ -17,15 +17,17 @@ package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
-import fr.aneo.armonik.client.definition.BlobDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletionStage;
 import java.util.function.IntFunction;
@@ -202,21 +204,41 @@ final class TaskSubmitter {
   }
 
 
+  /**
+   * Allocates blob handles for all inputs, outputs, and the task payload.
+   * The method sends blob metadata (name and deletion policy) to the cluster, which responds
+   * with assigned blob IDs. These IDs are wrapped in {@link BlobHandle} instances that
+   * provide data upload and download capabilities.
+   *
+   * @param taskDefinition the task definition containing input and output specifications
+   * @return an allocation record containing the payload handle and maps of input/output handles
+   * keyed by their parameter names
+   * @see BlobHandlesAllocation
+   * @see BlobDefinition
+   */
   private BlobHandlesAllocation allocateBlobHandles(TaskDefinition taskDefinition) {
-    int inputDefinitionCount = taskDefinition.inputDefinitions().size();
-    int outputCount = taskDefinition.outputs().size();
-    int totalHandleCount = inputDefinitionCount + outputCount + 1;
+    var inputDefinitions = new ArrayList<>(taskDefinition.inputDefinitions().entrySet());
+    var outputDefinitions = new ArrayList<>(taskDefinition.outputDefinitions().entrySet());
+    var payload = InputBlobDefinition.from(new byte[0]).withName("payload");
 
-    var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionId, totalHandleCount)))
+    var allDefinitions = new ArrayList<BlobDefinition>(inputDefinitions.size() + outputDefinitions.size() + 1);
+    allDefinitions.add(payload);
+    allDefinitions.addAll(inputDefinitions.stream().map(Map.Entry::getValue).toList());
+    allDefinitions.addAll(outputDefinitions.stream().map(Map.Entry::getValue).toList());
+
+    var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionId, allDefinitions)))
                             .thenApply(CreateResultsMetaDataResponse::getResultsList);
-    var blobHandles = IntStream.range(0, totalHandleCount)
+
+    var blobHandles = IntStream.range(0, allDefinitions.size())
                                .mapToObj(toBlobHandle(sessionId, resultRaws))
                                .toList();
     var payloadHandle = blobHandles.get(0);
-    var outputHandles = blobHandles.subList(1, 1 + outputCount);
-    var inputHandles = blobHandles.subList(1 + outputCount, totalHandleCount);
-    var outputHandleByName = zip(taskDefinition.outputs(), outputHandles);
-    var inputHandleByName = zip(taskDefinition.inputDefinitions().keySet(), inputHandles);
+    var inputHandles = blobHandles.subList(1, 1 + inputDefinitions.size());
+    var outputHandles = blobHandles.subList(1 + inputDefinitions.size(), allDefinitions.size());
+
+
+    var inputHandleByName = zip(inputDefinitions, inputHandles);
+    var outputHandleByName = zip(outputDefinitions, outputHandles);
 
     return new BlobHandlesAllocation(payloadHandle, inputHandleByName, outputHandleByName);
   }
@@ -227,20 +249,20 @@ final class TaskSubmitter {
 
     Futures.allOf(inputIdByName)
            .thenCombine(Futures.allOf(outputIdByName), this::serializeToJson)
-           .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition));
+           .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition.data()));
   }
 
-  private void uploadInputs(BlobHandlesAllocation allocation, Map<String, BlobDefinition> inputDefinitions) {
+  private void uploadInputs(BlobHandlesAllocation allocation, Map<String, InputBlobDefinition> inputDefinitions) {
     allocation.inputHandlesByName()
               .entrySet()
               .stream()
               .collect(toMap(
                 Map.Entry::getValue,
-                entry -> inputDefinitions.get(entry.getKey())))
+                entry -> inputDefinitions.get(entry.getKey()).data()))
               .forEach(BlobHandle::uploadData);
   }
 
-  private BlobDefinition serializeToJson(Map<String, BlobId> inputIds, Map<String, BlobId> outputIds) {
+  private InputBlobDefinition serializeToJson(Map<String, BlobId> inputIds, Map<String, BlobId> outputIds) {
     var in = inputIds.entrySet()
                      .stream()
                      .collect(toMap(Map.Entry::getKey, e -> e.getValue().asString()));
@@ -251,7 +273,7 @@ final class TaskSubmitter {
     var payload = Map.of("inputs", in, "outputs", out);
     byte[] bytes = gson.toJson(payload).getBytes(UTF_8);
 
-    return BlobDefinition.from(bytes);
+    return InputBlobDefinition.from(bytes).withName("payload");
   }
 
   private static Collector<Map.Entry<String, BlobHandle>, ?, Map<String, CompletionStage<BlobId>>> ids() {
@@ -269,23 +291,35 @@ final class TaskSubmitter {
   private IntFunction<BlobHandle> toBlobHandle(SessionId sessionId, CompletionStage<List<ResultRaw>> resultRaws) {
     return index -> new BlobHandle(
       sessionId,
-      resultRaws.thenApply(resultRaw -> new BlobInfo(BlobId.from(resultRaw.get(index).getResultId()))),
+      resultRaws.thenApply(raws -> toBlobInfo(sessionId, raws.get(index))),
       channel
     );
   }
 
-  private static <K, V> Map<K, V> zip(Collection<K> keys, Collection<V> values) {
+  private static BlobInfo toBlobInfo(SessionId sessionId, ResultRaw resultRaw) {
+    var resultId = BlobId.from(resultRaw.getResultId());
+    var name = resultRaw.getName();
+    var manualDeletion = resultRaw.getManualDeletion();
+    var createdBy = resultRaw.getCreatedBy();
+    var createdAt = resultRaw.getCreatedAt();
+
+    var createdByTask = createdBy.isBlank() ? null : TaskId.from(createdBy);
+    var createdAtInstant = Instant.ofEpochSecond(createdAt.getSeconds(), createdAt.getNanos());
+
+    return new BlobInfo(resultId, sessionId, name, manualDeletion, createdByTask, createdAtInstant);
+  }
+
+  private static <K, V, U> Map<K, U> zip(List<Map.Entry<K, V>> keys, List<U> values) {
     if (keys.size() != values.size()) {
       throw new IllegalArgumentException("Collections must have the same size");
     }
-    Iterator<K> keyIt = keys.iterator();
-    Iterator<V> valIt = values.iterator();
 
-    Map<K, V> map = new LinkedHashMap<>(keys.size());
-    while (keyIt.hasNext() && valIt.hasNext()) {
-      map.put(keyIt.next(), valIt.next());
-    }
-    return map;
+    return IntStream.range(0, keys.size())
+                    .boxed()
+                    .collect(toMap(
+                      i -> keys.get(i).getKey(),
+                      values::get)
+                    );
   }
 
   /**
@@ -330,13 +364,13 @@ final class TaskSubmitter {
    * enables clean composition in the asynchronous submission pipeline.
    * <p>
    *
-   * @param sessionId                 the session ID for task ownership
-   * @param payloadId                 the blob ID of the JSON name-to-ID mapping payload
-   * @param inputBlobIds              list of input blob IDs (data dependencies)
-   * @param outputBlobIds             list of output blob IDs (expected results)
-   * @param sessionTaskConfig         default task configuration from session definition
-   * @param taskConfig                task-specific configuration (may be null if using session defaults)
-   * @param taskWorkerLibraryOptions  worker library options to merge into configuration
+   * @param sessionId                the session ID for task ownership
+   * @param payloadId                the blob ID of the JSON name-to-ID mapping payload
+   * @param inputBlobIds             list of input blob IDs (data dependencies)
+   * @param outputBlobIds            list of output blob IDs (expected results)
+   * @param sessionTaskConfig        default task configuration from session definition
+   * @param taskConfig               task-specific configuration (may be null if using session defaults)
+   * @param workerLibraryOptions worker library options to merge into configuration
    * @see #submit(TaskDefinition)
    */
   private record TaskSubmissionData(
@@ -346,7 +380,7 @@ final class TaskSubmitter {
     List<BlobId> outputBlobIds,
     TaskConfiguration sessionTaskConfig,
     TaskConfiguration taskConfig,
-    Map<String, String> taskWorkerLibraryOptions
+    Map<String, String> workerLibraryOptions
   ) {
 
     TaskSubmissionData(SessionId sessionId, BlobId payloadId) {
@@ -354,19 +388,19 @@ final class TaskSubmitter {
     }
 
     TaskSubmissionData withInputIds(List<BlobId> inputBlobIds) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withOutputIds(List<BlobId> outputBlobIds) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withSessionTaskConfig(TaskConfiguration sessionTaskConfig) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withTaskConfig(TaskConfiguration taskConfig) {
-      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, taskWorkerLibraryOptions);
+      return new TaskSubmissionData(sessionId, payloadId, inputBlobIds, outputBlobIds, sessionTaskConfig, taskConfig, workerLibraryOptions);
     }
 
     TaskSubmissionData withWorkerLibraryOptions(Map<String, String> workerLibraryOptions) {
@@ -375,11 +409,13 @@ final class TaskSubmitter {
     }
 
     SubmitTasksRequest toSubmitTasksRequest() {
-      var effectiveTaskConfig = taskConfig != null ? taskConfig.withOptions(taskWorkerLibraryOptions) : null;
-      var dataDependencies = new ArrayList<>(inputBlobIds);
+      var effectiveTaskConfig = taskConfig != null ?
+        taskConfig.withOptions(workerLibraryOptions) :
+        sessionTaskConfig.withOptions(workerLibraryOptions);
 
-      if (taskWorkerLibraryOptions != null && !taskWorkerLibraryOptions.isEmpty()) {
-        dataDependencies.add(BlobId.from(taskWorkerLibraryOptions.get(LIBRARY_BLOB_ID)));
+      var dataDependencies = new ArrayList<>(inputBlobIds);
+      if (!workerLibraryOptions.isEmpty()) {
+        dataDependencies.add(BlobId.from(workerLibraryOptions.get(LIBRARY_BLOB_ID)));
       }
 
       var taskCreation = TaskMapper.toTaskCreation(dataDependencies, outputBlobIds, payloadId, effectiveTaskConfig);

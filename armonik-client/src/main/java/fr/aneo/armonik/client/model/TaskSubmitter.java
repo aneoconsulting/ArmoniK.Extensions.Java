@@ -16,20 +16,25 @@
 package fr.aneo.armonik.client.model;
 
 import com.google.gson.Gson;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
+import fr.aneo.armonik.client.definition.SessionDefinition;
+import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
-import fr.aneo.armonik.client.definition.blob.BlobDefinition;
-import fr.aneo.armonik.client.definition.SessionDefinition;
-import fr.aneo.armonik.client.definition.TaskDefinition;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.stream.Collector;
 import java.util.stream.IntStream;
@@ -37,14 +42,11 @@ import java.util.stream.Stream;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMetaDataResponse;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ResultRaw;
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.ResultsFutureStub;
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.newFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
-import static fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc.TasksFutureStub;
-import static fr.aneo.armonik.client.internal.concurrent.Futures.toCompletionStage;
-import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
+import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse;
 import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
-import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+import static fr.aneo.armonik.client.model.WorkerLibrary.LIBRARY_BLOB_ID;
+import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
@@ -80,9 +82,7 @@ final class TaskSubmitter {
 
   private final SessionId sessionId;
   private final TaskConfiguration defaultTaskConfiguration;
-  private final ManagedChannel channel;
-  private final TasksFutureStub tasksStub;
-  private final ResultsFutureStub resultsFutureStub;
+  private final ChannelPool channelPool;
   private final Gson gson = new Gson();
   private BlobCompletionCoordinator blobCompletionCoordinator;
 
@@ -95,23 +95,21 @@ final class TaskSubmitter {
    *
    * @param sessionId         the identifier of the session context for task submission
    * @param sessionDefinition the session definition containing task configuration and output listener
-   * @param channel           the gRPC channel for cluster communication
+   * @param channelPool       the gRPC channel pool for cluster communication
    * @throws NullPointerException if any parameter is null
    * @see SessionDefinition
    * @see BlobCompletionCoordinator
    */
   TaskSubmitter(SessionId sessionId,
                 SessionDefinition sessionDefinition,
-                ManagedChannel channel) {
+                ChannelPool channelPool) {
 
     this.sessionId = sessionId;
     this.defaultTaskConfiguration = sessionDefinition.taskConfiguration() != null ? sessionDefinition.taskConfiguration() : defaultConfiguration();
-    this.channel = channel;
-    this.resultsFutureStub = newFutureStub(channel);
-    this.tasksStub = TasksGrpc.newFutureStub(channel);
+    this.channelPool = channelPool;
 
     if (sessionDefinition.outputListener() != null) {
-      this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channel, sessionDefinition);
+      this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, sessionDefinition);
     }
   }
 
@@ -167,7 +165,7 @@ final class TaskSubmitter {
                                          .thenApply(submission -> submission.withSessionTaskConfig(defaultTaskConfiguration))
                                          .thenApply(submission -> submission.withTaskConfig(taskDefinition.configuration()))
                                          .thenApply(TaskSubmissionData::toSubmitTasksRequest)
-                                         .thenCompose(request -> toCompletionStage(tasksStub.submitTasks(request)))
+                                         .thenCompose(this::submitTask)
                                          .thenApply(response -> new TaskInfo(TaskId.from(response.getTaskInfos(0).getTaskId())))
                                          .whenComplete((info, ex) -> {
                                            if (ex != null)
@@ -203,7 +201,6 @@ final class TaskSubmitter {
     return blobCompletionCoordinator.waitUntilIdle();
   }
 
-
   /**
    * Allocates blob handles for all inputs, outputs, and the task payload.
    * The method sends blob metadata (name and deletion policy) to the cluster, which responds
@@ -226,8 +223,8 @@ final class TaskSubmitter {
     allDefinitions.addAll(inputDefinitions.stream().map(Map.Entry::getValue).toList());
     allDefinitions.addAll(outputDefinitions.stream().map(Map.Entry::getValue).toList());
 
-    var resultRaws = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(toResultMetaDataRequest(sessionId, allDefinitions)))
-                            .thenApply(CreateResultsMetaDataResponse::getResultsList);
+    var resultRaws = channelPool.executeAsync(createMetadata(allDefinitions))
+                                .thenApply(CreateResultsMetaDataResponse::getResultsList);
 
     var blobHandles = IntStream.range(0, allDefinitions.size())
                                .mapToObj(toBlobHandle(sessionId, resultRaws))
@@ -241,6 +238,14 @@ final class TaskSubmitter {
     var outputHandleByName = zip(outputDefinitions, outputHandles);
 
     return new BlobHandlesAllocation(payloadHandle, inputHandleByName, outputHandleByName);
+  }
+
+  private Function<ManagedChannel, CompletionStage<CreateResultsMetaDataResponse>> createMetadata(ArrayList<BlobDefinition> allDefinitions) {
+    return channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel).createResultsMetaData(toResultMetaDataRequest(sessionId, allDefinitions)));
+  }
+
+  private CompletionStage<SubmitTasksResponse> submitTask(SubmitTasksRequest request) {
+    return channelPool.executeAsync(channel -> Futures.toCompletionStage(TasksGrpc.newFutureStub(channel).submitTasks(request)));
   }
 
   private void uploadPayload(Map<String, BlobHandle> allInputHandlesByName, BlobHandlesAllocation allocation) {
@@ -292,7 +297,7 @@ final class TaskSubmitter {
     return index -> new BlobHandle(
       sessionId,
       resultRaws.thenApply(raws -> toBlobInfo(sessionId, raws.get(index))),
-      channel
+      channelPool
     );
   }
 
@@ -364,12 +369,12 @@ final class TaskSubmitter {
    * enables clean composition in the asynchronous submission pipeline.
    * <p>
    *
-   * @param sessionId                the session ID for task ownership
-   * @param payloadId                the blob ID of the JSON name-to-ID mapping payload
-   * @param inputBlobIds             list of input blob IDs (data dependencies)
-   * @param outputBlobIds            list of output blob IDs (expected results)
-   * @param sessionTaskConfig        default task configuration from session definition
-   * @param taskConfig               task-specific configuration (may be null if using session defaults)
+   * @param sessionId            the session ID for task ownership
+   * @param payloadId            the blob ID of the JSON name-to-ID mapping payload
+   * @param inputBlobIds         list of input blob IDs (data dependencies)
+   * @param outputBlobIds        list of output blob IDs (expected results)
+   * @param sessionTaskConfig    default task configuration from session definition
+   * @param taskConfig           task-specific configuration (may be null if using session defaults)
    * @param workerLibraryOptions worker library options to merge into configuration
    * @see #submit(TaskDefinition)
    */

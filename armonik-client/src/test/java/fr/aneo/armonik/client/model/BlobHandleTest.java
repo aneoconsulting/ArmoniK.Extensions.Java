@@ -37,7 +37,7 @@ class BlobHandleTest extends InProcessGrpcTestBase {
 
   @BeforeEach
   void setUp() {
-    blobHandle = new BlobHandle(sessionId(), completedFuture(blobInfo("BlobId")), channel);
+    blobHandle = new BlobHandle(sessionId(), completedFuture(blobInfo("BlobId")), channelPool);
   }
 
   @Test

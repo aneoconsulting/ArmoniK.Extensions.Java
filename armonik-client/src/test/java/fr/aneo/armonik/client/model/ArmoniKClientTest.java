@@ -20,6 +20,7 @@ import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
 import io.grpc.BindableService;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -28,23 +29,24 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ArmoniKClientTest extends InProcessGrpcTestBase {
 
   private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
   private ArmoniKClient client;
+  private SessionDefinition sessionDefinition;
+  private TaskConfiguration taskConfiguration;
 
   @BeforeEach
   void setUp() {
-    client = new ArmoniKClient(channel);
+    taskConfiguration = new TaskConfiguration(3, 1, "partition_1", Duration.ofMinutes(60), Map.of("option1", "value1"));
+    sessionDefinition = new SessionDefinition(Set.of("partition_1", "partition_2"), taskConfiguration);
+    client = new ArmoniKClient(channelPool);
   }
 
   @Test
   void should_open_a_new_session_successfully() {
-    // Given
-    var taskConfiguration = new TaskConfiguration(3, 1, "partition_1", Duration.ofMinutes(60), Map.of("option1", "value1"));
-    var sessionDefinition = new SessionDefinition(Set.of("partition_1", "partition_2"), taskConfiguration);
-
     // When
     var sessionHandle = client.openSession(sessionDefinition);
 
@@ -60,6 +62,33 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getMaxDuration().getNanos()).isEqualTo(0);
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getPriority()).isEqualTo(1);
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getOptionsMap()).isEqualTo(Map.of("option1", "value1"));
+  }
+
+  @Test
+  @DisplayName("should close channel pool when client is closed")
+  void should_close_channel_pool_when_client_is_closed() {
+    // When
+    client.close();
+
+    // Then
+    assertThatThrownBy(() -> client.openSession(sessionDefinition)).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  @DisplayName("should fail to create session after client is closed")
+  void should_fail_to_create_session_after_client_is_closed() {
+    // Given
+    client.close();
+
+    // When/Then
+    assertThatThrownBy(() -> client.openSession(sessionDefinition)).isInstanceOf(IllegalStateException.class);
+  }
+
+  @SuppressWarnings("resource")
+  @Test
+  @DisplayName("should throw NPE when config is null")
+  void should_throw_npe_when_config_is_null() {
+    assertThatThrownBy(() -> new ArmoniKClient((ArmoniKConfig) null)).isInstanceOf(NullPointerException.class);
   }
 
   @Override

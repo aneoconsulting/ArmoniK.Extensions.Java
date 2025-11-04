@@ -55,29 +55,25 @@ final class BlobCompletionEventWatcher {
 
   private static final Logger logger = LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
 
-  private final EventsGrpc.EventsStub eventsStub;
   private final BlobCompletionListener listener;
   private final SessionId sessionId;
+  private final ChannelPool channelPool;
 
   /**
-   * Creates a new blob completion event watcher using the specified gRPC channel.
+   * Creates a new blob completion event watcher using the specified channel pool.
    * <p>
-   * The watcher will use the provided channel to establish event streams with the
+   * The watcher will use the provided channel pool to establish event streams with the
    * ArmoniK cluster for monitoring blob state changes.
    *
-   * @param sessionId the identifier of the session this watcher serves
-   * @param channel   the gRPC channel for cluster communication
-   * @param listener  the listener to receive completion events
-   * @throws NullPointerException if channel is null
+   * @param sessionId   the identifier of the session this watcher serves
+   * @param channelPool the gRPC channel pool for cluster communication
+   * @param listener    the listener to receive completion events
+   * @throws NullPointerException if channelPool is null
    */
-  BlobCompletionEventWatcher(SessionId sessionId, ManagedChannel channel, BlobCompletionListener listener) {
-    requireNonNull(sessionId, "sessionId must not be null");
-    requireNonNull(channel, "channel must not be null");
-    requireNonNull(listener, "listener must not be null");
-
-    this.eventsStub = EventsGrpc.newStub(channel);
-    this.sessionId = sessionId;
-    this.listener = listener;
+  BlobCompletionEventWatcher(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener listener) {
+    this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
+    this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
+    this.listener = requireNonNull(listener, "listener must not be null");
   }
 
   /**
@@ -106,25 +102,47 @@ final class BlobCompletionEventWatcher {
     requireNonNull(blobHandles, "blobHandles must not be null");
 
     var ticket = new WatchTicket();
-    handlesById(blobHandles).thenAccept(handlesById -> eventsStub.getEvents(
-      createEventSubscriptionRequest(sessionId, handlesById.keySet()),
-      new BlobCompletionEventObserver(sessionId, handlesById, ticket.completion, listener, ticket::setLeftoverHandles)
-    )).exceptionally(ex -> {
-      logger.error("Failed to set up event subscription. SessionId: {}", sessionId, ex);
 
-      ticket.completion.completeExceptionally(ex);
-      return null;
-    });
+    handlesById(blobHandles)
+      .thenCompose(handlesById -> startEventStream(handlesById, ticket))
+      .whenComplete((result, error) -> completeTicket(ticket, error));
 
     return ticket;
   }
-
 
   private static CompletionStage<Map<BlobId, BlobHandle>> handlesById(List<BlobHandle> handles) {
     return Futures.allOf(handles.stream()
                                 .map(handle -> handle.deferredBlobInfo().thenApply(info -> Map.entry(info.id(), handle)))
                                 .toList())
                   .thenApply(entry -> entry.stream().collect(toMap(Map.Entry::getKey, Map.Entry::getValue)));
+  }
+
+  private void completeTicket(WatchTicket ticket, Throwable error) {
+    if (error != null) {
+      logger.error("Event stream failed for session {}", sessionId, error);
+      ticket.completion.completeExceptionally(error);
+    } else {
+      logger.debug("Event stream completed successfully for session {}", sessionId);
+      ticket.completion.complete(null);
+    }
+  }
+
+  private CompletionStage<Void> startEventStream(Map<BlobId, BlobHandle> handlesById, WatchTicket ticket) {
+    logger.debug("Starting event stream for session {} with {} blob handles", sessionId, handlesById.size());
+
+    return channelPool.executeAsync(channel ->
+      subscribeToEvents(channel, handlesById, ticket)
+    );
+  }
+
+  private CompletionStage<Void> subscribeToEvents(ManagedChannel channel, Map<BlobId, BlobHandle> handlesById, WatchTicket ticket) {
+    var streamCompletion = new CompletableFuture<Void>();
+
+    EventsGrpc.newStub(channel).getEvents(
+      createEventSubscriptionRequest(sessionId, handlesById.keySet()),
+      new BlobCompletionEventObserver(sessionId, handlesById, streamCompletion, listener, ticket::setLeftoverHandles)
+    );
+    return streamCompletion;
   }
 
   /**
@@ -162,7 +180,9 @@ final class BlobCompletionEventWatcher {
      *
      * @return a completion stage for the watch operation
      */
-    CompletionStage<Void> completion() { return completion; }
+    CompletionStage<Void> completion() {
+      return completion;
+    }
 
     private void setLeftoverHandles(List<BlobHandle> handles) {
       var snapshot = (handles == null ? List.<BlobHandle>of() : List.copyOf(handles));

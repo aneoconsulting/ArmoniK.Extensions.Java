@@ -17,7 +17,6 @@ package fr.aneo.armonik.client.model;
 
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
-import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,16 +79,16 @@ final class BlobCompletionCoordinator {
    * for all completion event notifications.
    *
    * @param sessionId the identifier of the session this coordinator serves
-   * @param channel   the gRPC channel for cluster communication
+   * @param channelPool   the gRPC channel pool for cluster communication
    * @throws NullPointerException if any parameter is null
    * @see SessionId
    * @see BlobCompletionListener
    * @see BlobCompletionEventWatcher
    */
-  BlobCompletionCoordinator(SessionId sessionId, ManagedChannel channel, SessionDefinition sessionDefinition) {
+  BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, SessionDefinition sessionDefinition) {
     this(
       sessionId,
-      new BlobCompletionEventWatcher(sessionId, channel, sessionDefinition.outputListener()),
+      new BlobCompletionEventWatcher(sessionId, channelPool, sessionDefinition.outputListener()),
       sessionDefinition.outputBatchingPolicy(),
       Schedulers.shared()
     );

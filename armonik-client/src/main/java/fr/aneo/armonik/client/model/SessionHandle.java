@@ -25,6 +25,8 @@ import io.grpc.ManagedChannel;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
+import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.util.Objects.requireNonNull;
@@ -53,8 +55,7 @@ public final class SessionHandle {
 
   private final SessionInfo sessionInfo;
   private final TaskSubmitter taskSubmitter;
-  private final ResultsGrpc.ResultsFutureStub resultsFutureStub;
-  private final ManagedChannel channel;
+  private final ChannelPool channelPool;
 
 
   /**
@@ -66,18 +67,17 @@ public final class SessionHandle {
    *
    * @param sessionInfo       the immutable session metadata including session ID and configuration
    * @param sessionDefinition the session definition used for task default configurations
-   * @param channel           the gRPC channel for communicating with the ArmoniK cluster
+   * @param channelPool       the gRPC channel pool for cluster communication
    * @throws NullPointerException if any parameter is null
    * @see SessionInfo
    * @see SessionDefinition
    */
-  SessionHandle(SessionInfo sessionInfo, SessionDefinition sessionDefinition, ManagedChannel channel) {
+  SessionHandle(SessionInfo sessionInfo, SessionDefinition sessionDefinition, ChannelPool channelPool) {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     this.sessionInfo = requireNonNull(sessionInfo, "sessionInfo must not be null");
-    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition, channel);
-    this.resultsFutureStub = ResultsGrpc.newFutureStub(channel);
-    this.channel = requireNonNull(channel, "channel must not be null");
+    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition, channelPool);
+    this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
   }
 
   /**
@@ -173,25 +173,34 @@ public final class SessionHandle {
    * @throws NullPointerException if blobDefinition is null
    * @throws RuntimeException     if blob creation or upload fails due to cluster communication issues
    * @see BlobHandle
-   * @see BlobDefinition
+   * @see InputBlobDefinition
    * @see TaskDefinition#withInput(String, BlobHandle)
    */
   public BlobHandle createBlob(InputBlobDefinition blobDefinition) {
     requireNonNull(blobDefinition, "blobDefinition must not be null");
 
-    var request = toResultMetaDataRequest(sessionInfo.id(), List.of(blobDefinition));
-    var deferredBlobInfo = Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(request))
-                                  .thenApply(response -> new BlobInfo(
-                                    BlobId.from(response.getResults(0).getResultId()),
-                                    sessionInfo.id(),
-                                    response.getResults(0).getName(),
-                                    response.getResults(0).getManualDeletion(),
-                                    response.getResults(0).getCreatedBy().isBlank() ? null : TaskId.from(response.getResults(0).getCreatedBy()),
-                                    Instant.ofEpochSecond(response.getResults(0).getCreatedAt().getSeconds(), response.getResults(0).getCreatedAt().getNanos())
-                                  ));
-
-    var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channel);
+    var deferredBlobInfo = channelPool.executeAsync(createBlobInfo(blobDefinition));
+    var blobHandle = new BlobHandle(sessionInfo.id(), deferredBlobInfo, channelPool);
     blobHandle.uploadData(blobDefinition.data());
     return blobHandle;
+  }
+
+  private Function<ManagedChannel, CompletionStage<BlobInfo>> createBlobInfo(BlobDefinition blobDefinition) {
+    return channel -> {
+      var request = toResultMetaDataRequest(sessionInfo.id(), List.of(blobDefinition));
+      var resultsFutureStub = ResultsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(resultsFutureStub.createResultsMetaData(request))
+                    .thenApply(response -> {
+                      var resultRaw = response.getResults(0);
+                      return new BlobInfo(
+                        BlobId.from(resultRaw.getResultId()),
+                        sessionInfo.id(),
+                        resultRaw.getName(),
+                        resultRaw.getManualDeletion(),
+                        resultRaw.getCreatedBy().isBlank() ? null : TaskId.from(resultRaw.getCreatedBy()),
+                        Instant.ofEpochSecond(resultRaw.getCreatedAt().getSeconds(), resultRaw.getCreatedAt().getNanos())
+                      );
+                    });
+    };
   }
 }

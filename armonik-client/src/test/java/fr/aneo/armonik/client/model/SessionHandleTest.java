@@ -70,7 +70,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
       new BatchingPolicy(1, Duration.ofSeconds(1), 1, 1)
     );
     sessionInfo = sessionInfo("partition_1");
-    sessionHandle = new SessionHandle(sessionInfo, sessionDefinition, channel);
+    sessionHandle = new SessionHandle(sessionInfo, sessionDefinition, channelPool);
     resultsGrpcMock.reset();
   }
 
@@ -188,6 +188,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // when
     var blobHandle = sessionHandle.createBlob(blobDefinition);
+    blobHandle.deferredBlobInfo().toCompletableFuture().join();
 
     // then
     assertThat(blobHandle).isNotNull();

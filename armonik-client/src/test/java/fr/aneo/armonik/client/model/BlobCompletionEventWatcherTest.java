@@ -50,7 +50,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void setUp() {
     sessionId = sessionId();
     blobInfo = blobInfo("BlobId");
-    blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channel);
+    blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channelPool);
     resultsGrpcMock.reset();
   }
 
@@ -60,7 +60,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_call_observer_on_success_when_blob_update_status_is_completed() {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
     resultsGrpcMock.setDownloadContentFor(blobId("BlobId"), "Hello World !!".getBytes(UTF_8));
 
     // when
@@ -81,7 +81,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_call_observer_on_error_when_blob_update_status_is_aborted() {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
 
     // when
     var done = watcher.watch(List.of(blobHandle));
@@ -100,7 +100,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_call_observer_on_success_when_new_blob_status_is_completed() {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
     resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello World !!".getBytes(UTF_8));
 
     // when
@@ -121,7 +121,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_call_observer_on_error_when_new_blob_update_status_is_aborted() {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
 
     // when
     var done = watcher.watch(List.of(blobHandle));
@@ -140,7 +140,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_call_observer_on_error_when_downloading_blob_failed() {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
     resultsGrpcMock.failDownloadFor(blobInfo.id());
 
     // when
@@ -160,7 +160,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_complete_even_if_blob_listener_throws_on_success() {
     // Given
     var failingListenerMock = new FailingListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, failingListenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, failingListenerMock);
     resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "OK".getBytes(UTF_8));
 
     // When
@@ -181,7 +181,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   void should_complete_even_if_blob_listener_throws_on_error() {
     // Given
     var failingListenerMock = new FailingListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, failingListenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, failingListenerMock);
 
     // When
     var done = watcher.watch(List.of(blobHandle));
@@ -205,7 +205,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     var blobHandleB = blobHandle(sessionId.asString(), "B");
     var blobHandleC = blobHandle(sessionId.asString(), "C");
     var listener = new BlobCompletionListenerMock();
-    var watcher = new BlobCompletionEventWatcher(sessionId, channel, listener);
+    var watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listener);
 
     // When
     var ticket = watcher.watch(List.of(blobHandleA, blobHandleB, blobHandleC));
@@ -227,7 +227,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     var blobHandleA = blobHandle(sessionId.asString(), "A");
     var blobHandleB = blobHandle(sessionId.asString(), "B");
     var listener = new BlobCompletionListenerMock();
-    var watcher = new BlobCompletionEventWatcher(sessionId, channel, listener);
+    var watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listener);
 
     // When
     var ticket = watcher.watch(List.of(blobHandleA, blobHandleB));
@@ -246,13 +246,14 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     // Given
     var listenerMock = new BlobCompletionListenerMock();
     var blobInfo = blobInfo("BlobId");
-    var blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channel);
+    var blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channelPool);
     resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello".getBytes(UTF_8));
-    watcher = new BlobCompletionEventWatcher(sessionId, channel, listenerMock);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
 
     // When
     var ticket = watcher.watch(List.of(blobHandle));
     eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.complete();
     ticket.completion().toCompletableFuture().get(2, TimeUnit.SECONDS);
 
     // Then

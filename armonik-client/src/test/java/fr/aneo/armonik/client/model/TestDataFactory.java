@@ -15,8 +15,6 @@
  */
 package fr.aneo.armonik.client.model;
 
-import io.grpc.ManagedChannel;
-
 import java.time.Instant;
 import java.util.Set;
 
@@ -53,6 +51,6 @@ public class TestDataFactory {
   }
 
   public static BlobHandle blobHandle(String sessionId, String blobId) {
-    return new BlobHandle(sessionId(sessionId), completedFuture(blobInfo(blobId)), mock(ManagedChannel.class));
+    return new BlobHandle(sessionId(sessionId), completedFuture(blobInfo(blobId)), mock(ChannelPool.class));
   }
 }

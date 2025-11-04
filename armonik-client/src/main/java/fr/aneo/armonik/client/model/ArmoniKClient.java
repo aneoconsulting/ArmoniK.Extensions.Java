@@ -17,6 +17,8 @@ package fr.aneo.armonik.client.model;
 
 import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import fr.aneo.armonik.client.GrpcChannelBuilder;
+import fr.aneo.armonik.client.PemClientCertificate;
+import fr.aneo.armonik.client.Pkcs12ClientCertificate;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import io.grpc.ManagedChannel;
 
@@ -31,13 +33,26 @@ import static java.util.Objects.requireNonNull;
  * The client is responsible for establishing gRPC connections to the ArmoniK cluster and serves as a factory
  * for session management operations. Once created, sessions are managed through {@link SessionHandle} instances
  * that handle their own lifecycle and operations.
+ * <p>
+ * <strong>Resource Management:</strong> This client implements {@link AutoCloseable} and should be used
+ * with try-with-resources to ensure proper cleanup of gRPC channels:
+ * <pre>{@code
+ * var config = ArmoniKConfig.builder()
+ *   .endpoint("https://armonik.example.com:443")
+ *   .build();
+ *
+ * try (var client = new ArmoniKClient(config)) {
+ *   var session = client.openSession(sessionDefinition);
+ *   // ... use session
+ * } // Channels automatically closed
+ * }</pre>
  *
  * @see SessionHandle
  * @see SessionDefinition
- * @see ArmoniKConnectionConfig
+ * @see ArmoniKConfig
  */
-public class ArmoniKClient {
-  private final ManagedChannel channel;
+public class ArmoniKClient implements AutoCloseable {
+  private final ChannelPool channelPool;
 
 
   /**
@@ -47,40 +62,19 @@ public class ArmoniKClient {
    * connection settings. The client will use this channel for all later operations,
    * including session creation and management.
    *
-   * @param connectionConfiguration the connection configuration specifying how to connect to the ArmoniK cluster
-   * @throws NullPointerException if connectionConfiguration is null
+   * @param armoniKConfig the connection configuration specifying how to connect to the ArmoniK cluster
+   * @throws NullPointerException     if connectionConfiguration is null
    * @throws IllegalArgumentException if the connection configuration is invalid
-   * @see ArmoniKConnectionConfig
+   * @see ArmoniKConfig
    */
-  public ArmoniKClient(ArmoniKConnectionConfig connectionConfiguration) {
-    channel = buildChannel(connectionConfiguration);
+  public ArmoniKClient(ArmoniKConfig armoniKConfig) {
+    requireNonNull(armoniKConfig, "armoniKConfig must not be null");
+
+    this.channelPool = ManagedChannelPool.create(50, () -> createChannel(armoniKConfig));
   }
 
-  /**
-   * Package-private constructor for creating a client with an existing gRPC channel.
-   * <p>
-   * This constructor is primarily used for testing or advanced scenarios where the gRPC channel
-   * is managed externally.
-   *
-   * @param channel the managed gRPC channel to use for communication with the ArmoniK cluster
-   * @throws NullPointerException if channel is null
-   */
-  ArmoniKClient(ManagedChannel channel) {
-    this.channel = channel;
-  }
-
-
-  /**
-   * Returns the gRPC channel used by this client for communication with the ArmoniK cluster.
-   * <p>
-   * This method provides access to the underlying gRPC channel, which may be useful for
-   * advanced scenarios or debugging purposes. The returned channel should not be closed
-   * directly as it is managed by this client instance.
-   *
-   * @return the managed gRPC channel used for cluster communication
-   */
-  public ManagedChannel channel() {
-    return channel;
+  ArmoniKClient(ChannelPool channelPool) {
+    this.channelPool = channelPool;
   }
 
 
@@ -96,36 +90,68 @@ public class ArmoniKClient {
    * and resource allocation settings.
    *
    * @param sessionDefinition the definition specifying session parameters such as partition,
-   *                         task configuration defaults, and optional session identification
+   *                          task configuration defaults, and optional session identification
    * @return a SessionHandle for managing the session and submitting tasks
    * @throws NullPointerException if sessionDefinition is null
-   * @throws RuntimeException if session creation fails due to cluster communication issues
+   * @throws RuntimeException     if session creation fails due to cluster communication issues
    * @see SessionHandle
    * @see SessionDefinition
    */
   public SessionHandle openSession(SessionDefinition sessionDefinition) {
     var id = createSession(sessionDefinition);
 
-    return new SessionHandle(id, sessionDefinition, channel);
+    return new SessionHandle(id, sessionDefinition, channelPool);
   }
 
-  private ManagedChannel buildChannel(ArmoniKConnectionConfig connectionConfiguration) {
-    var channelBuilder = GrpcChannelBuilder.forEndpoint(connectionConfiguration.endpoint());
-    if (!connectionConfiguration.sslValidation()) channelBuilder.withUnsecureConnection();
-
-    return channelBuilder.build();
+  /**
+   * Closes this client and releases all associated resources.
+   * <p>
+   * This method initiates a graceful shutdown of the channel pool. All channels will be
+   * closed, and any in-flight operations will be allowed to complete within the shutdown
+   * timeout period. If interrupted during shutdown, immediate shutdown is forced.
+   * <p>
+   * After calling this method, the client should not be used for any operations.
+   */
+  @Override
+  public void close() {
+    channelPool.close();
   }
-
 
   private SessionInfo createSession(SessionDefinition definition) {
     requireNonNull(definition);
 
-    var sessionReply = SessionsGrpc.newBlockingStub(channel).createSession(toCreateSessionRequest(definition));
+    var sessionReply = channelPool.execute(channel ->
+      SessionsGrpc.newBlockingStub(channel).createSession(toCreateSessionRequest(definition))
+    );
 
     return new SessionInfo(
       SessionId.from(sessionReply.getSessionId()),
       definition.partitionIds(),
       definition.taskConfiguration()
     );
+  }
+
+  private ManagedChannel createChannel(ArmoniKConfig armoniKConfig) {
+    var channelBuilder = GrpcChannelBuilder.forEndpoint(armoniKConfig.endpoint());
+
+    if (!armoniKConfig.sslValidation()) {
+      channelBuilder.withUnsecureConnection();
+    }
+
+    if (armoniKConfig.caCertPem() != null && !armoniKConfig.caCertPem().isBlank()) {
+      channelBuilder.withCaPem(armoniKConfig.caCertPem());
+    }
+
+    if (armoniKConfig.clientCertPem() != null && armoniKConfig.clientKeyPem() != null) {
+      channelBuilder.withClientCertificate(
+        PemClientCertificate.of(armoniKConfig.clientCertPem(), armoniKConfig.clientKeyPem())
+      );
+    }
+
+    if (armoniKConfig.clientP12() != null) {
+      channelBuilder.withClientCertificate(Pkcs12ClientCertificate.of(armoniKConfig.clientP12(), armoniKConfig.clientKeyPem()));
+    }
+
+    return channelBuilder.build();
   }
 }

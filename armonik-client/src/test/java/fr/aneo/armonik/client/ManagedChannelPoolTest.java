@@ -214,8 +214,9 @@ class ManagedChannelPoolTest {
                            .mapToObj(taskId -> executor.submit(() -> {
                              allThreadsStarted.countDown();
                              return pool.execute(ch -> {
+                               boolean shouldWait = firstTwoAcquired.getCount() > 0;
                                firstTwoAcquired.countDown();
-                               if (firstTwoAcquired.getCount() > 0) {
+                               if (shouldWait) {
                                  try {
                                    releaseChannels.await();
                                  } catch (InterruptedException e) {

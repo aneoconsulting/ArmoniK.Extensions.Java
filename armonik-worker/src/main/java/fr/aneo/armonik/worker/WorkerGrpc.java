@@ -43,7 +43,7 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  * <h2>Service Responsibilities</h2>
  * <ul>
  *   <li><strong>Task Processing</strong>: Receives {@code ProcessRequest} from the Agent,
- *       creates a {@link TaskHandler}, invokes the {@link TaskProcessor}, and returns the outcome</li>
+ *       creates a {@link TaskContext}, invokes the {@link TaskProcessor}, and returns the outcome</li>
  *   <li><strong>Health Checking</strong>: Reports the Worker's health status to allow the Agent
  *       to monitor Worker availability and readiness</li>
  *   <li><strong>Exception Handling</strong>: Catches and converts any exceptions thrown during
@@ -56,7 +56,7 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  * <p>
  * This class bridges the gRPC protocol layer and the application logic layer:
  * <pre>
- * Agent → WorkerGrpc → TaskHandlerFactory → TaskHandler → TaskProcessor → Application Logic
+ * Agent → WorkerGrpc → TaskContextFactory → TaskContext → TaskProcessor → Application Logic
  *                ↓
  *         Output/Error
  * </pre>
@@ -91,8 +91,8 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  * interact with this class directly:
  *
  * @see TaskProcessor
- * @see TaskHandler
- * @see TaskHandlerFactory
+ * @see TaskContext
+ * @see TaskContextFactory
  * @see ArmoniKWorker
  */
 public class WorkerGrpc extends WorkerImplBase {
@@ -100,18 +100,18 @@ public class WorkerGrpc extends WorkerImplBase {
 
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
-  private final TaskHandlerFactory taskHandlerFactory;
-  public final AtomicReference<ServingStatus> servingStatus;
+  private final TaskContextFactory taskContextFactory;
+  final AtomicReference<ServingStatus> servingStatus;
 
-  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskHandlerFactory taskHandlerFactory) {
+  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
     this.agentStub = agentStub;
     this.taskProcessor = taskProcessor;
-    this.taskHandlerFactory = taskHandlerFactory;
+    this.taskContextFactory = taskContextFactory;
     this.servingStatus = new AtomicReference<>(SERVING);
   }
 
   WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
-    this(agentStub, taskProcessor, TaskHandler::from);
+    this(agentStub, taskProcessor, new DefaultTaskContextFactory());
   }
 
   /**
@@ -122,8 +122,8 @@ public class WorkerGrpc extends WorkerImplBase {
    * </p>
    * <ol>
    *   <li>Sets serving status to {@link ServingStatus#NOT_SERVING}</li>
-   *   <li>Creates a {@link TaskHandler} using the factory</li>
-   *   <li>Invokes the {@link TaskProcessor} with the handler</li>
+   *   <li>Creates a {@link TaskContext} using the factory</li>
+   *   <li>Invokes the {@link TaskProcessor} with the context</li>
    *   <li>Converts the {@link TaskOutcome} to a gRPC {@link Output}</li>
    *   <li>Sends the response to the Agent</li>
    *   <li>Restores serving status to {@link ServingStatus#SERVING}</li>
@@ -161,10 +161,13 @@ public class WorkerGrpc extends WorkerImplBase {
 
     try {
       logger.info("Received task processing request: payloadId={}, dataFolder={}", request.getPayloadId(), request.getDataFolder());
-      var taskHandler = taskHandlerFactory.create(agentStub, request);
+      var taskContext = taskContextFactory.create(agentStub, request);
 
       logger.info("Starting task processing");
-      var outcome = taskProcessor.processTask(taskHandler);
+      var outcome = taskProcessor.processTask(taskContext);
+
+      logger.info("Task processor returned {}, awaiting completion of pending operations", outcome.getClass().getSimpleName());
+      taskContext.awaitCompletion();
 
       long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
       if (outcome instanceof TaskOutcome.Success) {
@@ -182,8 +185,7 @@ public class WorkerGrpc extends WorkerImplBase {
         ? exception.getMessage()
         : exception.toString();
 
-      logger.error("Task processing failed after {}ms with exception: {}",
-        duration, errorMessage, exception);
+      logger.error("Task processing failed after {}ms with exception: {}", duration, errorMessage, exception);
       responseObserver.onNext(ProcessReply.newBuilder()
                                           .setOutput(toOutput(new TaskOutcome.Error(errorMessage)))
                                           .build());

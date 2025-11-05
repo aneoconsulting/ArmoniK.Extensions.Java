@@ -46,7 +46,7 @@ class AgentNotifierTest {
   void setUp() {
     agentStub = mock(AgentFutureStub.class);
     when(agentStub.withDeadlineAfter(anyLong(), eq(MILLISECONDS))).thenReturn(agentStub);
-    notifier = new AgentNotifier(agentStub, "test-session", "test-token");
+    notifier = new AgentNotifier(agentStub, SessionId.from("test-session"), "test-token");
     testBlobId = BlobId.from("test-blob-id");
   }
 
@@ -61,8 +61,7 @@ class AgentNotifierTest {
     notifier.onBlobReady(testBlobId);
 
     // Then
-    ArgumentCaptor<NotifyResultDataRequest> captor =
-      ArgumentCaptor.forClass(NotifyResultDataRequest.class);
+    ArgumentCaptor<NotifyResultDataRequest> captor = ArgumentCaptor.forClass(NotifyResultDataRequest.class);
     verify(agentStub).notifyResultData(captor.capture());
 
     NotifyResultDataRequest request = captor.getValue();

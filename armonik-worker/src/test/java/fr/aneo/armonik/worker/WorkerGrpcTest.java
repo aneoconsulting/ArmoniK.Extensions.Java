@@ -30,20 +30,24 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.SERVING;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessReply;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
+import static fr.aneo.armonik.worker.TaskOutcome.SUCCESS;
+import static fr.aneo.armonik.worker.TaskOutcome.Success;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
-@DisplayName("WorkerGrpc — process & health status")
+@SuppressWarnings({"unchecked", "ResultOfMethodCallIgnored"})
 class WorkerGrpcTest {
   private TaskProcessor taskProcessor;
   private WorkerGrpc worker;
+  private TaskContext taskContext;
 
   @BeforeEach
   void setUp() {
-    var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
     taskProcessor = mock(TaskProcessor.class);
-    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> mock(TaskHandler.class));
+    var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
+    taskContext = mock(TaskContext.class);
+    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> taskContext);
   }
 
   @SuppressWarnings("unchecked")
@@ -51,7 +55,7 @@ class WorkerGrpcTest {
   @Test
   void should_send_ok_on_success_then_complete() {
     // given
-    when(taskProcessor.processTask(any())).thenReturn(new TaskOutcome.Success());
+    when(taskProcessor.processTask(any())).thenReturn(new Success());
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
@@ -126,7 +130,6 @@ class WorkerGrpcTest {
   @Test
   void should_report_serving_when_idle() {
     // given
-    TaskProcessor taskProcessor = handler -> new TaskOutcome.Success();
     var observer = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
 
     // when
@@ -142,99 +145,166 @@ class WorkerGrpcTest {
     assertThat(replyCap.getValue().getStatus()).isEqualTo(SERVING);
   }
 
-  @DisplayName("Should report NOT_SERVING while process() is running")
   @Test
+  @DisplayName("should report NOT_SERVING while process() is running")
   void should_report_not_serving_while_process_is_running() throws Exception {
-    {
-      // given
-      var scenario = new SingleTaskProcessingScenario();
+    // Given
+    var processObserver = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+    var processingStarted = new CountDownLatch(1);
+    var allowCompletion = new CountDownLatch(1);
+    when(taskProcessor.processTask(taskContext)).thenAnswer(invocation -> {
+      processingStarted.countDown();
+      allowCompletion.await(2, SECONDS);
+      return SUCCESS;
+    });
+    var processingThread = new Thread(() -> worker.process(request, processObserver));
+    processingThread.start();
+    processingStarted.await(1, SECONDS);
 
-      // when
-      scenario.startProcessingAsync();
-      scenario.awaitProcessingStarted();
+    // When
+    var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
+    worker.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
 
-      // then
-      var duringProcessingReply = scenario.healthCheck();
-      assertThat(duringProcessingReply.getStatus()).isEqualTo(NOT_SERVING);
+    // Then: Health check should report NOT_SERVING
+    var replyCap = ArgumentCaptor.forClass(HealthCheckReply.class);
+    var inOrder = inOrder(healthCheckObserver);
+    inOrder.verify(healthCheckObserver).onNext(replyCap.capture());
+    inOrder.verify(healthCheckObserver).onCompleted();
+    inOrder.verifyNoMoreInteractions();
 
-      // cleanup
-      scenario.completeProcessingAndWait();
-    }
+    assertThat(replyCap.getValue().getStatus()).isEqualTo(NOT_SERVING);
+
+    // Cleanup
+    allowCompletion.countDown();
+    processingThread.join(2000);
   }
 
-  @DisplayName("Should report SERVING after process() completes")
   @Test
-  void should_report_serving_after_process_completes() throws Exception {
-    {
-      // given
-      var scenario = new SingleTaskProcessingScenario();
+  @DisplayName("should report SERVING after process() completes")
+  void should_report_serving_after_process_completes() {
+    // Given: Normal task processing
+    when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
+    var processObserver = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+    worker.process(request, processObserver);
 
-      // when
-      scenario.startProcessingAsync();
-      scenario.awaitProcessingStarted();
-      scenario.completeProcessingAndWait();
+    // When
+    var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
+    worker.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
 
-      // then
-      var afterCompletionReply = scenario.healthCheck();
-      assertThat(afterCompletionReply.getStatus()).isEqualTo(SERVING);
-    }
+
+    // Then: Health check should report SERVING
+    var replyCap = ArgumentCaptor.forClass(HealthCheckReply.class);
+    var inOrder = inOrder(healthCheckObserver);
+    inOrder.verify(healthCheckObserver).onNext(replyCap.capture());
+    inOrder.verify(healthCheckObserver).onCompleted();
+    inOrder.verifyNoMoreInteractions();
+
+    assertThat(replyCap.getValue().getStatus()).isEqualTo(SERVING);
+  }
+
+  @Test
+  @DisplayName("should call awaitCompletion after processTask returns success")
+  void should_call_await_completion_after_process_task_returns_success() {
+    // Given
+    when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
+    @SuppressWarnings("unchecked")
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+
+    // When
+    worker.process(request, observer);
+
+    // Then:
+    var inOrder = inOrder(taskProcessor, taskContext, observer);
+    inOrder.verify(taskProcessor).processTask(taskContext);
+    inOrder.verify(taskContext).awaitCompletion();
+    inOrder.verify(observer).onNext(any(ProcessReply.class));
+    inOrder.verify(observer).onCompleted();
+  }
+
+  @Test
+  @DisplayName("should convert awaitCompletion exception to error response")
+  void should_convert_await_completion_exception_to_error() {
+    // Given
+    when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
+    doThrow(new ArmoniKException("Boom !!")).when(taskContext).awaitCompletion();
+
+    @SuppressWarnings("unchecked")
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+
+    // When
+    worker.process(request, observer);
+
+    // Then:
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    var inOrder = inOrder(observer);
+    inOrder.verify(observer).onNext(replyCaptor.capture());
+    inOrder.verify(observer).onCompleted();
+    inOrder.verifyNoMoreInteractions();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasOk()).isFalse();
+    assertThat(reply.getOutput().hasError()).isTrue();
   }
 
 
-  @SuppressWarnings("unchecked")
-  private static final class SingleTaskProcessingScenario {
-    final CountDownLatch processingStarted = new CountDownLatch(1);
-    final CountDownLatch allowCompletion = new CountDownLatch(1);
-    final CountDownLatch processingCompleted = new CountDownLatch(1);
-    final AgentFutureStub agentStub;
-    final WorkerGrpc workerUnderTest;
-    final ProcessRequest request = ProcessRequest.newBuilder().build();
-    final StreamObserver<ProcessReply> processObserver = mock(StreamObserver.class);
+  @Test
+  @DisplayName("should remain NOT_SERVING during awaitCompletion")
+  void should_remain_not_serving_during_await_completion() throws Exception {
+    // Given
+    var awaitCompletionStarted = new CountDownLatch(1);
+    var allowAwaitCompletion = new CountDownLatch(1);
+    when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
+    doAnswer(invocation -> {
+      awaitCompletionStarted.countDown();
+      allowAwaitCompletion.await(2, SECONDS);
+      return null;
+    }).when(taskContext).awaitCompletion();
 
-    SingleTaskProcessingScenario() {
-      this.agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
-      TaskHandlerFactory taskHandlerFactory = (a, r) -> mock(TaskHandler.class);
-      TaskProcessor taskProcessor = handler -> {
-        processingStarted.countDown();
-        try {
-          allowCompletion.await(2, SECONDS);
-        } catch (InterruptedException e) {
-          throw new RuntimeException(e);
-        }
-        return new TaskOutcome.Success();
-      };
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
 
-      this.workerUnderTest = new WorkerGrpc(agentStub, taskProcessor, taskHandlerFactory);
-    }
+    // When
+    var processingThread = new Thread(() -> worker.process(request, observer));
+    processingThread.start();
 
-    void startProcessingAsync() {
-      new Thread(() -> {
-        try {
-          workerUnderTest.process(request, processObserver);
-        } finally {
-          processingCompleted.countDown();
-        }
-      }).start();
-    }
+    // Wait for awaitCompletion to be called
+    awaitCompletionStarted.await(1, SECONDS);
 
-    void awaitProcessingStarted() throws InterruptedException {
-      processingStarted.await(1, SECONDS);
-    }
+    // Then: Should still be NOT_SERVING during awaitCompletion
+    assertThat(worker.servingStatus.get()).isEqualTo(NOT_SERVING);
 
-    void completeProcessingAndWait() throws InterruptedException {
-      allowCompletion.countDown();
-      processingCompleted.await(1, SECONDS);
-    }
+    // When: Allow awaitCompletion to finish
+    allowAwaitCompletion.countDown();
+    processingThread.join(2000);
 
-    HealthCheckReply healthCheck() {
-      var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
-      var cap = ArgumentCaptor.forClass(HealthCheckReply.class);
-      workerUnderTest.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
-      var order = inOrder(healthCheckObserver);
-      order.verify(healthCheckObserver).onNext(cap.capture());
-      order.verify(healthCheckObserver).onCompleted();
-      order.verifyNoMoreInteractions();
-      return cap.getValue();
-    }
+    // Then: Should now be SERVING
+    assertThat(worker.servingStatus.get()).isEqualTo(SERVING);
+  }
+
+  @Test
+  @DisplayName("should NOT call awaitCompletion when processTask throws exception")
+  void should_not_call_await_completion_when_process_task_throws() {
+    // Given
+    when(taskProcessor.processTask(taskContext)).thenThrow(new RuntimeException("Task processing failed"));
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+
+    // When
+    worker.process(request, observer);
+
+    // Then: awaitCompletion should NOT be called
+    verify(taskContext, never()).awaitCompletion();
+
+    // And: Should still send error response
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    verify(observer).onNext(replyCaptor.capture());
+    verify(observer).onCompleted();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasError()).isTrue();
   }
 }

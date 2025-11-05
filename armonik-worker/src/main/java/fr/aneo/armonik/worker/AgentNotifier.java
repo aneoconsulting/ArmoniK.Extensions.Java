@@ -16,67 +16,67 @@
 package fr.aneo.armonik.worker;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
-import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ExecutionException;
 
+import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.*;
 import static io.grpc.Status.Code.DEADLINE_EXCEEDED;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+/**
+ * Implementation of {@link BlobListener} that notifies the ArmoniK Agent via gRPC.
+ * <p>
+ * This notifier sends a {@code NotifyResultData} request to the Agent, informing it that
+ * an output result is available in the shared data folder. The Agent can then:
+ * </p>
+ * <ul>
+ *   <li>Mark the result as completed in the Control Plane</li>
+ *   <li>Schedule dependent tasks that were waiting for this output</li>
+ *   <li>Update the task status to reflect output production</li>
+ * </ul>
+ *
+ * <h2>Synchronous Notification</h2>
+ * <p>
+ * <strong>Important:</strong> This implementation blocks until the Agent acknowledges
+ * the notification. This synchronous behavior is critical to prevent race conditions
+ * between output notification and task completion reporting.
+ * </p>
+ *
+ * <h2>Thread Safety</h2>
+ * <p>
+ * This class is thread-safe. The gRPC stub handles concurrent calls appropriately.
+ * However, since the Worker processes one task at a time, concurrent notifications
+ * are not expected during normal operation.
+ * </p>
+ *
+ * <h2>Error Handling</h2>
+ * <p>
+ * If the Agent is unavailable or the notification fails, an {@link ArmoniKException}
+ * is thrown with details about the failure. This prevents the Worker from reporting
+ * task success when outputs were not properly registered.
+ * </p>
+ *
+ * @see BlobListener
+ * @see TaskOutput
+ */
 public final class AgentNotifier implements BlobListener {
   private static final Logger logger = LoggerFactory.getLogger(fr.aneo.armonik.worker.AgentNotifier.class);
   private static final int DEFAULT_NOTIFICATION_TIMEOUT = 30_000;
 
-  private final AgentGrpc.AgentFutureStub agentStub;
-  private final String sessionId;
+  private final AgentFutureStub agentStub;
+  private final SessionId sessionId;
   private final String communicationToken;
   private final int timeout;
 
 
-  /**
-   * Implementation of {@link BlobListener} that notifies the ArmoniK Agent via gRPC.
-   * <p>
-   * This notifier sends a {@code NotifyResultData} request to the Agent, informing it that
-   * an output result is available in the shared data folder. The Agent can then:
-   * </p>
-   * <ul>
-   *   <li>Mark the result as completed in the Control Plane</li>
-   *   <li>Schedule dependent tasks that were waiting for this output</li>
-   *   <li>Update the task status to reflect output production</li>
-   * </ul>
-   *
-   * <h2>Synchronous Notification</h2>
-   * <p>
-   * <strong>Important:</strong> This implementation blocks until the Agent acknowledges
-   * the notification. This synchronous behavior is critical to prevent race conditions
-   * between output notification and task completion reporting.
-   * </p>
-   *
-   * <h2>Thread Safety</h2>
-   * <p>
-   * This class is thread-safe. The gRPC stub handles concurrent calls appropriately.
-   * However, since the Worker processes one task at a time, concurrent notifications
-   * are not expected during normal operation.
-   * </p>
-   *
-   * <h2>Error Handling</h2>
-   * <p>
-   * If the Agent is unavailable or the notification fails, an {@link ArmoniKException}
-   * is thrown with details about the failure. This prevents the Worker from reporting
-   * task success when outputs were not properly registered.
-   * </p>
-   *
-   * @see BlobListener
-   * @see TaskOutput
-   */
-  AgentNotifier(AgentGrpc.AgentFutureStub agentStub, String sessionId, String communicationToken) {
+  AgentNotifier(AgentFutureStub agentStub, SessionId sessionId, String communicationToken) {
     this(agentStub, sessionId, communicationToken, DEFAULT_NOTIFICATION_TIMEOUT);
   }
 
-  AgentNotifier(AgentGrpc.AgentFutureStub agentStub, String sessionId, String communicationToken, int timeoutInMillisecond) {
+  AgentNotifier(AgentFutureStub agentStub, SessionId sessionId, String communicationToken, int timeoutInMillisecond) {
     this.agentStub = agentStub;
     this.sessionId = sessionId;
     this.communicationToken = communicationToken;
@@ -128,7 +128,7 @@ public final class AgentNotifier implements BlobListener {
     return NotifyResultDataRequest.newBuilder()
                                   .setCommunicationToken(communicationToken)
                                   .addIds(NotifyResultDataRequest.ResultIdentifier.newBuilder()
-                                                                                  .setSessionId(sessionId)
+                                                                                  .setSessionId(sessionId.asString())
                                                                                   .setResultId(blobId.asString())
                                                                                   .build())
                                   .build();

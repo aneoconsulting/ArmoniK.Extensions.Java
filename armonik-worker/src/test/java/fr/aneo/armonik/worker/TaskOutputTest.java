@@ -40,15 +40,15 @@ class TaskOutputTest {
   void should_write_byte_array() throws IOException {
     // Given
     var notifiedId = new AtomicReference<>();
-    var path = randomPath();
-    var output = new TaskOutput(blobId, "result", path, notifiedId::set);
+    var writer = new BlobFileWriter(tempDir, notifiedId::set);
+    var output = new TaskOutput(blobId, "result", writer);
     var data = randomBytes(32);
 
     // When
     output.write(data);
 
     // Then
-    var written = Files.readAllBytes(path);
+    var written = Files.readAllBytes(tempDir.resolve(blobId.asString()));
     assertThat(written).containsExactly(data);
     assertThat(notifiedId.get()).isEqualTo(blobId);
   }
@@ -58,15 +58,15 @@ class TaskOutputTest {
   void should_write_utf8_text() throws IOException {
     // Given
     var notifiedId = new AtomicReference<>();
-    var path = randomPath();
-    var output = new TaskOutput(blobId, "greeting", path, notifiedId::set);
+    var writer = new BlobFileWriter(tempDir, notifiedId::set);
+    var output = new TaskOutput(blobId, "greeting", writer);
     var text = "héllo 🌍";
 
     // When
     output.write(text, UTF_8);
 
     // Then
-    var content = Files.readString(path, UTF_8);
+    var content = Files.readString(tempDir.resolve(blobId.asString()), UTF_8);
     assertThat(content).isEqualTo(text);
     assertThat(notifiedId.get()).isEqualTo(blobId);
   }
@@ -76,8 +76,8 @@ class TaskOutputTest {
   void should_write_inputStream() throws IOException {
     // Given
     var notifiedId = new AtomicReference<>();
-    var path = randomPath();
-    var output = new TaskOutput(blobId, "data", path, notifiedId::set);
+    var writer = new BlobFileWriter(tempDir, notifiedId::set);
+    var output = new TaskOutput(blobId, "data", writer);
     var data = randomBytes(1024);
     var in = new ByteArrayInputStream(data);
 
@@ -85,7 +85,7 @@ class TaskOutputTest {
     output.write(in);
 
     // Then
-    var written = Files.readAllBytes(path);
+    var written = Files.readAllBytes(tempDir.resolve(blobId.asString()));
     assertThat(written).containsExactly(data);
     assertThat(notifiedId.get()).isEqualTo(blobId);
   }

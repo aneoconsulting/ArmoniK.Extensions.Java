@@ -19,7 +19,7 @@ package fr.aneo.armonik.worker;
  * Functional interface for processing ArmoniK tasks within a Worker.
  * <p>
  * A {@code TaskProcessor} defines the core business logic executed by a Worker when it receives
- * a task from the ArmoniK Agent. Implementations receive a {@link TaskHandler} that provides
+ * a task from the ArmoniK Agent. Implementations receive a {@link TaskContext} that provides
  * access to task metadata, input data, and methods to produce outputs and submit subtasks.
  *
  * <h2>Task Processing Flow</h2>
@@ -27,9 +27,9 @@ package fr.aneo.armonik.worker;
  * When the ArmoniK Agent assigns a task to the Worker, the following occurs:
  * <ol>
  *   <li>The Worker receives a {@code ProcessRequest} from the Agent</li>
- *   <li>A {@link TaskHandler} is created to manage task data and operations</li>
- *   <li>The {@link #processTask(TaskHandler)} method is invoked with the handler</li>
- *   <li>The implementation processes the task using the handler's capabilities</li>
+ *   <li>A {@link TaskContext} is created to manage task data and operations</li>
+ *   <li>The {@link #processTask(TaskContext)} method is invoked with the context</li>
+ *   <li>The implementation processes the task using the context's capabilities</li>
  *   <li>A {@link TaskOutcome} is returned indicating success or failure</li>
  *   <li>The Worker reports the outcome back to the Agent</li>
  * </ol>
@@ -42,8 +42,8 @@ package fr.aneo.armonik.worker;
  *       task multiple times should produce the same result</li>
  *   <li><strong>Handle errors gracefully</strong>: Return {@link TaskOutcome.Error} for expected
  *       failures. Uncaught exceptions are converted to errors automatically</li>
- *   <li><strong>Use the TaskHandler</strong>: Access inputs, write outputs, and submit subtasks
- *       through the provided handler</li>
+ *   <li><strong>Use the TaskContext</strong>: Access inputs, write outputs, and submit subtasks
+ *       through the provided context</li>
  *   <li><strong>Be stateless</strong>: Avoid storing state between task invocations</li>
  * </ul>
  *
@@ -67,7 +67,7 @@ package fr.aneo.armonik.worker;
  *   <li>The task is marked as failed and may be retried</li>
  * </ul>
  *
- * @see TaskHandler
+ * @see TaskContext
  * @see TaskOutcome
  * @see ArmoniKWorker
  * @see <a href="https://armonik.readthedocs.io/en/latest/">ArmoniK Documentation</a>
@@ -79,7 +79,7 @@ public interface TaskProcessor {
    * Processes a single task assigned by the ArmoniK Agent.
    * <p>
    * This method is called by the Worker for each task received from the Agent. The implementation
-   * should use the provided {@code taskHandler} to access task inputs, produce outputs, and
+   * should use the provided {@code taskContext} to access task inputs, produce outputs, and
    * optionally submit subtasks.
    *
    * <h4>Processing Steps</h4>
@@ -87,7 +87,7 @@ public interface TaskProcessor {
    * Typical implementation steps:
    * <ol>
    *   <li>Perform the required computation or business logic</li>
-   *   <li>Write outputs to expected output keys via the handler</li>
+   *   <li>Write outputs to expected output keys via the context</li>
    *   <li>Optionally submit new subtasks for dynamic graph creation</li>
    *   <li>Return {@link TaskOutcome.Success} or {@link TaskOutcome.Error}</li>
    * </ol>
@@ -103,10 +103,10 @@ public interface TaskProcessor {
    * The Worker guarantees that only one task is processed at a time per Worker instance.
    * Implementations do not need to be thread-safe for concurrent task processing.
    *
-   * @param taskHandler provides access to task metadata, inputs, outputs, and submission capabilities;
+   * @param taskContext provides access to task metadata, inputs, outputs, and submission capabilities;
    *                    never {@code null}
    * @return {@link TaskOutcome.Success} if the task completed successfully,
    * or {@link TaskOutcome.Error} if the task failed
    */
-  TaskOutcome processTask(TaskHandler taskHandler);
+  TaskOutcome processTask(TaskContext taskContext);
 }

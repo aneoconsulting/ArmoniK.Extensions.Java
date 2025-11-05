@@ -18,200 +18,103 @@ package fr.aneo.armonik.worker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
 
-import static java.nio.file.StandardOpenOption.*;
+import static java.util.Objects.requireNonNull;
 
 /**
- * Provides write-only access to task output data stored in the ArmoniK shared data folder.
+ * Provides write-only access to task output data.
  * <p>
- * A {@code TaskOutput} represents a single output blob that a task must produce, identified by
- * a logical name. It provides multiple ways to write output data and automatically notifies
+ * A {@code TaskOutput} represents a single output that a task must produce, identified by
+ * a logical name. It provides methods to write output data which automatically notifies
  * the ArmoniK Agent when the output is ready.
  * </p>
  *
  * <h2>Write Operations</h2>
  * <p>
- * Task outputs support three write methods depending on the data source:
+ * Task outputs support three write methods:
  * </p>
  * <ul>
- *   <li><strong>Byte array</strong>: {@link #write(byte[])} - for in-memory data</li>
- *   <li><strong>Input stream</strong>: {@link #write(InputStream)} - for streaming or large data</li>
- *   <li><strong>String</strong>: {@link #write(String, Charset)} - for text data with custom encoding</li>
- * </ul>
- * <p>
- * All write methods automatically create or truncate the output file and notify the Agent
- * when the write completes successfully.
- * </p>
- *
- * <h2>Agent Notification</h2>
- * <p>
- * After each successful write operation:
- * </p>
- * <ol>
- *   <li>The output data is written to the file in the shared data folder</li>
- *   <li>The {@link BlobListener} is notified with the output's {@link BlobId}</li>
- *   <li>The Agent receives the notification and marks the output as available</li>
- *   <li>Dependent tasks waiting for this output can now be scheduled</li>
- * </ol>
- * <p>
- * This notification mechanism is critical for ArmoniK's task dependency management and
- * dynamic graph execution.
- * </p>
- *
- * <h2>File Behavior</h2>
- * <ul>
- *   <li>Each write operation creates the file if it doesn't exist</li>
- *   <li>Existing files are truncated before writing (previous content is lost)</li>
- *   <li>Multiple writes to the same output replace the previous content</li>
- *   <li>The file is closed automatically after each write</li>
+ *   <li>{@link #write(byte[])} - for in-memory data</li>
+ *   <li>{@link #write(InputStream)} - for streaming or large data</li>
+ *   <li>{@link #write(String, Charset)} - for text data with custom encoding</li>
  * </ul>
  *
  * <h2>Usage Examples</h2>
  * <pre>{@code
- * // Write computed result as bytes
- * TaskOutput resultOutput = taskHandler.getOutput("result");
- * byte[] resultData = computeResult();
- * resultOutput.write(resultData);
+ * // Write bytes
+ * TaskOutput output = context.getOutput("result");
+ * output.write(computeResult());
  *
- * // Write text output with UTF-8 encoding
- * TaskOutput logOutput = taskHandler.getOutput("log");
- * logOutput.write("Task completed successfully at " + Instant.now(), StandardCharsets.UTF_8);
+ * // Write text
+ * output.write("Task completed", StandardCharsets.UTF_8);
  *
- * // Write text output with specific encoding
- * TaskOutput legacyOutput = taskHandler.getOutput("legacyReport");
- * legacyOutput.write("Report content", StandardCharsets.ISO_8859_1);
- *
- * // Stream large output
- * TaskOutput dataOutput = taskHandler.getOutput("processedData");
- * try (InputStream in = generateLargeDataset()) {
- *     dataOutput.write(in);
- * }
- *
- * // Conditional output
- * if (taskHandler.hasOutput("errorReport")) {
- *     taskHandler.getOutput("errorReport")
- *         .write(generateErrorReport(), StandardCharsets.UTF_8);
+ * // Stream large data
+ * try (InputStream in = generateData()) {
+ *     output.write(in);
  * }
  * }</pre>
  *
- * <h2>Error Handling</h2>
+ * <h2>Output Delegation</h2>
  * <p>
- * All write methods throw {@link ArmoniKException} if:
- * </p>
- * <ul>
- *   <li>The output file cannot be created or written (I/O errors)</li>
- *   <li>Permissions prevent file creation or modification</li>
- *   <li>The file system is full or unavailable</li>
- *   <li>The input stream throws an exception during reading</li>
- * </ul>
- * <p>
- * When a write fails, the Agent is not notified, and the output is not marked as available.
+ * A task can delegate output production to a subtask by including the output
+ * in the subtask's expected outputs. This enables dynamic task graphs.
  * </p>
  *
  * <h2>Thread Safety</h2>
  * <p>
- * {@code TaskOutput} is not thread-safe. Concurrent writes to the same output may result in
- * corrupted data or multiple Agent notifications. Since the Worker processes one task at a
- * time, concurrent access is not expected during normal operation.
+ * This class is not thread-safe. Concurrent writes may result in corrupted data.
  * </p>
  *
- * <h2>Output Delegation</h2>
- * <p>
- * A task can delegate the responsibility of producing an output to a subtask by submitting
- * a new task with one or more of the current task's expected outputs. This enables dynamic
- * task graphs where the graph structure evolves during execution.
- * </p>
- *
- * @see TaskHandler
+ * @see TaskContext
  * @see TaskInput
  * @see TaskProcessor
- * @see BlobListener
  */
 public final class TaskOutput {
   private static final Logger logger = LoggerFactory.getLogger(TaskOutput.class);
 
   private final BlobId id;
-  private final Path path;
   private final String logicalName;
-  private final BlobListener listener;
+  private final BlobFileWriter writer;
 
-  TaskOutput(BlobId id, String logicalName, Path path, BlobListener listener) {
-    this.id = id;
-    this.logicalName = logicalName;
-    this.path = path;
-    this.listener = listener;
+  TaskOutput(BlobId id, String logicalName, BlobFileWriter writer) {
+    this.id = requireNonNull(id, "id cannot be null");
+    this.logicalName = requireNonNull(logicalName, "logicalName cannot be null");
+    this.writer = requireNonNull(writer, "writer cannot be null");
+  }
+
+  public BlobId id() {
+    return id;
   }
 
   /**
-   * Writes the provided byte array to the output file.
+   * Writes a byte array to this output.
    * <p>
-   * This method creates or truncates the output file and writes the entire byte array.
    * After successful completion, the Agent is notified that this output is ready.
+   * For very large data, consider using {@link #write(InputStream)} instead.
    * </p>
    *
-   * <h4>File Operations</h4>
-   * <ul>
-   *   <li>Creates the file if it doesn't exist</li>
-   *   <li>Truncates existing content before writing</li>
-   *   <li>Writes all bytes in a single atomic operation</li>
-   *   <li>Closes the file automatically</li>
-   * </ul>
-   *
-   * <h4>Performance Considerations</h4>
-   * <p>
-   * This method loads the entire byte array into memory during the write operation.
-   * For very large data, consider using {@link #write(InputStream)} to stream the data
-   * and reduce memory pressure.
-   * </p>
-   *
-   * @param data the byte array to write; must not be {@code null}
-   * @throws ArmoniKException if the file cannot be written due to I/O errors
+   * @param data the data to write; must not be {@code null}
+   * @throws ArmoniKException     if the write operation fails
+   * @throws NullPointerException if {@code data} is {@code null}
    */
   public void write(byte[] data) {
-    long startTime = System.nanoTime();
+    requireNonNull(data, "data cannot be null");
 
-    try {
-      logger.info("Writing output: logicalName='{}', blobId={}, size={} bytes", logicalName, id.asString(), data.length);
-      Files.write(path, data, CREATE, TRUNCATE_EXISTING, WRITE);
-
-      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      logger.info("Output written in {}ms: logicalName='{}', size={} bytes", duration, logicalName, data.length);
-
-      listener.onBlobReady(id);
-    } catch (IOException e) {
-      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      logger.error("Failed to write output after {}ms: logicalName='{}', blobId={}", duration, logicalName, id.asString(), e);
-
-      throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
-    }
+    logger.debug("Writing output: logicalName='{}', id={}, size={} bytes", logicalName, id.asString(), data.length);
+    writer.write(id, data);
   }
 
   /**
-   * Writes data from the provided input stream to the output file.
+   * Writes data from an input stream to this output.
    * <p>
-   * This method creates or truncates the output file and streams all data from the input
-   * stream until EOF is reached. After successful completion, the Agent is notified that
-   * this output is ready.
+   * The stream is fully consumed but not closed by this method.
+   * After successful completion, the Agent is notified that this output is ready.
    * </p>
-   *
-   * <h4>Streaming Behavior</h4>
-   * <ul>
-   *   <li>Reads from the input stream in chunks</li>
-   *   <li>Writes data progressively to the output file</li>
-   *   <li>Suitable for large data that should not be loaded entirely into memory</li>
-   *   <li>The input stream is fully consumed but not closed by this method</li>
-   * </ul>
-   *
-   * <h4>Resource Management</h4>
    * <p>
-   * The caller is responsible for closing the input stream. Use try-with-resources:
+   * Use try-with-resources to ensure proper cleanup:
    * </p>
    * <pre>{@code
    * try (InputStream in = openDataSource()) {
@@ -219,48 +122,35 @@ public final class TaskOutput {
    * }
    * }</pre>
    *
-   * @param in the input stream to read from; must not be {@code null}
-   * @throws ArmoniKException if the file cannot be written or if reading from the
-   *                          input stream fails
+   * @param inputStream the input stream to read from; must not be {@code null}
+   * @throws ArmoniKException     if the write operation fails
+   * @throws NullPointerException if {@code in} is {@code null}
    */
-  public void write(InputStream in) {
-    long startTime = System.nanoTime();
-    logger.debug("Writing output from stream: logicalName='{}', blobId={}", logicalName, id.asString());
+  public void write(InputStream inputStream) {
+    requireNonNull(inputStream, "input stream cannot be null");
 
-    try (var out = Files.newOutputStream(path, CREATE, TRUNCATE_EXISTING, WRITE)) {
-      long bytesWritten = in.transferTo(out);
-      listener.onBlobReady(id);
-
-      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      logger.info("Output written from stream in {}ms: logicalName='{}', size={} bytes", duration, logicalName, bytesWritten);
-
-    } catch (IOException e) {
-      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      logger.error("Failed to write output stream after {}ms: logicalName='{}', blobId={}", duration, logicalName, id.asString(), e);
-
-      throw new ArmoniKException("Failed to write output " + id + "('" + logicalName + "') to " + path, e);
-    }
+    logger.debug("Writing output from stream: logicalName='{}', id={}", logicalName, id.asString());
+    writer.write(id, inputStream);
   }
 
   /**
-   * Writes the provided string to the output file using the specified character encoding.
+   * Writes a string to this output using the specified character encoding.
    * <p>
-   * This method encodes the string using the provided charset and writes the resulting bytes
-   * to the output file. After successful completion, the Agent is notified that this output is ready.
+   * The string is encoded to bytes and written. After successful completion,
+   * the Agent is notified that this output is ready.
    * </p>
    *
-   * <h4>Implementation Note</h4>
-   * <p>
-   * This method is a convenience wrapper that encodes the string and delegates to
-   * {@link #write(byte[])}. The entire string is encoded into memory before writing.
-   * </p>
-   *
-   * @param content the string content to write; must not be {@code null}
-   * @param charset the character encoding to use for encoding the string
-   * @throws ArmoniKException if the file cannot be written due to I/O errors
+   * @param content the string to write; must not be {@code null}
+   * @param charset the character encoding to use; must not be {@code null}
+   * @throws ArmoniKException     if the write operation fails
+   * @throws NullPointerException if any parameter is {@code null}
    * @see StandardCharsets
    */
   public void write(String content, Charset charset) {
+    requireNonNull(content, "content cannot be null");
+    requireNonNull(charset, "charset cannot be null");
+
+    logger.debug("Writing output from string: logicalName='{}', id={}, charset={}", logicalName, id.asString(), charset.name());
     write(content.getBytes(charset));
   }
 }

@@ -16,6 +16,7 @@
 package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.worker.ArmoniKException;
+import fr.aneo.armonik.worker.TaskContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,7 +26,7 @@ import java.nio.file.Path;
 /**
  * Utility class for validating file paths and preventing directory traversal attacks.
  * <p>
- * {@code PathValidator} is used internally by {@link fr.aneo.armonik.worker.TaskHandler}
+ * {@code PathValidator} is used internally by {@link TaskContext}
  * to ensure that all file operations remain within the designated data folder. It prevents
  * malicious or accidental access to files outside the Worker's sandbox.
  * </p>
@@ -55,7 +56,6 @@ import java.nio.file.Path;
  * This class is stateless and thread-safe. All methods are static.
  * </p>
  *
- * @see fr.aneo.armonik.worker.TaskHandler
  * @see fr.aneo.armonik.worker.TaskInput
  * @see fr.aneo.armonik.worker.TaskOutput
  */

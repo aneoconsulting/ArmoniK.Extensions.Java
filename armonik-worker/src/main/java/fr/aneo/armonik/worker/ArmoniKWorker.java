@@ -60,7 +60,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  *
  * <h2>Usage Example</h2>
  * <pre>{@code
- * TaskProcessor processor = taskHandler -> {
+ * TaskProcessor processor = taskContext -> {
  *     // Process task logic here
  *     return new TaskOutcome.Success();
  * };
@@ -94,7 +94,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * is also properly closed during shutdown.
  *
  * @see TaskProcessor
- * @see TaskHandler
+ * @see TaskContext
  * @see <a href="https://armonik.readthedocs.io/en/latest/">ArmoniK Documentation</a>
  */
 public class ArmoniKWorker {

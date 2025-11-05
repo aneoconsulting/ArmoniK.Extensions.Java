@@ -1,0 +1,40 @@
+/*
+ * Copyright © 2025 ANEO (armonik@aneo.fr)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package fr.aneo.armonik.worker;
+
+import java.util.Arrays;
+
+public enum BlobStatus {
+  UNSPECIFIED(0),
+  CREATED(1),
+  COMPLETED(2),
+  ABORTED(3),
+  DELETED(4),
+  NOTFOUND(127);
+
+  private final int statusCode;
+
+  BlobStatus(int statusCode) {
+    this.statusCode = statusCode;
+  }
+
+  public static BlobStatus fromStatusCode(int statusCode) {
+    return Arrays.stream(values())
+                 .filter(value -> value.statusCode == statusCode)
+                 .findFirst()
+                 .orElseThrow(() -> new ArmoniKException("Invalid BlobStatus code: " + statusCode));
+  }
+}

@@ -18,64 +18,65 @@ package fr.aneo.armonik.worker;
 import java.util.Objects;
 
 /**
- * Immutable identifier for a blob within the ArmoniK distributed computing platform.
+ * Immutable identifier for a task within the ArmoniK distributed computing platform.
  * <p>
- * Blob identifiers are assigned by the ArmoniK cluster during blob creation and
- * uniquely identify blobs across the entire cluster.
+ * Task identifiers are assigned by the ArmoniK cluster during task submission and
+ * uniquely identify tasks across the entire cluster. This class provides a type-safe
+ * wrapper around the string-based task identifier used by the underlying gRPC API.
  * <p>
- * BlobId instances are immutable and implement proper equality and hash code semantics
+ * TaskId instances are immutable and implement proper equality and hash code semantics
  * for use in collections and as map keys.
  *
- * @see BlobInfo
- * @see BlobHandle
+ * @see TaskInfo
+ * @see TaskHandle
  */
-public class BlobId {
+public final class TaskId {
   private final String id;
 
-  private BlobId(String id) {
+  private TaskId(String id) {
     this.id = id;
   }
 
   /**
-   * Returns the string representation of this blob identifier.
+   * Returns the string representation of this task identifier.
    *
-   * @return the blob identifier as a string
+   * @return the task identifier as a string
    */
   public String asString() {
     return id;
   }
 
   /**
-   * Creates a blob identifier from the given string.
+   * Creates a task identifier from the given string.
    * <p>
    * This factory method creates blob identifiers from cluster-assigned string
    * identifiers received through the gRPC API.
    *
    * @param id the string identifier assigned by the ArmoniK cluster
-   * @return a new BlobId instance wrapping the given identifier
+   * @return a new TaskId instance wrapping the given identifier
    * @throws NullPointerException if id is null
    */
-  static BlobId from(String id) {
-    return new BlobId(id);
+   static TaskId from(String id) {
+    return new TaskId(id);
   }
 
   @Override
-  public String toString() {
-    return "BlobId{" +
-      "id='" + id + '\'' +
-      '}';
-  }
-
-  @Override
-  public boolean equals(Object o) {
-    if (o == null || getClass() != o.getClass()) return false;
-
-    BlobId blobId = (BlobId) o;
-    return Objects.equals(id, blobId.id);
+  public boolean equals(Object obj) {
+    if (obj == this) return true;
+    if (obj == null || obj.getClass() != this.getClass()) return false;
+    var that = (TaskId) obj;
+    return Objects.equals(this.id, that.id);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(id);
+    return Objects.hash(id);
+  }
+
+  @Override
+  public String toString() {
+    return "TaskId{" +
+      "id='" + id + '\'' +
+      '}';
   }
 }

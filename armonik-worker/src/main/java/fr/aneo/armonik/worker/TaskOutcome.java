@@ -18,7 +18,7 @@ package fr.aneo.armonik.worker;
 /**
  * Models the outcome of processing a single ArmoniK task.
  * <p>
- * Instances of {@code TaskOutcome} are produced by {@link TaskProcessor#processTask(TaskHandler)}
+ * Instances of {@code TaskOutcome} are produced by {@link TaskProcessor#processTask(TaskContext)}
  * and consumed by {@link WorkerGrpc} to build the gRPC {@code Output} message returned to the Agent.
  * This type is deliberately minimal and immutable to keep the processing pipeline simple and
  * predictable.
@@ -80,7 +80,7 @@ public sealed interface TaskOutcome {
    * Successful task completion.
    * <p>
    * Maps to gRPC {@code Output.ok = Empty}. No additional data is carried here; outputs must be
-   * written via {@link TaskHandler} prior to returning this outcome.
+   * written via {@link TaskContext} prior to returning this outcome.
    * </p>
    */
   record Success() implements TaskOutcome {}

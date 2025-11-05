@@ -15,8 +15,8 @@
  */
 package fr.aneo.armonik.client.testutils;
 
+import fr.aneo.armonik.client.model.ManagedChannelPool;
 import io.grpc.BindableService;
-import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
@@ -25,13 +25,12 @@ import org.junit.jupiter.api.BeforeEach;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Base class to spin up an in-process gRPC server/channel for tests.
  */
 public abstract class InProcessGrpcTestBase {
-  protected ManagedChannel channel;
+  protected ManagedChannelPool channelPool;
   private Server server;
 
   /** Subclasses provide the services they want to add to the server. */
@@ -43,13 +42,14 @@ public abstract class InProcessGrpcTestBase {
     InProcessServerBuilder serverBuilder = InProcessServerBuilder.forName(name).directExecutor();
     services().forEach(serverBuilder::addService);
     server = serverBuilder.build().start();
-    channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+    var channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+    channelPool = ManagedChannelPool.createUnbounded(() -> channel);
   }
 
   @AfterEach
   void stopServer() throws InterruptedException {
-    if (channel != null) {
-      channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+    if (channelPool != null) {
+      channelPool.close();
     }
     if (server != null) {
       server.shutdownNow().awaitTermination();

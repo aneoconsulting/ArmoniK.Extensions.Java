@@ -15,19 +15,17 @@
  */
 package fr.aneo.armonik.client.model;
 
+import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.definition.blob.BlobData;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.grpc.observers.DownloadBlobDataObserver;
 import fr.aneo.armonik.client.internal.grpc.observers.UploadBlobDataObserver;
-import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletionStage;
 
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.ResultsStub;
-import static fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc.newStub;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toDownloadResultDataRequest;
 import static java.util.Objects.requireNonNull;
 
@@ -75,7 +73,7 @@ public final class BlobHandle {
   public static final int UPLOAD_CHUNK_SIZE = 84_000;
   private final SessionId sessionId;
   private final CompletionStage<BlobInfo> deferredBlobInfo;
-  private final ResultsStub resultsStub;
+  private final ChannelPool channelPool;
 
 
   /**
@@ -87,19 +85,15 @@ public final class BlobHandle {
    *
    * @param sessionId        the identifier of the session that owns this blob
    * @param deferredBlobInfo a completion stage that will provide blob metadata when available
-   * @param channel          the gRPC channel for communicating with the ArmoniK cluster
+   * @param channelPool      the gRPC channel pool for cluster communication
    * @throws NullPointerException if any parameter is null
    * @see BlobInfo
    * @see SessionId
    */
-  BlobHandle(SessionId sessionId, CompletionStage<BlobInfo> deferredBlobInfo, ManagedChannel channel) {
-    requireNonNull(sessionId, "sessionId must not be null");
-    requireNonNull(deferredBlobInfo, "deferredBlobInfo must no be null");
-    requireNonNull(channel, "chanel must not be null");
-
-    this.sessionId = sessionId;
-    this.deferredBlobInfo = deferredBlobInfo;
-    this.resultsStub = newStub(channel);
+  BlobHandle(SessionId sessionId, CompletionStage<BlobInfo> deferredBlobInfo, ChannelPool channelPool) {
+    this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
+    this.deferredBlobInfo = requireNonNull(deferredBlobInfo, "deferredBlobInfo must no be null");
+    this.channelPool = requireNonNull(channelPool, "chanelPool must not be null");
   }
 
   /**
@@ -140,7 +134,7 @@ public final class BlobHandle {
    * for efficient network utilization. The upload is performed asynchronously,
    * and the returned completion stage completes when the entire data transfer is finished.
    *
-   * @param blobData  the data to upload
+   * @param blobData the data to upload
    * @return a completion stage that completes when the upload is finished
    * @throws NullPointerException if blobData is null
    * @throws RuntimeException     if upload fails due to cluster communication issues
@@ -151,10 +145,17 @@ public final class BlobHandle {
 
     logger.debug("Starting blob upload. SessionId: {}", sessionId.asString());
 
-    return deferredBlobInfo().thenCompose(blobInfo -> {
-      var uploadObserver = new UploadBlobDataObserver(sessionId(), blobInfo.id(), blobData, UPLOAD_CHUNK_SIZE);
+    return deferredBlobInfo().thenCompose(blobInfo -> executeUpload(blobInfo, blobData));
+  }
+
+  private CompletionStage<Void> executeUpload(BlobInfo blobInfo, BlobData blobData) {
+    return channelPool.executeAsync(channel -> {
+      var resultsStub = ResultsGrpc.newStub(channel);
+      var uploadObserver = new UploadBlobDataObserver(sessionId, blobInfo.id(), blobData, UPLOAD_CHUNK_SIZE);
+
       //noinspection ResultOfMethodCallIgnored
       resultsStub.uploadResultData(uploadObserver);
+
       return uploadObserver.completion();
     });
   }
@@ -171,19 +172,20 @@ public final class BlobHandle {
    * @see #uploadData(BlobData)
    */
   public CompletionStage<byte[]> downloadData() {
-    return deferredBlobInfo.thenCompose(blobInfo -> {
-      logger.atDebug()
-        .addKeyValue("operation", "downloadBlob")
-        .addKeyValue("sessionId", sessionId.asString())
-        .addKeyValue("blobId", blobInfo.id().asString())
-        .log("Starting blob download");
+    return deferredBlobInfo().thenCompose(this::executeDownload);
+  }
 
-      var request = toDownloadResultDataRequest(sessionId(), blobInfo.id());
-      var responseObserver = new DownloadBlobDataObserver(sessionId(), blobInfo.id());
+  private CompletionStage<byte[]> executeDownload(BlobInfo blobInfo) {
+    return channelPool.executeAsync(channel -> {
+      logger.debug("Starting blob download. SessionId: {}, BlobId: {}", sessionId.asString(), blobInfo.id().asString());
+
+      var resultsStub = ResultsGrpc.newStub(channel);
+      var request = toDownloadResultDataRequest(sessionId, blobInfo.id());
+      var responseObserver = new DownloadBlobDataObserver(sessionId, blobInfo.id());
+
       resultsStub.downloadResultData(request, responseObserver);
 
       return responseObserver.content();
     });
-
   }
 }

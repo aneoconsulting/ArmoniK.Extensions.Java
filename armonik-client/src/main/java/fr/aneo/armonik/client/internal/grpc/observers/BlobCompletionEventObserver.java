@@ -17,7 +17,10 @@ package fr.aneo.armonik.client.internal.grpc.observers;
 
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse;
 import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
-import fr.aneo.armonik.client.model.*;
+import fr.aneo.armonik.client.model.BlobCompletionListener;
+import fr.aneo.armonik.client.model.BlobHandle;
+import fr.aneo.armonik.client.model.BlobId;
+import fr.aneo.armonik.client.model.SessionId;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -110,7 +113,11 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   @Override
   public void onError(Throwable throwable) {
     final int pendingCount = pending.size();
-    log.error("Event stream error, publishing leftovers for retry. SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount, throwable);
+    if (pendingCount == 0 || isUnavailableError(throwable)) {
+      log.debug("Event stream closed (connection unavailable). SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount);
+    } else {
+      log.error("Event stream error, publishing leftovers for retry. SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount, throwable);
+    }
 
     safePublishLeftovers(new ArrayList<>(pending.values()));
 
@@ -201,5 +208,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
         }
       })
     );
+  }
+
+  private boolean isUnavailableError(Throwable throwable) {
+    return throwable instanceof io.grpc.StatusRuntimeException
+      && ((io.grpc.StatusRuntimeException) throwable).getStatus().getCode() == io.grpc.Status.Code.UNAVAILABLE;
   }
 }

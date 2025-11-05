@@ -15,15 +15,15 @@
  */
 package fr.aneo.armonik.client.definition;
 
+import fr.aneo.armonik.client.*;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.definition.blob.OutputBlobDefinition;
-import fr.aneo.armonik.client.model.*;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static fr.aneo.armonik.client.model.WorkerLibrary.NO_WORKER_LIBRARY;
+import static fr.aneo.armonik.client.WorkerLibrary.NO_WORKER_LIBRARY;
 
 
 /**

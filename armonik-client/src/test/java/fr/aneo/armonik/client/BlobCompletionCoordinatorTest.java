@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.testutils.CountingDeterministicScheduler;
 import org.jmock.lib.concurrent.DeterministicScheduler;
@@ -26,9 +26,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
-import static fr.aneo.armonik.client.model.BlobCompletionEventWatcher.WatchTicket;
-import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
-import static fr.aneo.armonik.client.model.TestDataFactory.sessionId;
+import static fr.aneo.armonik.client.BlobCompletionEventWatcher.WatchTicket;
+import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
+import static fr.aneo.armonik.client.TestDataFactory.sessionId;
 import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.DAYS;

@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.definition;
 
-import fr.aneo.armonik.client.model.*;
+import fr.aneo.armonik.client.*;
 
 import java.util.Set;
 

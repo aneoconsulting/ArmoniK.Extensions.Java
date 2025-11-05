@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import com.google.gson.Gson;
 import fr.aneo.armonik.client.definition.SessionDefinition;
@@ -38,9 +38,9 @@ import java.util.concurrent.CountDownLatch;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
-import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
-import static fr.aneo.armonik.client.model.TestDataFactory.sessionInfo;
-import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
+import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
+import static fr.aneo.armonik.client.WorkerLibrary.*;
 import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.*;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;

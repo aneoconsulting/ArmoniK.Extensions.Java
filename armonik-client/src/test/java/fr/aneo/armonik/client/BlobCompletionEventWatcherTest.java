@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
-import static fr.aneo.armonik.client.model.TestDataFactory.*;
+import static fr.aneo.armonik.client.TestDataFactory.*;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;

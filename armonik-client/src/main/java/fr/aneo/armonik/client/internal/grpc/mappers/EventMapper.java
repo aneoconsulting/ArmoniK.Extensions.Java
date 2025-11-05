@@ -18,8 +18,8 @@ package fr.aneo.armonik.client.internal.grpc.mappers;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultRawField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFilters;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
 
 import java.util.Set;
 

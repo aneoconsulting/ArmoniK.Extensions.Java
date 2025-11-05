@@ -18,7 +18,7 @@ package fr.aneo.armonik.client.testutils;
 import com.google.protobuf.Timestamp;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
-import fr.aneo.armonik.client.model.BlobId;
+import fr.aneo.armonik.client.BlobId;
 import io.grpc.stub.StreamObserver;
 
 import java.io.ByteArrayOutputStream;
@@ -30,7 +30,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.google.protobuf.ByteString.copyFrom;
-import static fr.aneo.armonik.client.model.TestDataFactory.blobId;
+import static fr.aneo.armonik.client.TestDataFactory.blobId;
 
 public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private BlobId downloadFailedId;

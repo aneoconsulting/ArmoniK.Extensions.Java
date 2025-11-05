@@ -18,8 +18,8 @@ package fr.aneo.armonik.client.internal.grpc.mappers;
 import com.google.protobuf.UnsafeByteOperations;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMetaDataRequest.ResultCreate;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
 
 import java.util.List;
 

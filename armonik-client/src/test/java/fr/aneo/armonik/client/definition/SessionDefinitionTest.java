@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.definition;
 
-import fr.aneo.armonik.client.model.TaskConfiguration;
+import fr.aneo.armonik.client.TaskConfiguration;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;

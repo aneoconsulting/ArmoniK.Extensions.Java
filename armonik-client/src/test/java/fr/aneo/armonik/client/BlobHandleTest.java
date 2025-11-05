@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.definition.blob.InMemoryBlobData;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
@@ -25,8 +25,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import static fr.aneo.armonik.client.model.BlobHandle.UPLOAD_CHUNK_SIZE;
-import static fr.aneo.armonik.client.model.TestDataFactory.*;
+import static fr.aneo.armonik.client.BlobHandle.UPLOAD_CHUNK_SIZE;
+import static fr.aneo.armonik.client.TestDataFactory.*;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.assertj.core.api.Assertions.assertThat;
 

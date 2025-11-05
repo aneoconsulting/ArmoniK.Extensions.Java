@@ -13,15 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
-import static fr.aneo.armonik.client.model.WorkerLibrary.*;
+import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
+import static fr.aneo.armonik.client.WorkerLibrary.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 

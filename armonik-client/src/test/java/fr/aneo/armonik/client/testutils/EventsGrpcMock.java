@@ -20,7 +20,7 @@ import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse.NewResult;
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse.ResultStatusUpdate;
 import fr.aneo.armonik.api.grpc.v1.events.EventsGrpc;
-import fr.aneo.armonik.client.model.BlobId;
+import fr.aneo.armonik.client.BlobId;
 import io.grpc.stub.StreamObserver;
 
 import java.util.List;

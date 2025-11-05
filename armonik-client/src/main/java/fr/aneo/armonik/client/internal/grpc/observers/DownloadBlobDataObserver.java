@@ -17,9 +17,9 @@ package fr.aneo.armonik.client.internal.grpc.observers;
 
 import com.google.common.util.concurrent.SettableFuture;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
-import fr.aneo.armonik.client.model.BlobHandle;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
+import fr.aneo.armonik.client.BlobHandle;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

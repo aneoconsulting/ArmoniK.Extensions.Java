@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.testutils;
 
-import fr.aneo.armonik.client.model.ManagedChannelPool;
+import fr.aneo.armonik.client.ManagedChannelPool;
 import io.grpc.BindableService;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;

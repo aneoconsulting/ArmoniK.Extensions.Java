@@ -17,10 +17,10 @@ package fr.aneo.armonik.client.internal.grpc.observers;
 
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse;
 import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
-import fr.aneo.armonik.client.model.BlobCompletionListener;
-import fr.aneo.armonik.client.model.BlobHandle;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
+import fr.aneo.armonik.client.BlobCompletionListener;
+import fr.aneo.armonik.client.BlobHandle;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,8 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import static fr.aneo.armonik.client.model.BlobCompletionListener.Blob;
-import static fr.aneo.armonik.client.model.BlobCompletionListener.BlobError;
+import static fr.aneo.armonik.client.BlobCompletionListener.Blob;
+import static fr.aneo.armonik.client.BlobCompletionListener.BlobError;
 
 /**
  * Internal gRPC stream observer that processes blob completion events and manages listener notifications.

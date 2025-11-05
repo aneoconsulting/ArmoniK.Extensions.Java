@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.internal.concurrent;
 
-import fr.aneo.armonik.client.model.BatchingPolicy;
+import fr.aneo.armonik.client.BatchingPolicy;
 
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;

@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static fr.aneo.armonik.client.model.TestDataFactory.blobHandle;
+import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class TaskDefinitionTest {

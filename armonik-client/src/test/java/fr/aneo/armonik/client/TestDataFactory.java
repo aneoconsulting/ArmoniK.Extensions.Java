@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import java.time.Instant;
 import java.util.Set;
 
-import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
+import static fr.aneo.armonik.client.TaskConfiguration.defaultConfiguration;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.mockito.Mockito.mock;
 

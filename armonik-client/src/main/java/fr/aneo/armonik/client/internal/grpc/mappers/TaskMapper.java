@@ -17,9 +17,9 @@ package fr.aneo.armonik.client.internal.grpc.mappers;
 
 import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest.TaskCreation;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
-import fr.aneo.armonik.client.model.TaskConfiguration;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
+import fr.aneo.armonik.client.TaskConfiguration;
 
 import java.util.List;
 

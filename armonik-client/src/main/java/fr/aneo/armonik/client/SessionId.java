@@ -13,58 +13,50 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import java.util.Objects;
 
 /**
- * Immutable identifier for a task within the ArmoniK distributed computing platform.
+ * Immutable identifier for a session within the ArmoniK distributed computing platform.
  * <p>
- * Task identifiers are assigned by the ArmoniK cluster during task submission and
- * uniquely identify tasks across the entire cluster. This class provides a type-safe
- * wrapper around the string-based task identifier used by the underlying gRPC API.
+ * Session identifiers are assigned by the ArmoniK cluster during session creation and
+ * uniquely identify sessions across the entire cluster.
  * <p>
- * TaskId instances are immutable and implement proper equality and hash code semantics
+ * SessionId instances are immutable and implement proper equality and hash code semantics
  * for use in collections and as map keys.
  *
- * @see TaskInfo
- * @see TaskHandle
+ * @see SessionInfo
+ * @see SessionHandle
  */
-public final class TaskId {
+public final class SessionId {
   private final String id;
 
-  private TaskId(String id) {
+  private SessionId(String id) {
     this.id = id;
   }
 
   /**
-   * Returns the string representation of this task identifier.
+   * Returns the string representation of this session identifier.
+   * <p>
+   * This method provides access to the underlying string identifier as used by
+   * the ArmoniK cluster's gRPC API.
    *
-   * @return the task identifier as a string
+   * @return the session identifier as a string
    */
   public String asString() {
     return id;
   }
 
-  /**
-   * Creates a task identifier from the given string.
-   * <p>
-   * This factory method creates blob identifiers from cluster-assigned string
-   * identifiers received through the gRPC API.
-   *
-   * @param id the string identifier assigned by the ArmoniK cluster
-   * @return a new TaskId instance wrapping the given identifier
-   * @throws NullPointerException if id is null
-   */
-   static TaskId from(String id) {
-    return new TaskId(id);
+  static SessionId from(String sessionId) {
+    return new SessionId(sessionId);
   }
 
   @Override
   public boolean equals(Object obj) {
     if (obj == this) return true;
     if (obj == null || obj.getClass() != this.getClass()) return false;
-    var that = (TaskId) obj;
+    var that = (SessionId) obj;
     return Objects.equals(this.id, that.id);
   }
 
@@ -75,7 +67,7 @@ public final class TaskId {
 
   @Override
   public String toString() {
-    return "TaskId{" +
+    return "SessionId{" +
       "id='" + id + '\'' +
       '}';
   }

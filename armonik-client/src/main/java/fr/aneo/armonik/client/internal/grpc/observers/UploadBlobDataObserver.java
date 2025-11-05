@@ -16,9 +16,9 @@
 package fr.aneo.armonik.client.internal.grpc.observers;
 
 import fr.aneo.armonik.client.definition.blob.BlobData;
-import fr.aneo.armonik.client.model.BlobHandle;
-import fr.aneo.armonik.client.model.BlobId;
-import fr.aneo.armonik.client.model.SessionId;
+import fr.aneo.armonik.client.BlobHandle;
+import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.client.SessionId;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import org.slf4j.Logger;

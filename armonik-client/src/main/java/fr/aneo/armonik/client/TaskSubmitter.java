@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import com.google.gson.Gson;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
@@ -44,8 +44,8 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMet
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ResultRaw;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse;
-import static fr.aneo.armonik.client.model.TaskConfiguration.defaultConfiguration;
-import static fr.aneo.armonik.client.model.WorkerLibrary.LIBRARY_BLOB_ID;
+import static fr.aneo.armonik.client.TaskConfiguration.defaultConfiguration;
+import static fr.aneo.armonik.client.WorkerLibrary.LIBRARY_BLOB_ID;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;

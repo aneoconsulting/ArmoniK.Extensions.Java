@@ -16,7 +16,7 @@
 package fr.aneo.armonik.client.definition.blob;
 
 import fr.aneo.armonik.client.definition.TaskDefinition;
-import fr.aneo.armonik.client.model.BlobHandle;
+import fr.aneo.armonik.client.BlobHandle;
 
 import static java.util.Objects.requireNonNullElse;
 

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.client.model;
+package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;

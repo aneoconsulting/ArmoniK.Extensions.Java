@@ -21,6 +21,7 @@ import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.grpc.observers.DownloadBlobDataObserver;
 import fr.aneo.armonik.client.internal.grpc.observers.UploadBlobDataObserver;
+import fr.aneo.armonik.client.internal.retry.RetryableStreamOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,7 +62,7 @@ import static java.util.Objects.requireNonNull;
  * @see TaskHandle
  */
 public final class BlobHandle {
-  private static final Logger logger = LoggerFactory.getLogger(BlobHandle.class);
+  private static final Logger log = LoggerFactory.getLogger(BlobHandle.class);
 
   /**
    * The chunk size used for uploading blob data to the ArmoniK cluster.
@@ -131,21 +132,34 @@ public final class BlobHandle {
    * Uploads data to this blob in the ArmoniK cluster.
    * <p>
    * This method transfers the data content to the ArmoniK cluster using chunked streaming
-   * for efficient network utilization. The upload is performed asynchronously,
-   * and the returned completion stage completes when the entire data transfer is finished.
+   * for efficient network utilization. The upload is performed asynchronously with automatic
+   * retry for transient failures if the blob data supports it.
+   * <p>
+   * If the blob data is retryable (see {@link BlobData#isRetryable()}), transient failures
+   * such as network interruptions will trigger automatic retries with exponential backoff.
+   * Non-retryable blob data will be attempted only once.
    *
    * @param blobData the data to upload
    * @return a completion stage that completes when the upload is finished
    * @throws NullPointerException if blobData is null
    * @throws RuntimeException     if upload fails due to cluster communication issues
    * @see BlobData
+   * @see BlobData#isRetryable()
    */
   public CompletionStage<Void> uploadData(BlobData blobData) {
     requireNonNull(blobData, "blobData must not be null");
 
-    logger.debug("Starting blob upload. SessionId: {}", sessionId.asString());
+    if (!blobData.isRetryable()) {
+      log.debug("BlobData is not retryable, attempting upload once. SessionId: {}", sessionId.asString());
+      return deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData));
+    }
 
-    return deferredBlobInfo().thenCompose(blobInfo -> executeUpload(blobInfo, blobData));
+    log.debug("Starting retryable blob upload. SessionId: {}", sessionId.asString());
+
+    return RetryableStreamOperation.execute(
+      () -> deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData)),
+      channelPool.retryPolicy()
+    );
   }
 
   private CompletionStage<Void> executeUpload(BlobInfo blobInfo, BlobData blobData) {
@@ -164,20 +178,26 @@ public final class BlobHandle {
    * Downloads the complete data content of this blob from the ArmoniK cluster.
    * <p>
    * This method retrieves the entire blob content from the cluster and returns it
-   * as a byte array. The download is performed asynchronously and the returned
-   * completion stage completes when all data has been received.
+   * as a byte array. The download is performed asynchronously with automatic retry
+   * for transient failures such as network interruptions.
+   * <p>
+   * Transient failures will trigger automatic retries with exponential backoff
+   * according to the configured retry policy.
    *
    * @return a completion stage that completes with the blob data as a byte array
    * @throws RuntimeException if download fails due to cluster communication issues
    * @see #uploadData(BlobData)
    */
   public CompletionStage<byte[]> downloadData() {
-    return deferredBlobInfo().thenCompose(this::executeDownload);
+    return RetryableStreamOperation.execute(
+      () -> deferredBlobInfo().thenCompose(this::executeDownload),
+      channelPool.retryPolicy()
+    );
   }
 
   private CompletionStage<byte[]> executeDownload(BlobInfo blobInfo) {
     return channelPool.executeAsync(channel -> {
-      logger.debug("Starting blob download. SessionId: {}, BlobId: {}", sessionId.asString(), blobInfo.id().asString());
+      log.debug("Starting blob download. SessionId: {}, BlobId: {}", sessionId.asString(), blobInfo.id().asString());
 
       var resultsStub = ResultsGrpc.newStub(channel);
       var request = toDownloadResultDataRequest(sessionId, blobInfo.id());

@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.internal.concurrent;
 
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.ListenableFuture;
+import fr.aneo.armonik.client.exception.ArmoniKException;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -48,14 +49,21 @@ public final class Futures {
 
   /**
    * Adapts a Guava {@link ListenableFuture} to a Java {@link CompletionStage}.
+   * <p>
    * Behavior:
    * <ul>
    *   <li>On success, completes the resulting {@link CompletionStage} with the value.</li>
-   *   <li>On failure, completes exceptionally with the original throwable, unless it is a
-   *       {@link CancellationException}, in which case the result is cancelled.</li>
+   *   <li>On failure, wraps the exception in an {@link ArmoniKException} and completes
+   *       exceptionally, unless the exception is a {@link CancellationException},
+   *       in which case the result is cancelled.</li>
    *   <li>If the returned {@code CompletionStage} is cancelled, the source {@code ListenableFuture}
    *       is also cancelled (with interruption allowed).</li>
    * </ul>
+   * <p>
+   * Exceptions are wrapped to provide consistent error handling across the ArmoniK client.
+   * The original exception is preserved as the cause and can be retrieved via
+   * {@link Throwable#getCause()}.
+   * <p>
    * Callbacks are scheduled on the shared executor.
    *
    * @param listenableFuture the source future to adapt; must not be {@code null}
@@ -142,10 +150,13 @@ public final class Futures {
                             });
   }
 
-
   /**
    * Creates a Guava {@link FutureCallback} that completes the provided {@link CompletableFuture}
    * according to the source future's outcome.
+   * <p>
+   * Exceptions are wrapped in {@link ArmoniKException} to provide consistent error handling,
+   * except for {@link CancellationException} which results in cancellation instead of
+   * exceptional completion.
    */
   private static <T> FutureCallback<T> completingCallback(CompletableFuture<T> completableFuture) {
     return new FutureCallback<>() {
@@ -159,9 +170,23 @@ public final class Futures {
         if (throwable instanceof CancellationException) {
           completableFuture.cancel(false);
         } else {
-          completableFuture.completeExceptionally(throwable);
+          var wrapped = (throwable instanceof ArmoniKException)
+            ? throwable
+            : new ArmoniKException(getErrorMessage(throwable), throwable);
+          completableFuture.completeExceptionally(wrapped);
         }
       }
     };
+  }
+
+  /**
+   * Extracts an appropriate error message from a throwable.
+   * Uses the throwable's message if available, otherwise falls back to the exception type name.
+   */
+  private static String getErrorMessage(Throwable throwable) {
+    String message = throwable.getMessage();
+    return (message != null && !message.isBlank())
+      ? message
+      : throwable.getClass().getSimpleName();
   }
 }

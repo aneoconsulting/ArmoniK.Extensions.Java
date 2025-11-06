@@ -23,11 +23,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.client.BlobHandle.UPLOAD_CHUNK_SIZE;
 import static fr.aneo.armonik.client.TestDataFactory.*;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class BlobHandleTest extends InProcessGrpcTestBase {
@@ -41,12 +43,13 @@ class BlobHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  void should_successfully_upload_blob_data() {
+  void should_successfully_upload_blob_data() throws InterruptedException, TimeoutException {
     // Given
     var blobData = InMemoryBlobData.from("Hello".getBytes());
 
     // When
     blobHandle.uploadData(blobData).toCompletableFuture().join();
+    resultsGrpcMock.awaitUploadsComplete(2, SECONDS);
 
     // Then
     assertThat(resultsGrpcMock.uploadedDataInfos).hasSize(1);

@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeoutException;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
@@ -182,13 +183,14 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  void should_create_a_blob_handle() {
+  void should_create_a_blob_handle() throws InterruptedException, TimeoutException {
     // Given
     var blobDefinition = InputBlobDefinition.from("Hello World".getBytes());
 
     // when
     var blobHandle = sessionHandle.createBlob(blobDefinition);
     blobHandle.deferredBlobInfo().toCompletableFuture().join();
+    resultsGrpcMock.awaitUploadsComplete(2, SECONDS);
 
     // then
     assertThat(blobHandle).isNotNull();

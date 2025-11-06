@@ -19,6 +19,8 @@ import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import io.grpc.ManagedChannel;
 
+import java.time.Duration;
+
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.toCreateSessionRequest;
 import static java.util.Objects.requireNonNull;
 
@@ -50,6 +52,7 @@ import static java.util.Objects.requireNonNull;
  */
 public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
+  final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
 
   /**
@@ -67,7 +70,11 @@ public class ArmoniKClient implements AutoCloseable {
   public ArmoniKClient(ArmoniKConfig armoniKConfig) {
     requireNonNull(armoniKConfig, "armoniKConfig must not be null");
 
-    this.channelPool = ManagedChannelPool.create(50, () -> createChannel(armoniKConfig));
+    this.channelPool = ManagedChannelPool.create(
+      DEFAULT_CHANNEL_POOL_SIZE,
+      armoniKConfig.retryPolicy(),
+      () -> createChannel(armoniKConfig)
+    );
   }
 
   ArmoniKClient(ChannelPool channelPool) {
@@ -95,8 +102,9 @@ public class ArmoniKClient implements AutoCloseable {
    * @see SessionDefinition
    */
   public SessionHandle openSession(SessionDefinition sessionDefinition) {
-    var id = createSession(sessionDefinition);
+    requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
+    var id = createSession(sessionDefinition);
     return new SessionHandle(id, sessionDefinition, channelPool);
   }
 
@@ -129,7 +137,10 @@ public class ArmoniKClient implements AutoCloseable {
   }
 
   private ManagedChannel createChannel(ArmoniKConfig armoniKConfig) {
-    var channelBuilder = GrpcChannelBuilder.forEndpoint(armoniKConfig.endpoint());
+    var channelBuilder = GrpcChannelBuilder.forEndpoint(armoniKConfig.endpoint())
+                                           .withRetry(armoniKConfig.retryPolicy())
+                                           .withIdleTimeout(Duration.ofMinutes(5))
+                                           .withKeepAlive(Duration.ofSeconds(30), Duration.ofSeconds(30));
 
     if (!armoniKConfig.sslValidation()) {
       channelBuilder.withUnsecureConnection();
@@ -146,7 +157,7 @@ public class ArmoniKClient implements AutoCloseable {
     }
 
     if (armoniKConfig.clientP12() != null) {
-      channelBuilder.withClientCertificate(Pkcs12ClientCertificate.of(armoniKConfig.clientP12(), armoniKConfig.clientKeyPem()));
+      channelBuilder.withClientCertificate(Pkcs12ClientCertificate.of(armoniKConfig.clientP12(), armoniKConfig.clientP12Password()));
     }
 
     return channelBuilder.build();

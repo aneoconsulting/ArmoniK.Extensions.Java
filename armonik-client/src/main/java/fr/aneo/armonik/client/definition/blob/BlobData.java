@@ -28,7 +28,7 @@ import java.io.InputStream;
  * @see InMemoryBlobData
  * @see FileBlobData
  */
-public abstract class BlobData {
+public interface BlobData {
 
   /**
    * Opens an input stream to read the data content.
@@ -46,5 +46,21 @@ public abstract class BlobData {
    * @return a new input stream positioned at the start of the data
    * @throws java.io.IOException if an I/O error occurs opening the stream
    */
-  public abstract InputStream stream() throws java.io.IOException;
+  InputStream stream() throws java.io.IOException;
+
+  /**
+   * Indicates whether the data can be read multiple times for retry operations.
+   * <p>
+   * When {@code true}, the implementation guarantees that {@link #stream()} can be
+   * called multiple times, with each call returning a fresh stream positioned at the
+   * start of the data. This allows upload operations to be retried in case of
+   * transient failures.
+   * <p>
+   * When {@code false}, the data source may not support multiple reads (e.g., a
+   * one-time stream), and retry operations should not be attempted.
+   *
+   * @return {@code true} if the data can be read multiple times for retries,
+   *         {@code false} otherwise
+   */
+  boolean isRetryable();
 }

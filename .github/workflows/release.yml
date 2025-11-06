@@ -49,7 +49,7 @@ jobs:
 
       - name: Verify build
         working-directory: ${{ matrix.module }}
-        run: ./mvnw -B -ntp verify
+        run: ./mvnw -B -ntp -Pci-release verify
 
   publish-modules:
     name: Publish ${{ matrix.module }}

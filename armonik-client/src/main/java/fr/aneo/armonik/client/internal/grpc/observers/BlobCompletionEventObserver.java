@@ -21,6 +21,7 @@ import fr.aneo.armonik.client.BlobCompletionListener;
 import fr.aneo.armonik.client.BlobHandle;
 import fr.aneo.armonik.client.BlobId;
 import fr.aneo.armonik.client.SessionId;
+import fr.aneo.armonik.client.exception.ArmoniKException;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -177,7 +178,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
     blobHandle.deferredBlobInfo()
               .thenAccept(blobInfo -> {
                 try {
-                  listener.onError(new BlobError(blobInfo, null)); //TODO define exception
+                  listener.onError(new BlobError(blobInfo, new ArmoniKException("Blob aborted")));
                 } catch (Throwable throwable) {
                   log.error("Listener threw exception during blob completion callback. SessionId: {}, blobId: {}", sessionId.asString(), blobInfo.id().asString(), throwable);
                 } finally {
@@ -191,23 +192,32 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
 
   private void handleCompleted(BlobHandle blobHandle) {
     blobHandle.deferredBlobInfo().thenCompose(blobInfo ->
-      blobHandle.downloadData().whenComplete((bytes, err) -> {
-        try {
-          if (err == null) {
-            listener.onSuccess(new Blob(blobInfo, bytes));
-          } else {
-            listener.onError(new BlobError(blobInfo, err));
-          }
-        } catch (Throwable throwable) {
-          log.error("Listener threw exception during blob completion callback. SessionId: {}, blobId: {}", sessionId.asString(), blobInfo.id().asString(), throwable);
-        } finally {
-          if (remaining.decrementAndGet() == 0 && !completion.isDone()) {
-            safePublishLeftovers(new ArrayList<>(pending.values()));
-            completion.complete(null);
-          }
-        }
-      })
-    );
+                blobHandle.downloadData().whenComplete((bytes, err) -> {
+                  try {
+                    if (err == null) {
+                      listener.onSuccess(new Blob(blobInfo, bytes));
+                    } else {
+                      listener.onError(new BlobError(blobInfo, err));
+                    }
+                  } catch (Throwable throwable) {
+                    log.error("Listener threw exception", throwable);
+                  } finally {
+                    int newRemaining = remaining.decrementAndGet();
+                    if (newRemaining == 0 && !completion.isDone()) {
+                      safePublishLeftovers(new ArrayList<>(pending.values()));
+                      completion.complete(null);
+                    }
+                  }
+                }))
+              .exceptionally(throwable -> {
+                log.error("Error in download chain for blob", throwable);
+                int newRemaining = remaining.decrementAndGet();
+                if (newRemaining == 0 && !completion.isDone()) {
+                  safePublishLeftovers(new ArrayList<>(pending.values()));
+                  completion.complete(null);
+                }
+                return null;
+              });
   }
 
   private boolean isUnavailableError(Throwable throwable) {

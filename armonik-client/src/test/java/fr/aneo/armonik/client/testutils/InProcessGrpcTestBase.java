@@ -42,8 +42,7 @@ public abstract class InProcessGrpcTestBase {
     InProcessServerBuilder serverBuilder = InProcessServerBuilder.forName(name).directExecutor();
     services().forEach(serverBuilder::addService);
     server = serverBuilder.build().start();
-    var channel = InProcessChannelBuilder.forName(name).directExecutor().build();
-    channelPool = ManagedChannelPool.createUnbounded(() -> channel);
+    channelPool = ManagedChannelPool.createUnbounded(() -> InProcessChannelBuilder.forName(name).directExecutor().build());
   }
 
   @AfterEach

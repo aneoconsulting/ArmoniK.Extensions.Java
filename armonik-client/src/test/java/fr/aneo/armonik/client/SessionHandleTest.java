@@ -188,6 +188,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // when
     var blobHandle = sessionHandle.createBlob(blobDefinition);
+    blobHandle.deferredBlobInfo().toCompletableFuture().join();
 
     // then
     assertThat(blobHandle).isNotNull();

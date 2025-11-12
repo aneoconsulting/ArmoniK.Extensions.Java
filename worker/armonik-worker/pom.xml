@@ -55,6 +55,11 @@
   <dependencies>
     <dependency>
       <groupId>fr.aneo</groupId>
+      <artifactId>armonik-worker-domain</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>fr.aneo</groupId>
       <artifactId>armonik-worker-api</artifactId>
       <version>${armonik-worker-api.version}</version>
     </dependency>

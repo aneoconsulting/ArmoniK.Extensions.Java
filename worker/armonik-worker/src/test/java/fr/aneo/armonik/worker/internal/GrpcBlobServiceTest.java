@@ -13,11 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
-import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
-import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
+import fr.aneo.armonik.worker.domain.SessionId;
+import fr.aneo.armonik.worker.domain.definition.blob.OutputBlobDefinition;
+import fr.aneo.armonik.worker.domain.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.worker.testutils.AgentGrpcMock;
 import fr.aneo.armonik.worker.testutils.InProcessGrpcTestBase;
 import io.grpc.BindableService;
@@ -32,13 +33,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
 
-import static fr.aneo.armonik.worker.BlobService.MAX_UPLOAD_SIZE;
+import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_UPLOAD_SIZE;
 import static org.assertj.core.api.Assertions.assertThat;
 
-class BlobServiceTest extends InProcessGrpcTestBase {
+class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
   private final AgentGrpcMock agentGrpcMock = new AgentGrpcMock();
-  private BlobService blobService;
+  private GrpcBlobService blobService;
 
   @TempDir
   Path tempDir;
@@ -48,7 +49,7 @@ class BlobServiceTest extends InProcessGrpcTestBase {
     var agentStub = AgentGrpc.newFutureStub(channel);
     var agentNotifier = new AgentNotifier(agentStub, SessionId.from("sessionId"), "communicationToken");
     var blobFileWriter = new BlobFileWriter(tempDir, agentNotifier);
-    blobService = new BlobService(agentStub, blobFileWriter, SessionId.from("sessionId"), "communicationToken");
+    blobService = new GrpcBlobService(agentStub, blobFileWriter, SessionId.from("sessionId"), "communicationToken");
     agentGrpcMock.reset();
   }
 

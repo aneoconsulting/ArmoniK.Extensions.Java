@@ -15,8 +15,8 @@
  */
 package fr.aneo.armonik.worker.internal;
 
-import fr.aneo.armonik.worker.ArmoniKException;
-import fr.aneo.armonik.worker.TaskContext;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.TaskContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,8 +56,8 @@ import java.nio.file.Path;
  * This class is stateless and thread-safe. All methods are static.
  * </p>
  *
- * @see fr.aneo.armonik.worker.TaskInput
- * @see fr.aneo.armonik.worker.TaskOutput
+ * @see fr.aneo.armonik.worker.domain.TaskInput
+ * @see fr.aneo.armonik.worker.domain.TaskOutput
  */
 public final class PathValidator {
 

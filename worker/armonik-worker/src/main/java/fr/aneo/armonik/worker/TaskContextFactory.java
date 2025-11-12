@@ -16,6 +16,9 @@
 package fr.aneo.armonik.worker;
 
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.TaskContext;
+import fr.aneo.armonik.worker.internal.TaskProcessingService;
 
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 
@@ -35,7 +38,7 @@ import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
  * <ul>
  *   <li><strong>Testability</strong>: Mock or stub task contexts can be injected for unit testing</li>
  *   <li><strong>Customization</strong>: Alternative task context implementations can be provided
- *       without modifying {@link WorkerGrpc}</li>
+ *       without modifying {@link TaskProcessingService}</li>
  *   <li><strong>Dependency Injection</strong>: The factory can be configured externally and
  *       injected into the Worker gRPC service</li>
  * </ul>
@@ -49,7 +52,7 @@ import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
  * }</pre>
  * <p>
  * This is the recommended implementation for production use and is automatically used by
- * {@link WorkerGrpc} when constructed without an explicit factory.
+ * {@link TaskProcessingService} when constructed without an explicit factory.
  * </p>
  *
  * <h2>Custom Implementation Example</h2>
@@ -89,7 +92,7 @@ import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
  * </p>
  *
  * @see TaskContext
- * @see WorkerGrpc
+ * @see TaskProcessingService
  * @see WorkerCommon.ProcessRequest
  */
 @FunctionalInterface
@@ -98,7 +101,7 @@ public interface TaskContextFactory {
   /**
    * Creates a new {@link TaskContext} for processing a task request.
    * <p>
-   * This method is called by {@link WorkerGrpc} for each task received from the Agent.
+   * This method is called by {@link TaskProcessingService} for each task received from the Agent.
    * The implementation should construct a task context that provides access to:
    * </p>
    * <ul>

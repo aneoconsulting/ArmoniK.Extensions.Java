@@ -13,10 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.SubmitTasksRequest.TaskCreation;
+import fr.aneo.armonik.worker.domain.*;
+import fr.aneo.armonik.worker.domain.internal.Payload;
+import fr.aneo.armonik.worker.domain.internal.TaskService;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 
 import java.util.Collection;
@@ -61,11 +64,11 @@ import static java.util.Objects.requireNonNull;
  * </p>
  *
  * @see TaskConfiguration
- * @see BlobService
+ * @see GrpcBlobService
  * @see Payload
  * @see TaskContext
  */
-class TaskService {
+class GrpcTaskService implements TaskService {
 
   private final AgentFutureStub agentStub;
   private final SessionId sessionId;
@@ -79,7 +82,7 @@ class TaskService {
    * @param communicationToken the communication token for this execution context; must not be {@code null}
    * @throws NullPointerException if any parameter is {@code null}
    */
-  TaskService(AgentFutureStub agentStub, SessionId sessionId, String communicationToken) {
+  GrpcTaskService(AgentFutureStub agentStub, SessionId sessionId, String communicationToken) {
     this.agentStub = agentStub;
     this.sessionId = sessionId;
     this.communicationToken = communicationToken;
@@ -115,7 +118,8 @@ class TaskService {
    * @throws NullPointerException     if any parameter is {@code null}
    * @throws IllegalArgumentException if {@code inputIds} or {@code outputIds} is empty
    */
-  CompletionStage<TaskInfo> submitTask(Collection<BlobId> inputIds, Collection<BlobId> outputIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
+  @Override
+  public CompletionStage<TaskInfo> submitTask(Collection<BlobId> inputIds, Collection<BlobId> outputIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
     requireNonNull(inputIds, "inputIds must not be null");
     requireNonNull(outputIds, "outputIds must not be null");
     requireNonNull(payloadId, "payloadId must not be null");

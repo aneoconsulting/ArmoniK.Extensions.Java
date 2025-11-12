@@ -13,7 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
+
+import fr.aneo.armonik.worker.domain.*;
 
 import java.nio.file.Path;
 import java.time.Instant;

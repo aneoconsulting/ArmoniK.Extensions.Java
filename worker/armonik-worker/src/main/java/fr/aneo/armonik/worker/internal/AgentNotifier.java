@@ -13,9 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.BlobId;
+import fr.aneo.armonik.worker.domain.SessionId;
+import fr.aneo.armonik.worker.domain.TaskOutput;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +67,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
  * @see TaskOutput
  */
 public final class AgentNotifier implements BlobListener {
-  private static final Logger logger = LoggerFactory.getLogger(fr.aneo.armonik.worker.AgentNotifier.class);
+  private static final Logger logger = LoggerFactory.getLogger(AgentNotifier.class);
   private static final int DEFAULT_NOTIFICATION_TIMEOUT = 30_000;
 
   private final AgentFutureStub agentStub;
@@ -99,6 +103,7 @@ public final class AgentNotifier implements BlobListener {
    * @throws ArmoniKException if the notification times out, the gRPC call fails,
    *                          or the thread is interrupted
    */
+  @Override
   public void onBlobReady(BlobId blobId) {
     logger.info("Notifying Agent that blob is ready: blobId={}, sessionId={}", blobId.asString(), sessionId);
     try {

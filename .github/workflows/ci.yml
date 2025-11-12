@@ -6,7 +6,7 @@ on:
     branches: [ main ]
     paths:
       - 'armonik-client/**'
-      - 'armonik-worker/**'
+      - 'worker/**'
       - '.github/workflows/ci.yml'
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
 
     strategy:
       matrix:
-        module: [armonik-client, armonik-worker]
+        module: [armonik-client, worker]
 
     steps:
       - name: Checkout
@@ -57,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.module }}-surefire-reports
-          path: ${{ matrix.module }}/target/surefire-reports/**
+          path: ${{ matrix.module }}/**/target/surefire-reports/**
 
       - name: Upload ${{ matrix.module }} artifacts
         if: always()

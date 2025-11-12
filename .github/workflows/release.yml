@@ -30,7 +30,7 @@ jobs:
 
     strategy:
       matrix:
-        module: [armonik-client, armonik-worker]
+        module: [armonik-client, worker]
 
     steps:
       - name: Checkout
@@ -58,7 +58,7 @@ jobs:
 
     strategy:
       matrix:
-        module: [armonik-client, armonik-worker]
+        module: [armonik-client, worker]
 
     steps:
       - name: Checkout

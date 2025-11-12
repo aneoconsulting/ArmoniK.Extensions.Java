@@ -13,8 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
+
+import fr.aneo.armonik.worker.domain.BlobId;
+import fr.aneo.armonik.worker.domain.TaskOutput;
 
 /**
  * Callback interface for receiving notifications when blob data becomes available.

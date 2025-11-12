@@ -13,11 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.Objects.Output.Error;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerGrpc.WorkerImplBase;
+import fr.aneo.armonik.worker.ArmoniKWorker;
+import fr.aneo.armonik.worker.TaskContextFactory;
+import fr.aneo.armonik.worker.domain.TaskContext;
+import fr.aneo.armonik.worker.domain.TaskOutcome;
+import fr.aneo.armonik.worker.domain.TaskProcessor;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,22 +100,22 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  * @see TaskContextFactory
  * @see ArmoniKWorker
  */
-public class WorkerGrpc extends WorkerImplBase {
-  private static final Logger logger = LoggerFactory.getLogger(WorkerGrpc.class);
+public class TaskProcessingService extends WorkerImplBase {
+  private static final Logger logger = LoggerFactory.getLogger(TaskProcessingService.class);
 
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
   private final TaskContextFactory taskContextFactory;
   final AtomicReference<ServingStatus> servingStatus;
 
-  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
+  TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
     this.agentStub = agentStub;
     this.taskProcessor = taskProcessor;
     this.taskContextFactory = taskContextFactory;
     this.servingStatus = new AtomicReference<>(SERVING);
   }
 
-  WorkerGrpc(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
+  public TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
     this(agentStub, taskProcessor, new DefaultTaskContextFactory());
   }
 

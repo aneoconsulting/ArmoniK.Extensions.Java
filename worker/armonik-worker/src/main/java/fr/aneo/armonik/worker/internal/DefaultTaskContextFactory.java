@@ -13,9 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import com.google.gson.JsonParseException;
+import fr.aneo.armonik.worker.TaskContextFactory;
+import fr.aneo.armonik.worker.domain.*;
+import fr.aneo.armonik.worker.domain.internal.Payload;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,13 +88,14 @@ final class DefaultTaskContextFactory implements TaskContextFactory {
     var communicationToken = request.getCommunicationToken();
     var agentNotifier = new AgentNotifier(agentStub, sessionId, communicationToken);
     var blobFileWriter = new BlobFileWriter(dataFolderPath, agentNotifier);
-    var blobService = new BlobService(agentStub, blobFileWriter, sessionId, communicationToken);
-    var taskService = new TaskService(agentStub, sessionId, communicationToken);
-    var payload = getPayload(dataFolderPath, request.getPayloadId());
+    var blobService = new GrpcBlobService(agentStub, blobFileWriter, sessionId, communicationToken);
+    var taskService = new GrpcTaskService(agentStub, sessionId, communicationToken);
+    var payloadSerializer = new GsonPayloadSerializer();
+    var payload = getPayload(dataFolderPath, request.getPayloadId(), payloadSerializer);
     var inputs = createInputs(payload, dataFolderPath);
     var outputs = createOutputs(payload, blobFileWriter);
 
-    return new TaskContext(blobService, taskService, sessionId, inputs, outputs);
+    return new TaskContext(blobService, taskService, payloadSerializer, sessionId, inputs, outputs);
   }
 
 
@@ -141,12 +145,12 @@ final class DefaultTaskContextFactory implements TaskContextFactory {
     };
   }
 
-  private static Payload getPayload(Path dataFolderPath, String payloadId) {
+  private static Payload getPayload(Path dataFolderPath, String payloadId, GsonPayloadSerializer payloadSerializer) {
     var payload = resolveWithin(dataFolderPath, payloadId);
     validateFile(payload);
     try {
-      var payloadData = Files.readString(payload);
-      return Payload.fromJson(payloadData);
+      var payloadData = Files.readAllBytes(payload);
+      return payloadSerializer.deserialize(payloadData);
     } catch (IOException exception) {
       logger.error("Failed to read payload file: blobId={}, dataFolder={}", payloadId, dataFolderPath, exception);
       throw new ArmoniKException("Failed to read payload file: " + payloadId, exception);

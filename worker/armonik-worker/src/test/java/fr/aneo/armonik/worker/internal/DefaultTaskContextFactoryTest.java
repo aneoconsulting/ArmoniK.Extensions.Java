@@ -13,10 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

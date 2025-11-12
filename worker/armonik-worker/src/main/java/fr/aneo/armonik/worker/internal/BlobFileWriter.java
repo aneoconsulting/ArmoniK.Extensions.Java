@@ -13,9 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
-import fr.aneo.armonik.worker.internal.PathValidator;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.BlobId;
+import fr.aneo.armonik.worker.domain.internal.BlobWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,9 +60,8 @@ import static java.util.Objects.requireNonNull;
  * </p>
  *
  * @see BlobListener
- * @see AgentNotifier
  */
-public final class BlobFileWriter {
+public final class BlobFileWriter implements BlobWriter {
 
   private static final Logger logger = LoggerFactory.getLogger(BlobFileWriter.class);
 
@@ -84,7 +85,8 @@ public final class BlobFileWriter {
    * @throws ArmoniKException     if the file cannot be written or path validation fails
    * @throws NullPointerException if any parameter is {@code null}
    */
-  void write(BlobId id, byte[] data) {
+  @Override
+  public void write(BlobId id, byte[] data) {
     requireNonNull(id, "id cannot be null");
     requireNonNull(data, "data cannot be null");
 
@@ -119,7 +121,8 @@ public final class BlobFileWriter {
    * @throws ArmoniKException     if the file cannot be written or path validation fails
    * @throws NullPointerException if any parameter is {@code null}
    */
-  void write(BlobId id, InputStream inputStream) {
+  @Override
+  public void write(BlobId id, InputStream inputStream) {
     requireNonNull(id, "id cannot be null");
     requireNonNull(inputStream, "inputStream cannot be null");
 

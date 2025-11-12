@@ -13,13 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import com.google.protobuf.UnsafeByteOperations;
-import fr.aneo.armonik.worker.definition.blob.BlobDefinition;
-import fr.aneo.armonik.worker.definition.blob.InMemoryBlobDefinition;
-import fr.aneo.armonik.worker.definition.blob.InputBlobDefinition;
-import fr.aneo.armonik.worker.definition.blob.OutputBlobDefinition;
+import fr.aneo.armonik.worker.domain.*;
+import fr.aneo.armonik.worker.domain.definition.blob.BlobDefinition;
+import fr.aneo.armonik.worker.domain.definition.blob.InMemoryBlobDefinition;
+import fr.aneo.armonik.worker.domain.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.worker.domain.definition.blob.OutputBlobDefinition;
+import fr.aneo.armonik.worker.domain.internal.BlobService;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,8 +74,8 @@ import static java.util.stream.Collectors.toMap;
  * @see BlobHandle
  * @see BlobFileWriter
  */
-final class BlobService {
-  private static final Logger logger = LoggerFactory.getLogger(BlobService.class);
+final class GrpcBlobService implements BlobService {
+  private static final Logger logger = LoggerFactory.getLogger(GrpcBlobService.class);
 
   static final int MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
 
@@ -91,7 +93,7 @@ final class BlobService {
    * @param communicationToken the communication token for this execution context
    * @throws NullPointerException if any parameter is null
    */
-  BlobService(AgentFutureStub agentFutureStub, BlobFileWriter blobFileWriter, SessionId sessionId, String communicationToken) {
+  GrpcBlobService(AgentFutureStub agentFutureStub, BlobFileWriter blobFileWriter, SessionId sessionId, String communicationToken) {
     this.agentFutureStub = requireNonNull(agentFutureStub, "agentFutureStub cannot be null");
     this.blobFileWriter = requireNonNull(blobFileWriter, "blobFileWriter cannot be null");
     this.communicationToken = requireNonNull(communicationToken, "communicationToken cannot be null");
@@ -114,7 +116,8 @@ final class BlobService {
    * @see InputBlobDefinition
    * @see #prepareBlobs(Map)
    */
-  Map<String, BlobHandle> createBlobs(Map<String, InputBlobDefinition> inputBlobDefinitions) {
+  @Override
+  public Map<String, BlobHandle> createBlobs(Map<String, InputBlobDefinition> inputBlobDefinitions) {
     requireNonNull(inputBlobDefinitions, "inputBlobDefinitions cannot be null");
 
     logger.debug("Creating {} input blobs", inputBlobDefinitions.size());
@@ -155,7 +158,8 @@ final class BlobService {
    * @see #createBlobs(Map)
    * @see #prepareBlobs(Map)
    */
-  BlobHandle createBlob(InputBlobDefinition inputBlobDefinition) {
+  @Override
+  public BlobHandle createBlob(InputBlobDefinition inputBlobDefinition) {
     requireNonNull(inputBlobDefinition, "blobDefinition cannot be null");
 
     return createBlobs(Map.of("blob", inputBlobDefinition)).get("blob");
@@ -191,7 +195,8 @@ final class BlobService {
    * @see InputBlobDefinition
    * @see #createBlobs(Map)
    */
-  <T extends BlobDefinition> Map<String, BlobHandle> prepareBlobs(Map<String, T> blobDefinitions) {
+  @Override
+  public <T extends BlobDefinition> Map<String, BlobHandle> prepareBlobs(Map<String, T> blobDefinitions) {
     requireNonNull(blobDefinitions, "blobDefinitions cannot be null");
 
     logger.debug("Preparing {} blob metadata", blobDefinitions.size());

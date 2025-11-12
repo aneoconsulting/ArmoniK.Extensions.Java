@@ -13,10 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.TaskContext;
+import fr.aneo.armonik.worker.domain.TaskOutcome;
+import fr.aneo.armonik.worker.domain.TaskProcessor;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -30,16 +34,16 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.SERVING;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessReply;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
-import static fr.aneo.armonik.worker.TaskOutcome.SUCCESS;
-import static fr.aneo.armonik.worker.TaskOutcome.Success;
+import static fr.aneo.armonik.worker.domain.TaskOutcome.SUCCESS;
+import static fr.aneo.armonik.worker.domain.TaskOutcome.Success;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 @SuppressWarnings({"unchecked", "ResultOfMethodCallIgnored"})
-class WorkerGrpcTest {
+class TaskProcessingServiceTest {
   private TaskProcessor taskProcessor;
-  private WorkerGrpc worker;
+  private TaskProcessingService worker;
   private TaskContext taskContext;
 
   @BeforeEach
@@ -47,7 +51,7 @@ class WorkerGrpcTest {
     taskProcessor = mock(TaskProcessor.class);
     var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
     taskContext = mock(TaskContext.class);
-    worker = new WorkerGrpc(agentStub, taskProcessor, (a, r) -> taskContext);
+    worker = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
   }
 
   @SuppressWarnings("unchecked")

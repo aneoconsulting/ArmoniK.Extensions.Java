@@ -13,12 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import com.google.common.util.concurrent.SettableFuture;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataRequest;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.NotifyResultDataResponse;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.BlobId;
+import fr.aneo.armonik.worker.domain.SessionId;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.BeforeEach;

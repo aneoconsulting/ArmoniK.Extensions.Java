@@ -13,9 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package fr.aneo.armonik.worker;
+package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
+import fr.aneo.armonik.worker.domain.BlobId;
+import fr.aneo.armonik.worker.domain.SessionId;
+import fr.aneo.armonik.worker.domain.TaskConfiguration;
 import fr.aneo.armonik.worker.testutils.AgentGrpcMock;
 import fr.aneo.armonik.worker.testutils.InProcessGrpcTestBase;
 import io.grpc.BindableService;
@@ -29,15 +32,15 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class TaskServiceTest extends InProcessGrpcTestBase {
+class GrpcTaskServiceTest extends InProcessGrpcTestBase {
 
   private final AgentGrpcMock agentGrpcMock = new AgentGrpcMock();
-  private TaskService taskService;
+  private GrpcTaskService taskService;
 
   @BeforeEach
   void setUp() {
     var agentStub = AgentGrpc.newFutureStub(channel);
-    taskService = new TaskService(agentStub, SessionId.from("test-session"), "test-communication-token");
+    taskService = new GrpcTaskService(agentStub, SessionId.from("test-session"), "test-communication-token");
     agentGrpcMock.reset();
   }
 

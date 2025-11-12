@@ -16,7 +16,10 @@
 package fr.aneo.armonik.worker;
 
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
+import fr.aneo.armonik.worker.domain.TaskContext;
+import fr.aneo.armonik.worker.domain.TaskProcessor;
 import fr.aneo.armonik.worker.internal.AddressResolver;
+import fr.aneo.armonik.worker.internal.TaskProcessingService;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -153,7 +156,7 @@ public class ArmoniKWorker {
                                .keepAliveTimeout(10, SECONDS)
                                .maxInboundMetadataSize(1024 * 1024)
                                .maxInboundMessageSize(8 * 1024 * 1024)
-                               .addService(new WorkerGrpc(AgentGrpc.newFutureStub(agentChannel), taskProcessor))
+                               .addService(new TaskProcessingService(AgentGrpc.newFutureStub(agentChannel), taskProcessor))
                                .build();
 
     server.start();

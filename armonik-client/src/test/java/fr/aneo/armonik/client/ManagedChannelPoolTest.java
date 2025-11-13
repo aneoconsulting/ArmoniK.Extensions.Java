@@ -15,21 +15,21 @@
  */
 package fr.aneo.armonik.client;
 
-import io.grpc.ConnectivityState;
 import io.grpc.ManagedChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.util.concurrent.Callable;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.stream.IntStream;
 
+import static io.grpc.ConnectivityState.READY;
+import static io.grpc.ConnectivityState.TRANSIENT_FAILURE;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -135,7 +135,7 @@ class ManagedChannelPoolTest {
     var latch = new CountDownLatch(3);
     var releaseLatch = new CountDownLatch(1);
 
-    IntStream.range(0, 3).<Callable<String>>mapToObj(i -> () -> pool.execute(ch -> {
+    range(0, 3).<Callable<String>>mapToObj(i -> () -> pool.execute(ch -> {
       latch.countDown();
       try {
         releaseLatch.await();
@@ -169,7 +169,7 @@ class ManagedChannelPoolTest {
     });
 
     // When - execute operations sequentially
-    IntStream.range(0, 10).forEach(i -> pool.execute(ch -> "operation-" + i));
+    range(0, 10).forEach(i -> pool.execute(ch -> "operation-" + i));
 
     // Then - only one channel should be created and reused
     assertThat(pool.size()).isEqualTo(1);
@@ -317,9 +317,65 @@ class ManagedChannelPoolTest {
     verify(channel).shutdownNow();
   }
 
+  @Test
+  @DisplayName("pool should evict two returned unhealthy channels then reuse the later-returned healthy one (no new creation)")
+  void pool_should_reuse_healthy_released_after_two_unhealthy() {
+    // Given
+    var degradingChannel1 = createHealthyChannel();
+    var degradingChannel2 = createHealthyChannel();
+    var healthyChannel = createHealthyChannel();
+    var calls = new AtomicInteger(0);
+
+    pool = ManagedChannelPool.create(5, () -> {
+      var call = calls.incrementAndGet();
+      return switch (call) {
+        case 1 -> degradingChannel1;
+        case 2 -> degradingChannel2;
+        case 3 -> healthyChannel;
+        default -> throw new IllegalStateException("Unexpected call: " + call);
+      };
+    });
+    var acquired = new CountDownLatch(3);
+    var operation1 = new CompletableFuture<>();
+    var operation2 = new CompletableFuture<>();
+    var operation3 = new CompletableFuture<>();
+
+    pool.executeAsync(executeOperation(acquired, operation1));
+    pool.executeAsync(executeOperation(acquired, operation2));
+    pool.executeAsync(executeOperation(acquired, operation3));
+    operation1.complete("ok-1");
+    operation2.complete("ok-2");
+    operation3.complete("ok-3");
+
+    // Degrade channel 1 and channel 2
+    when(degradingChannel1.getState(false)).thenReturn(TRANSIENT_FAILURE);
+    when(degradingChannel2.getState(false)).thenReturn(TRANSIENT_FAILURE);
+
+    // Sanity: all completed and available
+    assertThat(pool.availableChannels()).isEqualTo(3);
+
+    // When
+    var usedChannel = pool.execute(ch -> ch);
+
+    // Then
+    assertThat(usedChannel).isSameAs(healthyChannel);
+    verify(degradingChannel1).shutdown();
+    verify(degradingChannel2).shutdown();
+    verify(healthyChannel, never()).shutdown();
+    assertThat(calls.get()).isEqualTo(3);
+    assertThat(pool.size()).isEqualTo(1);
+  }
+
+  private static Function<ManagedChannel, CompletionStage<Object>> executeOperation(CountDownLatch acquired, CompletableFuture<Object> operation1) {
+    return channel -> {
+      acquired.countDown();
+      return operation1;
+    };
+  }
+
   private ManagedChannel createHealthyChannel() {
     var channel = mock(ManagedChannel.class);
-    when(channel.getState(false)).thenReturn(ConnectivityState.READY);
+    when(channel.getState(false)).thenReturn(READY);
     when(channel.shutdown()).thenReturn(channel);
     try {
       when(channel.awaitTermination(anyLong(), any())).thenReturn(true);
@@ -331,7 +387,7 @@ class ManagedChannelPoolTest {
 
   private ManagedChannel createUnhealthyChannel() {
     var channel = mock(ManagedChannel.class);
-    when(channel.getState(false)).thenReturn(ConnectivityState.TRANSIENT_FAILURE);
+    when(channel.getState(false)).thenReturn(TRANSIENT_FAILURE);
     when(channel.shutdown()).thenReturn(channel);
     try {
       when(channel.awaitTermination(anyLong(), any())).thenReturn(true);

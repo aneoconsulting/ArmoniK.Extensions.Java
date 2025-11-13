@@ -267,16 +267,27 @@ public final class ManagedChannelPool implements ChannelPool {
   }
 
   /**
-   * Acquires a channel from the pool.
+   * Acquires a {@link ManagedChannel} from the pool.
    * <p>
-   * For bounded pools: If no channels are available and the pool has reached its maximum size,
-   * this method will block until a channel is released by another thread.
+   * Behavior differs depending on the pool mode:
+   * <ul>
+   *   <li><strong>Bounded pool:</strong> If all channels are in use and the pool has reached its maximum size,
+   *   this call blocks until a channel is released by another thread.</li>
+   *   <li><strong>Unbounded pool:</strong> Always creates a new channel if none are available. Never blocks.</li>
+   * </ul>
    * <p>
-   * For unbounded pools: Always creates a new channel if none are available. Never blocks.
+   * When acquiring a channel:
+   * <ul>
+   *   <li>The method polls the internal queue of available channels.</li>
+   *   <li>Each polled channel is validated via {@link #isChannelHealthy(ManagedChannel)}.</li>
+   *   <li>Unhealthy channels are automatically removed from the pool and shut down.</li>
+   *   <li>The first healthy channel encountered is returned for reuse.</li>
+   *   <li>If no healthy channel is found, a new one is created using the configured {@code channelFactory}.</li>
+   * </ul>
    *
-   * @return a managed gRPC channel ready for use
+   * @return a healthy {@link ManagedChannel} ready for use
    * @throws IllegalStateException if the pool has been shut down
-   * @throws InterruptedException  if interrupted while waiting for a channel (bounded pools only)
+   * @throws InterruptedException  if interrupted while waiting for a channel in a bounded pool
    */
   private ManagedChannel acquire() throws InterruptedException {
     ensureNotShutdown();
@@ -284,30 +295,29 @@ public final class ManagedChannelPool implements ChannelPool {
     if (!isUnbounded) {
       semaphore.acquire();
     }
-
     try {
-      ManagedChannel channel = availableChannels.poll();
-
-      if (channel != null) {
-        if (isChannelHealthy(channel)) {
+      ManagedChannel channel = null;
+      ManagedChannel candidate;
+      while (channel == null && (candidate = availableChannels.poll()) != null) {
+        if (isChannelHealthy(candidate)) {
+          channel = candidate;
           logger.trace("Reusing channel from pool. Pool size: {}", size());
-          return channel;
         } else {
-          logger.debug("Discarding unhealthy channel from pool. Channel state: {}", channel.getState(false));
-          shutdownChannel(channel);
-          allChannels.remove(channel);
+          logger.debug("Discarding unhealthy channel from pool. Channel state: {}. Trying next...",candidate.getState(false));
+          shutdownChannel(candidate);
+          allChannels.remove(candidate);
         }
       }
-
-      channel = createChannel();
-      logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
+      if (channel == null) {
+        channel = createChannel();
+        logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
+      }
       return channel;
-
-    } catch (Exception e) {
+    } catch (Exception exception) {
       if (!isUnbounded) {
         semaphore.release();
       }
-      throw e;
+      throw exception;
     }
   }
 

@@ -166,4 +166,53 @@ public final class PathValidator {
 
     return resolved;
   }
+
+  /**
+   * Resolves a child path within a root directory, allowing subdirectories at any depth.
+   * <p>
+   * Unlike {@link #resolveWithin(Path, String)}, this method allows the resolved path
+   * to be anywhere in the directory tree below the root, as long as it remains within
+   * the root boundary.
+   * </p>
+   *
+   * <h4>Path Normalization</h4>
+   * <p>
+   * Both the root and resolved paths are normalized before comparison, which eliminates:
+   * </p>
+   * <ul>
+   *   <li>Redundant path segments (e.g., "/a/./b" → "/a/b")</li>
+   *   <li>Parent directory references (e.g., "/a/b/../c" → "/a/c")</li>
+   *   <li>Trailing slashes</li>
+   * </ul>
+   *
+   * <h4>Security Check</h4>
+   * <p>
+   * The method performs boundary validation:
+   * </p>
+   * <ul>
+   *   <li><strong>Boundary check</strong>: Ensures the resolved path starts with the root path</li>
+   * </ul>
+   *
+   * @param root  the root directory path; must not be {@code null}
+   * @param child the relative path to resolve (may include subdirectories); must not be {@code null}
+   * @return the validated resolved path, guaranteed to be a descendant of root
+   * @throws ArmoniKException     if the child resolves outside the root directory
+   * @throws NullPointerException if either parameter is {@code null}
+   * @see #resolveWithin(Path, String) for flat structure validation
+   */
+  public static Path resolveDescendant(Path root, String child) {
+    var normalizedRoot = root.normalize();
+    var resolved = normalizedRoot.resolve(child).normalize();
+
+    if (!resolved.startsWith(normalizedRoot)) {
+      logger.error("Security violation: Path '{}' resolves outside root directory. Root: {}, Resolved: {}",
+        child, normalizedRoot, resolved);
+
+      throw new ArmoniKException(
+        "Security violation: " + child + " resolves outside root directory. Expected within: " + normalizedRoot
+      );
+    }
+
+    return resolved;
+  }
 }

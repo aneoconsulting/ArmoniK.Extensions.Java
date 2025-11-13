@@ -35,7 +35,7 @@ class ArmoniKWorkerTest {
 
   @BeforeEach
   void setUp() {
-    armoniKWorker = new ArmoniKWorker(mock(TaskProcessor.class));
+    armoniKWorker = ArmoniKWorker.withTaskProcessor(mock(TaskProcessor.class));
   }
 
   @AfterEach

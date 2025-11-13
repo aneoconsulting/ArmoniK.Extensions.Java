@@ -108,4 +108,137 @@
       <version>${grpc-testing.version}</version>
     </dependency>
   </dependencies>
+
+  <profiles>
+    <!-- Docker image building profile -->
+    <profile>
+      <id>docker</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-shade-plugin</artifactId>
+            <version>3.6.1</version>
+            <executions>
+              <execution>
+                <phase>package</phase>
+                <goals>
+                  <goal>shade</goal>
+                </goals>
+                <configuration>
+                  <finalName>armonik-worker-${project.version}-docker</finalName>
+                  <createDependencyReducedPom>false</createDependencyReducedPom>
+
+                  <transformers>
+                    <!-- Main class -->
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                      <mainClass>fr.aneo.armonik.worker.internal.docker.DynamicWorkerMain</mainClass>
+                      <manifestEntries>
+                        <Implementation-Title>ArmoniK Worker Dynamic</Implementation-Title>
+                        <Implementation-Version>${project.version}</Implementation-Version>
+                        <Implementation-Vendor>ANEO</Implementation-Vendor>
+                      </manifestEntries>
+                    </transformer>
+
+                    <!-- Merge service files (SPI) -->
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+
+                    <!-- Merge Apache license files -->
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+
+                    <!-- Append logback.xml (or use XmlAppendingTransformer for proper XML merge) -->
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                      <resource>logback.xml</resource>
+                    </transformer>
+                  </transformers>
+
+                  <filters>
+                    <filter>
+                      <artifact>*:*</artifact>
+                      <excludes>
+                        <!-- Security: Remove signature files -->
+                        <exclude>META-INF/*.SF</exclude>
+                        <exclude>META-INF/*.DSA</exclude>
+                        <exclude>META-INF/*.RSA</exclude>
+
+                        <!-- Java 9+ modules: Remove module descriptors -->
+                        <exclude>module-info.class</exclude>
+                        <exclude>META-INF/versions/*/module-info.class</exclude>
+
+                        <!-- Duplicates: Will be recreated by transformers -->
+                        <exclude>META-INF/LICENSE</exclude>
+                        <exclude>META-INF/LICENSE.txt</exclude>
+                        <exclude>META-INF/NOTICE</exclude>
+                        <exclude>META-INF/NOTICE.txt</exclude>
+                        <exclude>META-INF/MANIFEST.MF</exclude>
+                      </excludes>
+                    </filter>
+                  </filters>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>com.google.cloud.tools</groupId>
+            <artifactId>jib-maven-plugin</artifactId>
+            <version>3.4.6</version>
+            <executions>
+              <execution>
+                <phase>package</phase>
+                <goals>
+                  <goal>build</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <from>
+                <image>gcr.io/distroless/java17-debian12</image>
+                <platforms>
+                  <platform>
+                    <architecture>amd64</architecture>
+                    <os>linux</os>
+                  </platform>
+                  <platform>
+                    <architecture>arm64</architecture>
+                    <os>linux</os>
+                  </platform>
+                </platforms>
+              </from>
+              <to>
+                <image>dockerhubaneo/armonik-dynamic-java-worker</image>
+                <tags>
+                  <tag>${project.version}</tag>
+                  <tag>latest</tag>
+                </tags>
+              </to>
+              <container>
+                <mainClass>fr.aneo.armonik.worker.internal.docker.DynamicWorkerMain</mainClass>
+                <ports>
+                  <port>8080</port>
+                </ports>
+                <labels>
+                  <org.opencontainers.image.title>ArmoniK Java Worker - Dynamic Loading</org.opencontainers.image.title>
+                  <org.opencontainers.image.description>Generic worker for dynamic TaskProcessor loading</org.opencontainers.image.description>
+                  <org.opencontainers.image.vendor>ANEO</org.opencontainers.image.vendor>
+                  <org.opencontainers.image.version>${project.version}</org.opencontainers.image.version>
+                  <org.opencontainers.image.source>https://github.com/aneoconsulting/ArmoniK.SDK.Java</org.opencontainers.image.source>
+                </labels>
+                <user>5000:5000</user>
+                <workingDirectory>/app</workingDirectory>
+                <jvmFlags>
+                  <jvmFlag>-XX:+UseContainerSupport</jvmFlag>
+                  <jvmFlag>-XX:MaxRAMPercentage=75.0</jvmFlag>
+                  <jvmFlag>-XX:+UseG1GC</jvmFlag>
+                  <jvmFlag>-Djava.security.egd=file:/dev/./urandom</jvmFlag>
+                </jvmFlags>
+                <creationTime>USE_CURRENT_TIMESTAMP</creationTime>
+              </container>
+              <containerizingMode>packaged</containerizingMode>
+              <skip>${jib.skip}</skip>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

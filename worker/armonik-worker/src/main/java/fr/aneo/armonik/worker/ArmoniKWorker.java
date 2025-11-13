@@ -19,6 +19,7 @@ import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import fr.aneo.armonik.worker.domain.TaskContext;
 import fr.aneo.armonik.worker.domain.TaskProcessor;
 import fr.aneo.armonik.worker.internal.AddressResolver;
+import fr.aneo.armonik.worker.internal.DynamicTaskProcessorLoader;
 import fr.aneo.armonik.worker.internal.TaskProcessingService;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -48,6 +49,28 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  *   <li><strong>Control Plane</strong>: Orchestrates task scheduling and lifecycle management</li>
  * </ul>
  *
+ * <h2>Execution Modes</h2>
+ * <p>
+ * The Worker supports two execution modes:
+ * <dl>
+ *   <dt><strong>Static Mode</strong></dt>
+ *   <dd>The {@link TaskProcessor} implementation is provided at construction time and is used for all tasks.
+ *       This mode is suitable when building custom workers with application-specific logic.
+ *   </dd>
+ *
+ *   <dt><strong>Dynamic Loading Mode</strong></dt>
+ *   <dd>The {@link TaskProcessor} implementation is loaded dynamically at runtime from a ZIP archive
+ *       specified in the task options. This mode enables a generic worker that can execute different
+ *       processors without recompilation or redeployment.
+ *       <p>
+ *       The ZIP archive must contain:
+ *       <ul>
+ *         <li>A JAR file with the {@link TaskProcessor} implementation</li>
+ *         <li>All required dependencies</li>
+ *       </ul>
+ *   </dd>
+ * </dl>
+ *
  * <h2>Configuration</h2>
  * <p>
  * The Worker requires the following environment variables to be set:
@@ -61,18 +84,6 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  *       <strong>Required</strong> - throws {@link IllegalStateException} if missing.</dd>
  * </dl>
  *
- * <h2>Usage Example</h2>
- * <pre>{@code
- * TaskProcessor processor = taskContext -> {
- *     // Process task logic here
- *     return new TaskOutcome.Success();
- * };
- *
- * ArmoniKWorker worker = new ArmoniKWorker(processor);
- * worker.start();
- * worker.blockUntilShutdown();
- * }</pre>
- *
  * <h2>Health Monitoring</h2>
  * <p>
  * The Worker implements a health check mechanism that is regularly polled by the Agent to verify
@@ -83,7 +94,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * <p>
  * The Worker follows this lifecycle:
  * <ol>
- *   <li><strong>Construction</strong>: Create instance with a {@link TaskProcessor}</li>
+ *   <li><strong>Construction</strong>: Create instance with {@link #withTaskProcessor(TaskProcessor)}
+ *       or {@link #withDynamicLoading()}</li>
  *   <li><strong>Start</strong>: Call {@link #start()} to initialize gRPC server and agent connection</li>
  *   <li><strong>Processing</strong>: Worker receives and processes tasks until shutdown</li>
  *   <li><strong>Shutdown</strong>: Graceful shutdown via {@link #shutdown()} or JVM shutdown hook</li>
@@ -109,16 +121,26 @@ public class ArmoniKWorker {
   private ManagedChannel agentChannel;
 
   /**
-   * Creates a new ArmoniK Worker with the specified task processor.
+   * Creates a new ArmoniK Worker with the specified task processor (static mode).
    * <p>
-   * Only one Worker instance should be created per container.
+   * This constructor is private. Use {@link #withTaskProcessor(TaskProcessor)} instead.
    * </p>
    *
    * @param taskProcessor the processor responsible for executing tasks; must not be {@code null}
    * @throws NullPointerException if {@code taskProcessor} is {@code null}
    */
-  public ArmoniKWorker(TaskProcessor taskProcessor) {
+  private ArmoniKWorker(TaskProcessor taskProcessor) {
     this.taskProcessor = requireNonNull(taskProcessor);
+  }
+
+  /**
+   * Creates a new ArmoniK Worker configured for dynamic loading mode.
+   * <p>
+   * This constructor is private. Use {@link #withDynamicLoading()} instead.
+   * </p>
+   */
+  private ArmoniKWorker() {
+    this.taskProcessor = null;
   }
 
   /**
@@ -133,6 +155,7 @@ public class ArmoniKWorker {
    *   <li>Resolves the Worker listening address from the {@code ComputePlane__WorkerChannel__Address}
    *       environment variable (defaults to 0.0.0.0:8080 if not set)</li>
    *   <li>Establishes a gRPC channel to the Agent using {@code ComputePlane__AgentChannel__Address}</li>
+   *   <li>Initializes the task processing service in either static or dynamic loading mode</li>
    *   <li>Starts the gRPC server with configured keep-alive settings and message size limits</li>
    *   <li>Registers a JVM shutdown hook for graceful termination</li>
    * </ul>
@@ -149,6 +172,13 @@ public class ArmoniKWorker {
 
     agentChannel = buildAgentChannel();
 
+    if (this.taskProcessor == null) {
+      logger.info("Starting worker in DYNAMIC loading mode: TaskProcessor will be provided per-request via WorkerLibrary info.");
+    } else {
+      logger.info("Starting worker in STATIC processor mode: using provided TaskProcessor implementation.");
+    }
+
+
     server = NettyServerBuilder.forAddress(workerAddress)
                                .permitKeepAliveWithoutCalls(true)
                                .permitKeepAliveTime(30, SECONDS)
@@ -156,7 +186,10 @@ public class ArmoniKWorker {
                                .keepAliveTimeout(10, SECONDS)
                                .maxInboundMetadataSize(1024 * 1024)
                                .maxInboundMessageSize(8 * 1024 * 1024)
-                               .addService(new TaskProcessingService(AgentGrpc.newFutureStub(agentChannel), taskProcessor))
+                               .addService(new TaskProcessingService(
+                                 AgentGrpc.newFutureStub(agentChannel),
+                                 taskProcessor,
+                                 new DynamicTaskProcessorLoader()))
                                .build();
 
     server.start();
@@ -250,6 +283,60 @@ public class ArmoniKWorker {
   public InetSocketAddress address() {
     return workerAddress;
   }
+
+  /**
+   * Creates a new ArmoniK Worker configured for static task processing mode.
+   * <p>
+   * In static mode, the provided {@link TaskProcessor} implementation is used for all tasks
+   * received by this worker. This is the recommended mode when building application-specific
+   * workers with custom task processing logic.
+   * </p>
+   *
+   * @param taskProcessor the processor responsible for executing all tasks; must not be {@code null}
+   * @return a new {@link ArmoniKWorker} instance configured for static processing mode
+   * @throws NullPointerException if {@code taskProcessor} is {@code null}
+   * @see #withDynamicLoading()
+   */
+  public static ArmoniKWorker withTaskProcessor(TaskProcessor taskProcessor) {
+    requireNonNull(taskProcessor, "taskProcessor cannot be null");
+    return new ArmoniKWorker(taskProcessor);
+  }
+
+  /**
+   * Creates a new ArmoniK Worker configured for dynamic library loading mode.
+   * <p>
+   * In dynamic loading mode, the worker loads {@link TaskProcessor} implementations at runtime
+   * from ZIP archives specified in task options. This enables a single generic worker deployment
+   * to execute different task processors without recompilation or redeployment.
+   * </p>
+   *
+   * <h4>Requirements</h4>
+   * <ul>
+   *   <li>Task options must include:
+   *     <ul>
+   *       <li>{@code LibraryBlobId}: Result ID containing the ZIP archive with the processor implementation</li>
+   *       <li>{@code LibraryName}: Path to the JAR file within the ZIP archive</li>
+   *       <li>{@code ClassName}: Fully qualified class name implementing {@link TaskProcessor}</li>
+   *       <li>{@code ConventionVersion}: The version of the Convention</li>
+   *     </ul>
+   *   </li>
+   * </ul>
+   *
+   * <h4>Security Considerations</h4>
+   * <ul>
+   *   <li>Loaded classes have full access to the JVM and system resources</li>
+   *   <li>ZIP archives are extracted to a temporary directory with restricted permissions</li>
+   *   <li>Path traversal attacks are prevented by validating all file paths</li>
+   *   <li>Consider using SecurityManager or containerization for additional isolation</li>
+   * </ul>
+   *
+   * @return a new {@link ArmoniKWorker} instance configured for dynamic loading mode
+   * @see #withTaskProcessor(TaskProcessor)
+   */
+  public static ArmoniKWorker withDynamicLoading() {
+    return new ArmoniKWorker();
+  }
+
 
   private ManagedChannel buildAgentChannel() {
     var agentAddress = AddressResolver.resolve(System.getenv("ComputePlane__AgentChannel__Address"))

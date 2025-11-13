@@ -20,6 +20,7 @@ import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingS
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerGrpc.WorkerImplBase;
 import fr.aneo.armonik.worker.ArmoniKWorker;
 import fr.aneo.armonik.worker.TaskContextFactory;
+import fr.aneo.armonik.worker.domain.ArmoniKException;
 import fr.aneo.armonik.worker.domain.TaskContext;
 import fr.aneo.armonik.worker.domain.TaskOutcome;
 import fr.aneo.armonik.worker.domain.TaskProcessor;
@@ -28,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -106,17 +108,25 @@ public class TaskProcessingService extends WorkerImplBase {
   private final AgentFutureStub agentStub;
   private final TaskProcessor taskProcessor;
   private final TaskContextFactory taskContextFactory;
+  private final DynamicTaskProcessorLoader dynamicTaskProcessorLoader;
   final AtomicReference<ServingStatus> servingStatus;
 
-  TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
+  private volatile LoadedTaskProcessor currentLoadedProcessor;
+
+  public TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, DynamicTaskProcessorLoader dynamicTaskProcessorLoader) {
+    this(agentStub, taskProcessor, new DefaultTaskContextFactory(), dynamicTaskProcessorLoader);
+  }
+
+  TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory, DynamicTaskProcessorLoader processorLoader) {
     this.agentStub = agentStub;
     this.taskProcessor = taskProcessor;
     this.taskContextFactory = taskContextFactory;
+    this.dynamicTaskProcessorLoader = processorLoader;
     this.servingStatus = new AtomicReference<>(SERVING);
   }
 
-  public TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor) {
-    this(agentStub, taskProcessor, new DefaultTaskContextFactory());
+  TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
+    this(agentStub, taskProcessor, taskContextFactory, new DynamicTaskProcessorLoader());
   }
 
   /**
@@ -165,25 +175,34 @@ public class TaskProcessingService extends WorkerImplBase {
     servingStatus.set(NOT_SERVING);
 
     try {
-      logger.info("Received task processing request: payloadId={}, dataFolder={}", request.getPayloadId(), request.getDataFolder());
-      var taskContext = taskContextFactory.create(agentStub, request);
+      var workerLibrary = WorkerLibrary.from(request.getTaskOptions().getOptionsMap());
+      var configError = validateConfiguration(workerLibrary);
+      ProcessReply reply;
 
-      logger.info("Starting task processing");
-      var outcome = taskProcessor.processTask(taskContext);
+      if (configError != null) {
+        reply = configError;
+      } else {
+        logProcessingMode(request, workerLibrary);
 
-      logger.info("Task processor returned {}, awaiting completion of pending operations", outcome.getClass().getSimpleName());
-      taskContext.awaitCompletion();
+        var taskProcessor = selectProcessor(workerLibrary, request.getDataFolder());
+        var taskContext = taskContextFactory.create(agentStub, request);
 
-      long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      if (outcome instanceof TaskOutcome.Success) {
-        logger.info("Task processing completed successfully in {}ms", duration);
-      } else if (outcome instanceof TaskOutcome.Error error) {
-        logger.warn("Task processing completed with error in {}ms: {}", duration, error.message());
+        logger.info("Starting task processing");
+        var outcome = taskProcessor.processTask(taskContext);
+
+        logger.info("Task processor returned {}, awaiting completion of pending operations", outcome.getClass().getSimpleName());
+        taskContext.awaitCompletion();
+
+        long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
+        logProcessingResult(outcome, duration);
+
+        reply = ProcessReply.newBuilder()
+                            .setOutput(toOutput(outcome))
+                            .build();
       }
 
-      responseObserver.onNext(ProcessReply.newBuilder()
-                                          .setOutput(toOutput(outcome))
-                                          .build());
+      responseObserver.onNext(reply);
+
     } catch (Exception exception) {
       long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
       String errorMessage = exception.getMessage() != null
@@ -195,6 +214,7 @@ public class TaskProcessingService extends WorkerImplBase {
                                           .setOutput(toOutput(new TaskOutcome.Error(errorMessage)))
                                           .build());
     } finally {
+      cleanupDynamicTaskProcessor();
       servingStatus.set(SERVING);
       responseObserver.onCompleted();
       MDC.clear();
@@ -248,5 +268,112 @@ public class TaskProcessingService extends WorkerImplBase {
       outputBuilder.setError(Error.newBuilder().setDetails(error.message()).build());
     }
     return outputBuilder.build();
+  }
+
+  private void logProcessingMode(ProcessRequest request, WorkerLibrary workerLibrary) {
+    if (workerLibrary.isEmpty()) {
+      logger.info("Processing task (static mode): payloadId={}, dataFolder={}",
+        request.getPayloadId(), request.getDataFolder());
+    } else {
+      logger.info("Processing task (dynamic mode): payloadId={}, dataFolder={}, library={}",
+        request.getPayloadId(), request.getDataFolder(), workerLibrary.symbol());
+    }
+  }
+
+  /**
+   * Validates that the worker configuration matches the request.
+   *
+   * @param workerLibrary library information from the request (may be empty)
+   * @return error reply if configuration is invalid, null if valid
+   */
+  private ProcessReply validateConfiguration(WorkerLibrary workerLibrary) {
+    boolean hasLibrary = !workerLibrary.isEmpty();
+    boolean hasProcessor = taskProcessor != null;
+
+    if (!hasProcessor && !hasLibrary) {
+      logger.error("Configuration error: Worker configured for dynamic loading but request lacks library information");
+      return missingProcessorError();
+    }
+
+    if (hasProcessor && hasLibrary) {
+      logger.error("Configuration error: Worker has fixed taskProcessor but request includes library loading information");
+      return configConflictError();
+    }
+
+    logger.debug("Configuration valid: mode={}", hasProcessor ? "static" : "dynamic");
+    return null;
+  }
+
+  /**
+   * Selects the appropriate TaskProcessor based on configuration.
+   *
+   * @return TaskProcessor to use (either static or dynamically loaded)
+   */
+  private TaskProcessor selectProcessor(WorkerLibrary library, String dataFolder) {
+    if (library.isEmpty()) {
+      logger.debug("Using static TaskProcessor");
+      return this.taskProcessor;
+    } else {
+      logger.info("Loading dynamic TaskProcessor from library: {}", library.blobId());
+      return loadDynamicProcessor(library, dataFolder);
+    }
+  }
+
+  /**
+   * Loads a TaskProcessor dynamically from a library.
+   */
+  private TaskProcessor loadDynamicProcessor(WorkerLibrary library, String dataFolder) {
+    try {
+      var dataFolderPath = Path.of(dataFolder);
+      var loadedTaskProcessor = dynamicTaskProcessorLoader.load(library, dataFolderPath);
+      this.currentLoadedProcessor = loadedTaskProcessor;
+
+      return loadedTaskProcessor.taskProcessor();
+    } catch (ArmoniKException exception) {
+      logger.error("Failed to load dynamic processor: {}", exception.getMessage(), exception);
+      throw exception;
+    }
+  }
+
+  private void logProcessingResult(TaskOutcome outcome, long duration) {
+    if (outcome instanceof TaskOutcome.Success) {
+      logger.info("Task processing completed successfully in {}ms", duration);
+    } else if (outcome instanceof TaskOutcome.Error error) {
+      logger.warn("Task processing completed with error in {}ms: {}", duration, error.message());
+    }
+  }
+
+  private ProcessReply missingProcessorError() {
+    var errorMessage = "Worker configuration error: This worker is configured for dynamic loading but the task " +
+      "does not include library information. Required task options: LibraryBlobId, LibraryPath, Symbol, ConventionVersion";
+
+    return ProcessReply.newBuilder()
+                       .setOutput(Output.newBuilder().setError(Error.newBuilder().setDetails(errorMessage)))
+                       .build();
+  }
+
+  private ProcessReply configConflictError() {
+    var errorMessage = "Task rejected: This worker uses a fixed taskProcessor and cannot load libraries dynamically. " +
+      "Remove library options (LibraryBlobId, LibraryPath, Symbol) from the task.";
+    return ProcessReply.newBuilder()
+                       .setOutput(Output.newBuilder().setError(Error.newBuilder().setDetails(errorMessage)))
+                       .build();
+  }
+
+  /**
+   * Cleans up dynamically loaded processor resources.
+   * Called in finally block to ensure cleanup even on errors.
+   */
+  private void cleanupDynamicTaskProcessor() {
+    if (currentLoadedProcessor != null) {
+      try {
+        currentLoadedProcessor.close();
+        logger.debug("Dynamic processor cleaned up successfully");
+      } catch (Exception e) {
+        logger.warn("Failed to cleanup dynamic processor", e);
+      } finally {
+        currentLoadedProcessor = null;
+      }
+    }
   }
 }

@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply;
 import fr.aneo.armonik.worker.domain.ArmoniKException;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.Empty;
@@ -43,15 +45,17 @@ import static org.mockito.Mockito.*;
 @SuppressWarnings({"unchecked", "ResultOfMethodCallIgnored"})
 class TaskProcessingServiceTest {
   private TaskProcessor taskProcessor;
-  private TaskProcessingService worker;
+  private TaskProcessingService taskProcessingService;
   private TaskContext taskContext;
+  private AgentFutureStub agentStub;
+  private StreamObserver<ProcessReply> observer;
 
   @BeforeEach
   void setUp() {
     taskProcessor = mock(TaskProcessor.class);
-    var agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
+    agentStub = mock(AgentFutureStub.class, RETURNS_DEEP_STUBS);
     taskContext = mock(TaskContext.class);
-    worker = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
+    observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
   }
 
   @SuppressWarnings("unchecked")
@@ -60,11 +64,12 @@ class TaskProcessingServiceTest {
   void should_send_ok_on_success_then_complete() {
     // given
     when(taskProcessor.processTask(any())).thenReturn(new Success());
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // when
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // then
     var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
@@ -85,11 +90,12 @@ class TaskProcessingServiceTest {
   void should_send_error_when_TaskProcessor_returns_a_domain_error_then_complete() {
     // given
     when(taskProcessor.processTask(any())).thenReturn(new TaskOutcome.Error("boom"));
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // when
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // then
     var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
@@ -110,11 +116,12 @@ class TaskProcessingServiceTest {
   void should_map_exception_to_error_then_complete() {
     // given
     when(taskProcessor.processTask(any())).thenThrow(new RuntimeException("kaboom"));
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // when
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // then
     var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
@@ -135,9 +142,10 @@ class TaskProcessingServiceTest {
   void should_report_serving_when_idle() {
     // given
     var observer = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
 
     // when
-    worker.healthCheck(Empty.getDefaultInstance(), observer);
+    taskProcessingService.healthCheck(Empty.getDefaultInstance(), observer);
 
     // then
     var replyCap = ArgumentCaptor.forClass(HealthCheckReply.class);
@@ -162,13 +170,14 @@ class TaskProcessingServiceTest {
       allowCompletion.await(2, SECONDS);
       return SUCCESS;
     });
-    var processingThread = new Thread(() -> worker.process(request, processObserver));
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
+    var processingThread = new Thread(() -> taskProcessingService.process(request, processObserver));
     processingThread.start();
     processingStarted.await(1, SECONDS);
 
     // When
     var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
-    worker.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
+    taskProcessingService.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
 
     // Then: Health check should report NOT_SERVING
     var replyCap = ArgumentCaptor.forClass(HealthCheckReply.class);
@@ -191,11 +200,12 @@ class TaskProcessingServiceTest {
     when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
     var processObserver = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
-    worker.process(request, processObserver);
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
+    taskProcessingService.process(request, processObserver);
 
     // When
     var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
-    worker.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
+    taskProcessingService.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
 
 
     // Then: Health check should report SERVING
@@ -213,12 +223,13 @@ class TaskProcessingServiceTest {
   void should_call_await_completion_after_process_task_returns_success() {
     // Given
     when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     @SuppressWarnings("unchecked")
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // When
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // Then:
     var inOrder = inOrder(taskProcessor, taskContext, observer);
@@ -234,13 +245,14 @@ class TaskProcessingServiceTest {
     // Given
     when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
     doThrow(new ArmoniKException("Boom !!")).when(taskContext).awaitCompletion();
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
 
     @SuppressWarnings("unchecked")
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // When
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // Then:
     var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
@@ -267,26 +279,26 @@ class TaskProcessingServiceTest {
       allowAwaitCompletion.await(2, SECONDS);
       return null;
     }).when(taskContext).awaitCompletion();
-
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
     var request = ProcessRequest.newBuilder().build();
 
     // When
-    var processingThread = new Thread(() -> worker.process(request, observer));
+    var processingThread = new Thread(() -> taskProcessingService.process(request, observer));
     processingThread.start();
 
     // Wait for awaitCompletion to be called
     awaitCompletionStarted.await(1, SECONDS);
 
     // Then: Should still be NOT_SERVING during awaitCompletion
-    assertThat(worker.servingStatus.get()).isEqualTo(NOT_SERVING);
+    assertThat(taskProcessingService.servingStatus.get()).isEqualTo(NOT_SERVING);
 
     // When: Allow awaitCompletion to finish
     allowAwaitCompletion.countDown();
     processingThread.join(2000);
 
     // Then: Should now be SERVING
-    assertThat(worker.servingStatus.get()).isEqualTo(SERVING);
+    assertThat(taskProcessingService.servingStatus.get()).isEqualTo(SERVING);
   }
 
   @Test
@@ -294,11 +306,11 @@ class TaskProcessingServiceTest {
   void should_not_call_await_completion_when_process_task_throws() {
     // Given
     when(taskProcessor.processTask(taskContext)).thenThrow(new RuntimeException("Task processing failed"));
-    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
     var request = ProcessRequest.newBuilder().build();
 
     // When
-    worker.process(request, observer);
+    taskProcessingService.process(request, observer);
 
     // Then: awaitCompletion should NOT be called
     verify(taskContext, never()).awaitCompletion();
@@ -310,5 +322,161 @@ class TaskProcessingServiceTest {
 
     var reply = replyCaptor.getValue();
     assertThat(reply.getOutput().hasError()).isTrue();
+  }
+
+  @Test
+  @DisplayName("should accept task when worker has fixed taskProcessor and request has no library info")
+  void should_accept_task_in_static_mode() {
+    // Given
+    var dynamicTaskProcessorLoader = mock(DynamicTaskProcessorLoader.class);
+    when(taskProcessor.processTask(any())).thenReturn(new Success());
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext, dynamicTaskProcessorLoader);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder()
+                                .setTaskOptions(TaskOptions.getDefaultInstance())
+                                .build();
+
+    // When
+    taskProcessingService.process(request, observer);
+
+    // Then
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    verify(observer).onNext(replyCaptor.capture());
+    verify(observer).onCompleted();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasOk()).isTrue();
+    assertThat(reply.getOutput().hasError()).isFalse();
+    verify(taskProcessor).processTask(taskContext);
+
+    verifyNoInteractions(dynamicTaskProcessorLoader);
+  }
+
+  @Test
+  @DisplayName("should reject task when dynamic mode worker receives request without library info")
+  void should_reject_task_when_dynamic_mode_worker_lacks_library_info() {
+    // Given
+    taskProcessingService = new TaskProcessingService(agentStub, null, (a, r) -> taskContext);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder()
+                                .setTaskOptions(TaskOptions.getDefaultInstance())
+                                .build();
+
+    // When
+    taskProcessingService.process(request, observer);
+
+    // Then
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    var inOrder = inOrder(observer);
+    inOrder.verify(observer).onNext(replyCaptor.capture());
+    inOrder.verify(observer).onCompleted();
+    inOrder.verifyNoMoreInteractions();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasOk()).isFalse();
+    assertThat(reply.getOutput().hasError()).isTrue();
+    assertThat(reply.getOutput().getError().getDetails())
+      .contains("Worker configuration error")
+      .contains("dynamic loading")
+      .contains("Required task options")
+      .contains("LibraryBlobId")
+      .contains("LibraryPath")
+      .contains("Symbol")
+      .contains("ConventionVersion");
+
+    verify(taskProcessor, never()).processTask(any());
+    verify(taskContext, never()).awaitCompletion();
+  }
+
+  @Test
+  @DisplayName("should reject task when static mode worker receives request with library info")
+  void should_reject_task_when_static_mode_worker_receives_library_info() {
+    // Given
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = createDynamicTaskProcessorRequest();
+
+    // When
+    taskProcessingService.process(request, observer);
+
+    // Then
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    var inOrder = inOrder(observer);
+    inOrder.verify(observer).onNext(replyCaptor.capture());
+    inOrder.verify(observer).onCompleted();
+    inOrder.verifyNoMoreInteractions();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasOk()).isFalse();
+    assertThat(reply.getOutput().hasError()).isTrue();
+    assertThat(reply.getOutput().getError().getDetails())
+      .contains("Task rejected")
+      .contains("fixed taskProcessor")
+      .contains("cannot load libraries dynamically")
+      .contains("Remove library options");
+
+    verify(taskProcessor, never()).processTask(any());
+    verify(taskContext, never()).awaitCompletion();
+  }
+
+  @Test
+  @DisplayName("should use dynamic processor when library info provided")
+  void should_use_dynamic_processor_when_library_provided() {
+    // Given
+    var dynamicTaskProcessorLoader = mock(DynamicTaskProcessorLoader.class);
+    var taskProcessor = mock(TaskProcessor.class);
+    var loadedTaskProcessor = mock(LoadedTaskProcessor.class);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+
+    when(loadedTaskProcessor.taskProcessor()).thenReturn(taskProcessor);
+    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(loadedTaskProcessor);
+    when(taskProcessor.processTask(any())).thenReturn(TaskOutcome.SUCCESS);
+
+    var service = new TaskProcessingService(agentStub, null, (a, r) -> taskContext, dynamicTaskProcessorLoader);
+    var request = createDynamicTaskProcessorRequest();
+
+    // When
+    service.process(request, observer);
+
+    // Then
+    verify(dynamicTaskProcessorLoader).load(any(WorkerLibrary.class), eq(Path.of("/data/task-abc")));
+    verify(taskProcessor).processTask(any());
+    verify(loadedTaskProcessor).close();
+  }
+
+  @Test
+  @DisplayName("should cleanup dynamic processor even when processing fails")
+  void should_cleanup_even_on_error() {
+    // Given
+    var dynamicTaskProcessorLoader = mock(DynamicTaskProcessorLoader.class);
+    var taskProcessor = mock(TaskProcessor.class);
+    var loadedTaskProcessor = mock(LoadedTaskProcessor.class);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+
+    when(loadedTaskProcessor.taskProcessor()).thenReturn(taskProcessor);
+    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(loadedTaskProcessor);
+    when(taskProcessor.processTask(any())).thenThrow(new RuntimeException("Processing failed"));
+
+    var service = new TaskProcessingService(agentStub,null,(a, r) -> taskContext,dynamicTaskProcessorLoader);
+
+    // When
+    var request = createDynamicTaskProcessorRequest();
+    service.process(request, observer);
+
+    // Then: Cleanup still called
+    verify(loadedTaskProcessor).close();
+  }
+
+  private static ProcessRequest createDynamicTaskProcessorRequest() {
+    var options = TaskOptions.newBuilder()
+                             .putOptions(WorkerLibrary.LIBRARY_BLOB_ID, "blob-123")
+                             .putOptions(WorkerLibrary.LIBRARY_PATH, "lib/processor.jar")
+                             .putOptions(WorkerLibrary.SYMBOL, "com.example.Processor")
+                             .putOptions(WorkerLibrary.CONVENTION_VERSION, "v1")
+                             .build();
+    return ProcessRequest.newBuilder()
+                         .setTaskOptions(options)
+                         .setDataFolder("/data/task-abc")
+                         .build();
   }
 }

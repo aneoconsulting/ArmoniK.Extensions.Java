@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client.testutils;
 
 import fr.aneo.armonik.client.ManagedChannelPool;
+import fr.aneo.armonik.client.RetryPolicy;
 import io.grpc.BindableService;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -38,11 +40,17 @@ public abstract class InProcessGrpcTestBase {
 
   @BeforeEach
   void startServer() throws IOException {
-    String name = InProcessServerBuilder.generateName();
-    InProcessServerBuilder serverBuilder = InProcessServerBuilder.forName(name).directExecutor();
+    var name = InProcessServerBuilder.generateName();
+    var serverBuilder = InProcessServerBuilder.forName(name).directExecutor();
     services().forEach(serverBuilder::addService);
     server = serverBuilder.build().start();
-    channelPool = ManagedChannelPool.createUnbounded(() -> InProcessChannelBuilder.forName(name).directExecutor().build());
+
+    var fastRetryPolicy = new RetryPolicy(1, Duration.ofMillis(10), Duration.ofMillis(10), 1);
+    channelPool = ManagedChannelPool.create(
+      50,
+      fastRetryPolicy,
+      () -> InProcessChannelBuilder.forName(name).directExecutor().build()
+    );
   }
 
   @AfterEach

@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,6 +36,9 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
 
       - name: Show tool versions
         working-directory: ${{ matrix.module }}
@@ -45,6 +49,8 @@ jobs:
       - name: Verify ${{ matrix.module }}
         working-directory: ${{ matrix.module }}
         run: ./mvnw -B -ntp verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload ${{ matrix.module }} surefire reports on failure
         if: failure()

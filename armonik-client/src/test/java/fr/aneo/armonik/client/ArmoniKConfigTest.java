@@ -18,6 +18,8 @@ package fr.aneo.armonik.client;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.*;
 
 class ArmoniKConfigTest {
@@ -117,10 +119,12 @@ class ArmoniKConfigTest {
   @DisplayName("should build complete config with all options")
   void should_build_complete_config_with_all_options() {
     // When
+    var retryPolicy = new RetryPolicy(10, Duration.ofSeconds(5), Duration.ofSeconds(10), 2.0);
     var config = ArmoniKConfig.builder()
                               .endpoint("https://armonik.example.com:443")
                               .withCaCert("/path/to/ca.pem")
                               .withClientCert("/path/to/client.pem", "/path/to/client.key")
+                              .withRetryPolicy(retryPolicy)
                               .build();
 
     // Then
@@ -129,6 +133,7 @@ class ArmoniKConfigTest {
     assertThat(config.caCertPem()).isEqualTo("/path/to/ca.pem");
     assertThat(config.clientCertPem()).isEqualTo("/path/to/client.pem");
     assertThat(config.clientKeyPem()).isEqualTo("/path/to/client.key");
+    assertThat(config.retryPolicy()).isEqualTo(retryPolicy);
   }
 
   @Test

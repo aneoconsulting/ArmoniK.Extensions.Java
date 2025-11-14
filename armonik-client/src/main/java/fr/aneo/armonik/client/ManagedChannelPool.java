@@ -48,10 +48,15 @@ import static java.util.Objects.requireNonNull;
  *   <li>Lazy channel creation up to maximum pool size (or unlimited for unbounded)</li>
  *   <li>Graceful shutdown with timeout</li>
  *   <li>Functional API preventing resource leaks</li>
+ *   <li>Configurable retry policy for handling transient failures</li>
  * </ul>
+ * <p>
+ * The pool also maintains a {@link RetryPolicy} that defines how operations should handle
+ * and retry transient failures such as network issues or temporary unavailability.
  *
  * @see ChannelPool
  * @see ManagedChannel
+ * @see RetryPolicy
  */
 public final class ManagedChannelPool implements ChannelPool {
   private static final Logger logger = LoggerFactory.getLogger(ManagedChannelPool.class);
@@ -64,6 +69,7 @@ public final class ManagedChannelPool implements ChannelPool {
   private final ConcurrentLinkedQueue<ManagedChannel> availableChannels;
   private final Set<ManagedChannel> allChannels;
   private final AtomicBoolean shutdown;
+  private final RetryPolicy retryPolicy;
 
   /**
    * Creates a new channel pool with the specified configuration.
@@ -72,10 +78,11 @@ public final class ManagedChannelPool implements ChannelPool {
    * @param channelFactory factory for creating new gRPC channels
    * @throws IllegalArgumentException if maxSize is negative
    */
-  private ManagedChannelPool(int maxSize, Supplier<ManagedChannel> channelFactory) {
+  private ManagedChannelPool(int maxSize, RetryPolicy retryPolicy, Supplier<ManagedChannel> channelFactory) {
     if (maxSize < 0) throw new IllegalArgumentException("maxSize must be non-negative, got: " + maxSize);
 
     this.channelFactory = requireNonNull(channelFactory, "channelFactory must not be null");
+    this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy must not be null");
     this.maxSize = maxSize;
     this.isUnbounded = (maxSize == 0);
     this.semaphore = isUnbounded ? null : new Semaphore(maxSize);
@@ -168,6 +175,11 @@ public final class ManagedChannelPool implements ChannelPool {
     return availableChannels.size();
   }
 
+  @Override
+  public RetryPolicy retryPolicy() {
+    return retryPolicy;
+  }
+
   /**
    * Returns whether this pool is unbounded (no maximum size limit).
    *
@@ -178,25 +190,27 @@ public final class ManagedChannelPool implements ChannelPool {
   }
 
   /**
-   * Creates an unbounded channel pool.
+   * Creates an unbounded channel pool with a default retry policy.
    * <p>
    * An unbounded pool creates channels on-demand without any maximum limit.
    * Operations never block waiting for a channel to become available.
    * This is useful for highly concurrent scenarios where blocking is unacceptable.
    * <p>
+   * The pool will use {@link RetryPolicy#DEFAULT} for handling transient failures.
    * <strong>Warning:</strong> Unbounded pools can create unlimited channels,
    * potentially exhausting system resources under high load. Use with caution
    * and ensure proper backpressure mechanisms are in place.
    *
    * @param channelFactory factory for creating new gRPC channels
-   * @return an unbounded channel pool
+   * @return an unbounded channel pool with a default retry policy
+   * @throws NullPointerException if channelFactory is null
    */
   public static ManagedChannelPool createUnbounded(Supplier<ManagedChannel> channelFactory) {
-    return new ManagedChannelPool(0, channelFactory);
+    return new ManagedChannelPool(0, RetryPolicy.DEFAULT, channelFactory);
   }
 
   /**
-   * Creates a bounded channel pool with custom size.
+   * Creates a bounded channel pool with custom size and default retry policy.
    * <p>
    * <strong>⚠️ Important: Pool Sizing for Event Streaming</strong>
    * <p>
@@ -209,38 +223,71 @@ public final class ManagedChannelPool implements ChannelPool {
    *   <li>Pool must be sized to accommodate: <code>numStreams + numConcurrentOps</code></li>
    * </ul>
    * <p>
-   * <strong>Why dedicated channels?</strong> gRPC channels can experience state contamination
-   * where interruptions or cancellations on one operation may affect other operations
-   * sharing the same channel. Streams are particularly sensitive to this.
-   * <p>
-   * <strong>Recommended pool sizes:</strong>
-   * <ul>
-   *   <li><strong>No event streaming:</strong> 5 channels</li>
-   *   <li><strong>With event streaming:</strong> 10-20 channels</li>
-   *   <li><strong>High concurrency or many streams:</strong> Consider {@link #createUnbounded(Supplier)}</li>
-   * </ul>
+   * The pool will use {@link RetryPolicy#DEFAULT} for handling transient failures.
+   * To specify a custom retry policy, use {@link #create(int, RetryPolicy, Supplier)}.
    *
    * @param maxSize        maximum number of channels in the pool (minimum 1)
    * @param channelFactory factory for creating new gRPC channels
-   * @return a bounded channel pool
+   * @return a bounded channel pool with the default retry policy
    * @throws IllegalArgumentException if maxSize is less than 1
+   * @throws NullPointerException if channelFactory is null
    */
   public static ManagedChannelPool create(int maxSize, Supplier<ManagedChannel> channelFactory) {
-    if (maxSize < 1) throw new IllegalArgumentException("maxSize must be at least 1 for bounded pool, got: " + maxSize);
-    return new ManagedChannelPool(maxSize, channelFactory);
+    return create(maxSize, RetryPolicy.DEFAULT, channelFactory);
   }
 
   /**
-   * Acquires a channel from the pool.
+   * Creates a bounded channel pool with custom size and retry policy.
    * <p>
-   * For bounded pools: If no channels are available and the pool has reached its maximum size,
-   * this method will block until a channel is released by another thread.
+   * <strong>⚠️ Important: Pool Sizing for Event Streaming</strong>
    * <p>
-   * For unbounded pools: Always creates a new channel if none are available. Never blocks.
+   * When using event streams (e.g., {@link SessionHandle#awaitOutputsProcessed()}),
+   * each stream holds a dedicated channel for the entire stream duration to prevent
+   * channel state contamination. This means:
+   * <ul>
+   *   <li>Each active event stream occupies one channel from the pool</li>
+   *   <li>Concurrent operations (downloads, submissions) need additional channels</li>
+   *   <li>Pool must be sized to accommodate: <code>numStreams + numConcurrentOps</code></li>
+   * </ul>
+   * <p>
+   * The specified retry policy will be used to handle transient failures during operations.
+   * Pass {@code null} or {@link RetryPolicy#DEFAULT} to use default retry behavior.
    *
-   * @return a managed gRPC channel ready for use
+   * @param maxSize        maximum number of channels in the pool (minimum 1)
+   * @param retryPolicy    retry policy for handling transient failures (null uses default)
+   * @param channelFactory factory for creating new gRPC channels
+   * @return a bounded channel pool with the specified retry policy
+   * @throws IllegalArgumentException if maxSize is less than 1
+   * @throws NullPointerException if channelFactory is null
+   */
+  public static ManagedChannelPool create(int maxSize, RetryPolicy retryPolicy, Supplier<ManagedChannel> channelFactory) {
+    if (maxSize < 1) throw new IllegalArgumentException("maxSize must be at least 1 for bounded pool, got: " + maxSize);
+
+    return new ManagedChannelPool(maxSize, retryPolicy, channelFactory);
+  }
+
+  /**
+   * Acquires a {@link ManagedChannel} from the pool.
+   * <p>
+   * Behavior differs depending on the pool mode:
+   * <ul>
+   *   <li><strong>Bounded pool:</strong> If all channels are in use and the pool has reached its maximum size,
+   *   this call blocks until a channel is released by another thread.</li>
+   *   <li><strong>Unbounded pool:</strong> Always creates a new channel if none are available. Never blocks.</li>
+   * </ul>
+   * <p>
+   * When acquiring a channel:
+   * <ul>
+   *   <li>The method polls the internal queue of available channels.</li>
+   *   <li>Each polled channel is validated via {@link #isChannelHealthy(ManagedChannel)}.</li>
+   *   <li>Unhealthy channels are automatically removed from the pool and shut down.</li>
+   *   <li>The first healthy channel encountered is returned for reuse.</li>
+   *   <li>If no healthy channel is found, a new one is created using the configured {@code channelFactory}.</li>
+   * </ul>
+   *
+   * @return a healthy {@link ManagedChannel} ready for use
    * @throws IllegalStateException if the pool has been shut down
-   * @throws InterruptedException  if interrupted while waiting for a channel (bounded pools only)
+   * @throws InterruptedException  if interrupted while waiting for a channel in a bounded pool
    */
   private ManagedChannel acquire() throws InterruptedException {
     ensureNotShutdown();
@@ -248,30 +295,29 @@ public final class ManagedChannelPool implements ChannelPool {
     if (!isUnbounded) {
       semaphore.acquire();
     }
-
     try {
-      ManagedChannel channel = availableChannels.poll();
-
-      if (channel != null) {
-        if (isChannelHealthy(channel)) {
+      ManagedChannel channel = null;
+      ManagedChannel candidate;
+      while (channel == null && (candidate = availableChannels.poll()) != null) {
+        if (isChannelHealthy(candidate)) {
+          channel = candidate;
           logger.trace("Reusing channel from pool. Pool size: {}", size());
-          return channel;
         } else {
-          logger.debug("Discarding unhealthy channel from pool. Channel state: {}", channel.getState(false));
-          shutdownChannel(channel);
-          allChannels.remove(channel);
+          logger.debug("Discarding unhealthy channel from pool. Channel state: {}. Trying next...",candidate.getState(false));
+          shutdownChannel(candidate);
+          allChannels.remove(candidate);
         }
       }
-
-      channel = createChannel();
-      logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
+      if (channel == null) {
+        channel = createChannel();
+        logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
+      }
       return channel;
-
-    } catch (Exception e) {
+    } catch (Exception exception) {
       if (!isUnbounded) {
         semaphore.release();
       }
-      throw e;
+      throw exception;
     }
   }
 

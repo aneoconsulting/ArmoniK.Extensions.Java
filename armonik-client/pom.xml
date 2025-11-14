@@ -47,13 +47,14 @@
     <assertj-core.version>3.25.3</assertj-core.version>
     <junit.version>5.14.0</junit.version>
     <mockito.version>5.10.0</mockito.version>
+    <armonik-client-api.version>3.28.0-edge.19.c492dde-SNAPSHOT</armonik-client-api.version>
   </properties>
 
   <dependencies>
     <dependency>
       <groupId>fr.aneo</groupId>
       <artifactId>armonik-client-api</artifactId>
-      <version>3.28.0-grpcchannelbuilder.3.606d265</version>
+      <version>${armonik-client-api.version}</version>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -70,6 +71,12 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-engine</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
       <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
@@ -103,8 +110,8 @@
       <version>2.13.1</version>
       <scope>test</scope>
     </dependency>
-
   </dependencies>
+
   <build>
     <plugins>
       <plugin>
@@ -194,7 +201,20 @@
       </plugin>
     </plugins>
   </build>
+
   <profiles>
+    <profile>
+      <id>development</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <repositories>
+        <repository>
+          <id>github</id>
+          <url>https://maven.pkg.github.com/aneoconsulting/ArmoniK.Api</url>
+        </repository>
+      </repositories>
+    </profile>
     <profile>
       <id>ci-release</id>
       <build>

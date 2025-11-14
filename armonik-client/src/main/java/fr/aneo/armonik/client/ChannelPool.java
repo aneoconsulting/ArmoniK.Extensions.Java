@@ -129,4 +129,16 @@ public interface ChannelPool extends AutoCloseable {
    * @return the number of channels available for immediate acquisition
    */
   int availableChannels();
+
+  /**
+   * Returns the retry policy used by this channel pool for handling transient failures.
+   * <p>
+   * The retry policy defines how operations should be retried when they encounter
+   * recoverable errors (such as network failures or temporary unavailability).
+   * This includes configuration for maximum retry attempts, delays between retries,
+   * exponential backoff factors, and maximum retry duration.
+   *
+   * @return the retry policy associated with this channel pool
+   */
+  RetryPolicy retryPolicy();
 }

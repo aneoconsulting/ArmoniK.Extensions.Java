@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.*;
 
 import static com.google.protobuf.ByteString.copyFrom;
 import static fr.aneo.armonik.client.TestDataFactory.blobId;
@@ -38,6 +39,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private byte[] downloadContent;
   public List<UploadedDataInfo> uploadedDataInfos = new ArrayList<>();
   public List<MetadataRequest> metadataRequests = new ArrayList<>();
+  private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
   public void failDownloadFor(BlobId id) {
@@ -55,6 +57,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.downloadContent = null;
     this.uploadedDataInfos = new ArrayList<>();
     this.metadataRequests = new ArrayList<>();
+    this.pendingUploads.clear();
   }
 
   @Override
@@ -100,6 +103,9 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
   @Override
   public StreamObserver<UploadResultDataRequest> uploadResultData(StreamObserver<UploadResultDataResponse> responseObserver) {
+    var uploadCompletion = new CompletableFuture<UploadedDataInfo>();
+    pendingUploads.add(uploadCompletion);
+
     return new StreamObserver<>() {
       private final UploadedDataInfo uploadedDataInfo = new UploadedDataInfo();
 
@@ -123,7 +129,8 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
       @Override
       public void onError(Throwable t) {
-        // no-op for test
+        pendingUploads.remove(uploadCompletion);
+        uploadCompletion.completeExceptionally(t);
       }
 
       @Override
@@ -131,8 +138,35 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
         responseObserver.onNext(UploadResultDataResponse.getDefaultInstance());
         responseObserver.onCompleted();
         uploadedDataInfos.add(uploadedDataInfo);
+        pendingUploads.remove(uploadCompletion);
+        uploadCompletion.complete(uploadedDataInfo);
       }
     };
+  }
+
+  public void awaitUploadsComplete(long timeout, TimeUnit unit) throws TimeoutException, InterruptedException {
+    long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
+    while (pendingUploads.isEmpty() && uploadedDataInfos.isEmpty()) {
+      long remainingNanos = deadlineNanos - System.nanoTime();
+      if (remainingNanos <= 0) {
+        return;
+      }
+      Thread.sleep(10);  // Poll every 10ms
+    }
+
+    // Now wait for all pending uploads to complete
+    var snapshot = List.copyOf(pendingUploads);
+    for (var future : snapshot) {
+      var remainingNanos = deadlineNanos - System.nanoTime();
+      if (remainingNanos <= 0) {
+        throw new TimeoutException("Timeout waiting for uploads to complete. Remaining: " + pendingUploads.size());
+      }
+      try {
+        future.get(remainingNanos, TimeUnit.NANOSECONDS);
+      } catch (ExecutionException e) {
+        // Upload failed, but we still count it as "complete"
+      }
+    }
   }
 
   public static class UploadedDataInfo {
@@ -140,7 +174,6 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     public String blobId;
     public ByteArrayOutputStream receivedData = new ByteArrayOutputStream();
     public List<Integer> dataChunkSizes = new ArrayList<>();
-
     private boolean firstCall = true;
   }
 

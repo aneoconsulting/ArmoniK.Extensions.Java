@@ -37,21 +37,29 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
   @Override
   public void getEvents(EventSubscriptionRequest request,
                         StreamObserver<EventSubscriptionResponse> responseObserver) {
-    observers.add(responseObserver);
+    final var snapshot = List.copyOf(backlog);
+    final var error = terminalError;
+    final var isCompleted = completed;
 
-    backlog.forEach(responseObserver::onNext);
-
-    if (terminalError != null) {
+    if (error != null) {
+      snapshot.forEach(responseObserver::onNext);
       try {
-        responseObserver.onError(terminalError);
+        responseObserver.onError(error);
       } catch (Throwable ignored) {
       }
-    } else if (completed) {
+      return;
+    }
+
+    if (isCompleted) {
+      snapshot.forEach(responseObserver::onNext);
       try {
         responseObserver.onCompleted();
       } catch (Throwable ignored) {
       }
+      return;
     }
+    observers.add(responseObserver);
+    snapshot.forEach(responseObserver::onNext);
   }
 
   /**
@@ -102,6 +110,12 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
 
   private void broadcast(EventSubscriptionResponse resp) {
     backlog.add(resp);
-    observers.forEach(observer -> observer.onNext(resp));
+    observers.forEach(observer -> {
+      try {
+        observer.onNext(resp);
+      } catch (Throwable t) {
+        // Don't let one bad observer stop others from receiving events
+      }
+    });
   }
 }

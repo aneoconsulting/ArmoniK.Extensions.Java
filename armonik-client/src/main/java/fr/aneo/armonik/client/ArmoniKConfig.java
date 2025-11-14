@@ -15,6 +15,9 @@
  */
 package fr.aneo.armonik.client;
 
+import static fr.aneo.armonik.client.RetryPolicy.DEFAULT;
+import static java.util.Objects.requireNonNullElse;
+
 /**
  * Immutable configuration for connecting to an ArmoniK cluster.
  * <p>
@@ -32,6 +35,7 @@ public final class ArmoniKConfig {
   private final String clientKeyPem;
   private final String clientP12;
   private final String clientP12Password;
+  private final RetryPolicy retryPolicy;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -41,6 +45,7 @@ public final class ArmoniKConfig {
     this.clientKeyPem = builder.clientKeyPem;
     this.clientP12 = builder.clientP12;
     this.clientP12Password = builder.clientP12Password;
+    this.retryPolicy = builder.retryPolicy;
   }
 
   /**
@@ -107,25 +112,25 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the retry policy for gRPC operations.
+   * <p>
+   * The retry policy controls automatic retry behavior for both unary calls
+   * (at the channel level) and streaming operations (at the application level).
+   *
+   * @return the retry policy configuration
+   * @see RetryPolicy
+   */
+  public RetryPolicy retryPolicy() {
+    return retryPolicy;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
    */
   public static Builder builder() {
     return new Builder();
-  }
-
-  @Override
-  public String toString() {
-    return "ArmoniKConfig{" +
-      "endpoint='" + endpoint + '\'' +
-      ", sslValidation=" + sslValidation +
-      ", caCertPem='" + caCertPem + '\'' +
-      ", clientCertPem='" + clientCertPem + '\'' +
-      ", clientKeyPem='" + (clientKeyPem != null ? "***" : null) + '\'' +
-      ", clientP12='" + clientP12 + '\'' +
-      ", clientP12Password='" + (clientP12Password != null ? "***" : null) + '\'' +
-      '}';
   }
 
   /**
@@ -135,6 +140,7 @@ public final class ArmoniKConfig {
    * to create an immutable configuration instance.
    */
   public static final class Builder {
+    private RetryPolicy retryPolicy = DEFAULT;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -228,6 +234,21 @@ public final class ArmoniKConfig {
     public Builder withClientP12(String p12Path) {
       this.clientP12 = p12Path;
       this.clientP12Password = null;
+      return this;
+    }
+
+    /**
+     * Sets the retry policy for gRPC operations.
+     * <p>
+     * The retry policy controls automatic retry behavior for transient failures.
+     * If not specified, {@link RetryPolicy#DEFAULT} is used.
+     *
+     * @param retryPolicy the retry policy to use, or null to use defaults
+     * @return this builder
+     * @see RetryPolicy
+     */
+    public Builder withRetryPolicy(RetryPolicy retryPolicy) {
+      this.retryPolicy = requireNonNullElse(retryPolicy, RetryPolicy.DEFAULT);
       return this;
     }
 

@@ -47,7 +47,7 @@ import static java.util.Objects.requireNonNull;
  * @see BlobData
  * @see InMemoryBlobData
  */
-public final class FileBlobData extends BlobData {
+public final class FileBlobData implements BlobData {
   private final File file;
 
   /**
@@ -81,6 +81,11 @@ public final class FileBlobData extends BlobData {
   @Override
   public InputStream stream() throws IOException {
     return new FileInputStream(file);
+  }
+
+  @Override
+  public boolean isRetryable() {
+    return true;
   }
 
   /**

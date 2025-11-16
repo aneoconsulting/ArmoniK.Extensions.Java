@@ -43,11 +43,13 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
   @TempDir
   Path tempDir;
+  private SessionId sessionId;
 
   @BeforeEach
   void setUp() {
+    sessionId = SessionId.from("sessionId");
     var agentStub = AgentGrpc.newFutureStub(channel);
-    var agentNotifier = new AgentNotifier(agentStub, SessionId.from("sessionId"), "communicationToken");
+    var agentNotifier = new AgentNotifier(agentStub, sessionId, "communicationToken");
     var blobFileWriter = new BlobFileWriter(tempDir, agentNotifier);
     blobService = new GrpcBlobService(agentStub, blobFileWriter, SessionId.from("sessionId"), "communicationToken");
     agentGrpcMock.reset();
@@ -94,19 +96,17 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
     var blobHandle = inputHandles.get("input1");
     assertThat(blobHandle.name()).isEqualTo("blobName1");
-    assertThat(blobHandle.sessionId().asString()).isEqualTo("sessionId");
 
     var blobInfo = blobHandle.deferredBlobInfo().toCompletableFuture().join();
     assertThat(blobInfo.id()).isNotNull();
     assertThat(blobInfo.status()).isNotNull();
-    assertThat(blobInfo.creationDate()).isNotNull();
 
     assertThat(agentGrpcMock.uploadedBlobs).isNull();
-    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo(blobHandle.sessionId().asString());
+    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo(sessionId.asString());
     assertThat(agentGrpcMock.blobMetadata.communicationToken()).isEqualTo("communicationToken");
     assertThat(agentGrpcMock.blobMetadata.names()).containsExactly(blobHandle.name());
     assertThat(agentGrpcMock.notifyBlobs.communicationToken()).isEqualTo("communicationToken");
-    assertThat(agentGrpcMock.notifyBlobs.ids()).containsExactly(Map.entry(blobHandle.sessionId().asString(), blobInfo.id().asString()));
+    assertThat(agentGrpcMock.notifyBlobs.ids()).containsExactly(Map.entry(sessionId.asString(), blobInfo.id().asString()));
 
     assertThat(tempDir.resolve(blobInfo.id().asString())).exists().isRegularFile();
   }
@@ -126,19 +126,18 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
     var blobHandle = inputHandles.get("input1");
     assertThat(blobHandle.name()).isEqualTo("blobName1");
-    assertThat(blobHandle.sessionId().asString()).isEqualTo("sessionId");
+    assertThat(sessionId.asString()).isEqualTo("sessionId");
 
     var blobInfo = blobHandle.deferredBlobInfo().toCompletableFuture().join();
     assertThat(blobInfo.id()).isNotNull();
     assertThat(blobInfo.status()).isNotNull();
-    assertThat(blobInfo.creationDate()).isNotNull();
 
     assertThat(agentGrpcMock.uploadedBlobs).isNull();
-    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo(blobHandle.sessionId().asString());
+    assertThat(agentGrpcMock.blobMetadata.sessionId()).isEqualTo(sessionId.asString());
     assertThat(agentGrpcMock.blobMetadata.communicationToken()).isEqualTo("communicationToken");
     assertThat(agentGrpcMock.blobMetadata.names()).containsExactly(blobHandle.name());
     assertThat(agentGrpcMock.notifyBlobs.communicationToken()).isEqualTo("communicationToken");
-    assertThat(agentGrpcMock.notifyBlobs.ids()).containsExactly(Map.entry(blobHandle.sessionId().asString(), blobInfo.id().asString()));
+    assertThat(agentGrpcMock.notifyBlobs.ids()).containsExactly(Map.entry(sessionId.asString(), blobInfo.id().asString()));
 
     assertThat(tempDir.resolve(blobInfo.id().asString())).exists().isRegularFile();
   }
@@ -161,21 +160,17 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
     var output1Handle = outputHandles.get("output1");
     assertThat(output1Handle.name()).isEqualTo("resultName1");
-    assertThat(output1Handle.sessionId().asString()).isEqualTo("sessionId");
 
     var output2Handle = outputHandles.get("output2");
     assertThat(output2Handle.name()).isEmpty();
-    assertThat(output2Handle.sessionId().asString()).isEqualTo("sessionId");
 
     var blobInfo1 = output1Handle.deferredBlobInfo().toCompletableFuture().join();
     assertThat(blobInfo1.id()).isNotNull();
     assertThat(blobInfo1.status()).isNotNull();
-    assertThat(blobInfo1.creationDate()).isNotNull();
 
     var blobInfo2 = output2Handle.deferredBlobInfo().toCompletableFuture().join();
     assertThat(blobInfo2.id()).isNotNull();
     assertThat(blobInfo2.status()).isNotNull();
-    assertThat(blobInfo2.creationDate()).isNotNull();
 
     assertThat(agentGrpcMock.uploadedBlobs).isNull();
     assertThat(agentGrpcMock.notifyBlobs).isNull();

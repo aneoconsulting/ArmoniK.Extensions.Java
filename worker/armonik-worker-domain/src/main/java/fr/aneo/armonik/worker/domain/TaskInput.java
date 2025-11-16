@@ -25,6 +25,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static java.nio.file.StandardOpenOption.READ;
+import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 
 /**
  * Provides read-only access to task input data stored in the ArmoniK shared data folder.
@@ -131,13 +133,42 @@ public final class TaskInput {
   private byte[] cache;
 
   public TaskInput(BlobId id, String logicalName, Path path) {
-    this.id = id;
-    this.path = path;
-    this.logicalName = logicalName;
+    this.id = requireNonNull(id, "id cannot be null");
+    this.path = requireNonNull(path, "path cannot be null");
+    this.logicalName = requireNonNull(logicalName, "logicalName cannot be null");
   }
 
   public BlobId id() {
     return id;
+  }
+
+  /**
+   * Converts this task input to a blob handle.
+   * <p>
+   * This method creates a {@link BlobHandle} representing this input blob with a
+   * {@link BlobStatus#CREATED} status. The returned handle can be used to reference
+   * this input blob in subsequent operations, such as passing it as a dependency to
+   * subtasks.
+   * </p>
+   * <p>
+   * The blob information is immediately available (non-deferred) since the input
+   * blob already exists and has been validated by the ArmoniK infrastructure.
+   * </p>
+   *
+   * <h4>Common Use Cases</h4>
+   * <ul>
+   *   <li>Passing task inputs as dependencies to subtasks</li>
+   *   <li>Reusing input blobs across multiple task submissions</li>
+   *   <li>Building task graphs that reference existing input data</li>
+   * </ul>
+   *
+   * @return a blob handle with {@link BlobStatus#CREATED} status; never {@code null}
+   * @see BlobHandle
+   * @see BlobStatus#CREATED
+   */
+  public BlobHandle asBlobHandle() {
+    var blobInfo = new BlobInfo(id, BlobStatus.CREATED);
+    return new BlobHandle(logicalName, completedFuture(blobInfo));
   }
 
   /**

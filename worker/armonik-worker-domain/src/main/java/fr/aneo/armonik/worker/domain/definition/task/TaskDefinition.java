@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toMap;
 
 /**
  * Mutable definition of a task to be submitted to the ArmoniK cluster.
@@ -127,6 +128,30 @@ public class TaskDefinition {
   }
 
   /**
+   * Converts the task inputs attached to this definition into {@link BlobHandle} instances.
+   * <p>
+   * Only {@link TaskInput} entries that have been explicitly registered on this
+   * {@code TaskDefinition} via {@link #withInput(String, TaskInput)} are exposed here.
+   * </p>
+   *
+   * @return an immutable map of logical input names to their corresponding blob handles
+   *         for this definition; never {@code null}, may be empty
+   *
+   * @see TaskInput
+   * @see #taskInputs()
+   * @see #inputHandles()
+   * @see #withInput(String, TaskInput)
+   */
+  public Map<String, BlobHandle> taskInputHandles() {
+    return taskInputs.entrySet()
+                     .stream()
+                     .collect(toMap(
+                       Map.Entry::getKey,
+                       entry -> entry.getValue().asBlobHandle())
+                     );
+  }
+
+  /**
    * Returns an immutable map of output blob definitions keyed by logical name.
    * <p>
    * Output blob definitions declare new results that the task will produce.
@@ -171,6 +196,29 @@ public class TaskDefinition {
    */
   public Map<String, TaskOutput> taskOutputs() {
     return Map.copyOf(taskOutputs);
+  }
+
+  /**
+   * Converts the delegated outputs attached to this definition into {@link BlobHandle} instances.
+   * <p>
+   * Only {@link TaskOutput} entries that have been explicitly registered on this
+   * {@code TaskDefinition} via {@link #withOutput(String, TaskOutput)} are exposed here.
+   *
+   * @return an immutable map of logical output names to delegated output blob handles
+   *         for this definition; never {@code null}, may be empty
+   *
+   * @see TaskOutput
+   * @see #taskOutputs()
+   * @see #outputDefinitions()
+   * @see #withOutput(String, TaskOutput)
+   */
+  public Map<String, BlobHandle> taskOutputHandles() {
+    return taskOutputs.entrySet()
+                      .stream()
+                      .collect(toMap(
+                        Map.Entry::getKey,
+                        entry -> entry.getValue().asBlobHandle())
+                      );
   }
 
   /**

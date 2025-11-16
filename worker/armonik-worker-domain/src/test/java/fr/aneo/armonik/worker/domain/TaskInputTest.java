@@ -115,6 +115,20 @@ class TaskInputTest {
     assertThat(string).isEqualTo("héllo 🌍");
   }
 
+  @Test
+  @DisplayName("convert to BlobHandle")
+  void convert_to_blob_handle() throws IOException {
+    // Given
+    var file = write(randomBytes(6));
+    var input = new TaskInput(blobId, "input", file);
+
+    // When
+    var blobHandle = input.asBlobHandle();
+
+    // Then
+    assertThat(blobHandle.deferredBlobInfo()).isCompletedWithValue(new BlobInfo(blobId, BlobStatus.COMPLETED));
+  }
+
   private static byte[] randomBytes(int size) {
     byte[] data = new byte[size];
     new Random(1234).nextBytes(data);

@@ -30,8 +30,8 @@ class TaskDefinitionTest {
   @DisplayName("should replace input handle by new one when using the same name")
   void should_replace_input_handle_by_new_one_when_using_the_same_name() {
     // Given
-    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("sessionId", "blobId1"));
-    var handle2 = blobHandle("sessionId", "blobId2");
+    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("blobId1"));
+    var handle2 = blobHandle("blobId2");
 
     // When
     taskDefinition.withInput("prop1", handle2);
@@ -45,7 +45,7 @@ class TaskDefinitionTest {
   @DisplayName("should remove input handle when adding inline input with the same name")
   void should_remove_input_handle_when_adding_inline_input_with_the_same_name() {
     // Given
-    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("sessionId", "blobId1"));
+    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("blobId1"));
 
     // When
     taskDefinition.withInput("prop1", InputBlobDefinition.from("World".getBytes()));
@@ -61,7 +61,7 @@ class TaskDefinitionTest {
   @DisplayName("should remove input handle when adding task input with the same name")
   void should_remove_input_handle_input_when_adding_task_input_with_the_same_name() {
     // Given
-    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("sessionId", "blobId"));
+    var taskDefinition = new TaskDefinition().withInput("prop1", blobHandle("blobId"));
     var taskInput = taskInput("input1-id", "input1");
 
     // When
@@ -96,7 +96,7 @@ class TaskDefinitionTest {
     var taskDefinition = new TaskDefinition().withInput("prop1", InputBlobDefinition.from("Hello".getBytes()));
 
     // When
-    taskDefinition.withInput("prop1", blobHandle("sessionId", "blobId"));
+    taskDefinition.withInput("prop1", blobHandle("blobId"));
 
     // Then
     assertThat(taskDefinition.inputDefinitions()).isEmpty();
@@ -158,7 +158,7 @@ class TaskDefinitionTest {
     var taskDefinition = new TaskDefinition().withInput("prop1", taskInput("input1-id", "input1"));
 
     // When
-    taskDefinition.withInput("prop1", blobHandle("sessionId", "blobId"));
+    taskDefinition.withInput("prop1", blobHandle("blobId"));
 
     // Then
     assertThat(taskDefinition.taskInputs()).isEmpty();

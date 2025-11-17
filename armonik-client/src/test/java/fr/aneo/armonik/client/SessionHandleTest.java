@@ -19,10 +19,7 @@ import com.google.gson.Gson;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.definition.blob.OutputBlobDefinition;
-import fr.aneo.armonik.client.testutils.EventsGrpcMock;
-import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
-import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
-import fr.aneo.armonik.client.testutils.TasksGrpcMock;
+import fr.aneo.armonik.client.testutils.*;
 import io.grpc.BindableService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -50,13 +47,14 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
   private final TasksGrpcMock taskGrpcMock = new TasksGrpcMock();
   private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock();
+  private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
   private BlobCompletionListenerMock outputTaskListener;
   private SessionInfo sessionInfo;
   private SessionHandle sessionHandle;
 
   @Override
   protected List<BindableService> services() {
-    return List.of(resultsGrpcMock, taskGrpcMock, eventsGrpcMock);
+    return List.of(resultsGrpcMock, taskGrpcMock, eventsGrpcMock, sessionsGrpcMock);
   }
 
   @BeforeEach
@@ -97,6 +95,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should await outputs processed until all outputs complete")
   void should_await_outputs_processed_until_all_outputs_complete() throws Exception {
     // Given
     var awaitDone = new CountDownLatch(1);
@@ -136,6 +135,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should await outputs processed with some failed outputs")
   void should_await_outputs_processed_with_some_failed_outputs() throws Exception {
     // Given
     var awaitDone = new CountDownLatch(1);
@@ -176,6 +176,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should create a blob handle")
   void should_create_a_blob_handle() throws InterruptedException, TimeoutException {
     // Given
     var blobDefinition = InputBlobDefinition.from("Hello World".getBytes());
@@ -192,6 +193,72 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).sessionId).isEqualTo(sessionInfo.id().asString());
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).receivedData.toString()).isEqualTo("Hello World");
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).blobId).isEqualTo(blobHandle.deferredBlobInfo().toCompletableFuture().join().id().asString());
+  }
+
+  @Test
+  @DisplayName("should cancel session with the session id")
+  void should_cancel_session_with_the_session_id() {
+    // When
+    sessionHandle.cancel().toCompletableFuture().join();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
+  }
+
+  @Test
+  @DisplayName("should pause session with the session id")
+  void should_pause_session_with_the_session_id() {
+    // When
+    sessionHandle.pause().toCompletableFuture().join();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedPauseSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedPauseSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
+  }
+
+  @Test
+  @DisplayName("should resume session with the session id")
+  void should_resume_session_with_the_session_id() {
+    // When
+    sessionHandle.resume().toCompletableFuture().join();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedResumeSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedResumeSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
+  }
+
+  @Test
+  @DisplayName("should close session with the session id")
+  void should_close_session_with_the_session_id() {
+    // When
+    sessionHandle.close().toCompletableFuture().join();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
+  }
+
+  @Test
+  @DisplayName("should purge session with the session id")
+  void should_purge_session_with_the_session_id() {
+    // When
+    sessionHandle.purge().toCompletableFuture().join();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedPurgeSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedPurgeSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
+  }
+
+  @Test
+  @DisplayName("should delete session with the session id")
+  void should_delete_session_with_the_session_id() {
+    // When
+    sessionHandle.delete();
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedDeleteSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedDeleteSessionRequest.getSessionId()).isEqualTo(sessionInfo.id().asString());
   }
 
   private void validateSubmittedSession() {

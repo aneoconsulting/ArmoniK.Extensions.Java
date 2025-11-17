@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
+import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
@@ -29,6 +30,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
+import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.*;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -186,6 +188,176 @@ public final class SessionHandle {
     blobHandle.uploadData(blobDefinition.data());
     return blobHandle;
   }
+
+  /**
+   * Requests cancellation of this session in the ArmoniK cluster.
+   * <p>
+   * Cancelling a session signals the control plane to stop all remaining work associated
+   * with this session. Depending on the server configuration and current task states,
+   * running tasks may be interrupted and queued tasks will no longer be scheduled.
+   * Results that have already been produced remain accessible unless the session
+   * is subsequently purged or deleted.
+   * <p>
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} once the cancellation request has been processed by the
+   * Sessions service, or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the updated state of this session after
+   *         the cancellation request has been applied
+   *
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> cancel() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.cancelSession(toCancelSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+
+  /**
+   * Pauses this session in the ArmoniK cluster.
+   * <p>
+   * Pausing a session temporarily suspends the scheduling of new tasks in the session.
+   * Tasks that are already running continue until completion, but pending tasks are
+   * not picked up for execution until the session is resumed via {@link #resume()}.
+   * <p>
+   * This operation is useful when you need to temporarily throttle or stop processing
+   * without cancelling the session or losing its state.
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} once the pause request has been processed by the Sessions
+   * service, or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the updated state of this session after
+   *         the pause request has been applied
+   *
+   * @see #resume()
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> pause() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.pauseSession(toPauseSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+  /**
+   * Resumes a previously paused session in the ArmoniK cluster.
+   * <p>
+   * Resuming a session re-enables scheduling of tasks that were previously held
+   * while the session was paused. Any pending tasks become eligible for execution
+   * again according to the cluster scheduling policies.
+   * <p>
+   * Calling this method on a session that is not paused is safe; the Sessions service
+   * will simply return the current state of the session.
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} once the resume request has been processed by the Sessions
+   * service, or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the updated state of this session after
+   *         the resume request has been applied
+   *
+   * @see #pause()
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> resume() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.resumeSession(toResumeSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+
+  /**
+   * Closes this session in the ArmoniK cluster.
+   * <p>
+   * Closing a session finalizes it and prevents any new task submissions, while
+   * preserving existing tasks, results, and metadata. This is the recommended way
+   * to indicate that no further work will be submitted for this session once all
+   * expected tasks have been created.
+   * <p>
+   * Closing a session does not remove its data. To free up storage or completely
+   * remove the session, combine this operation with {@link #purge()} and
+   * {@link #delete()} as appropriate.
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} once the close request has been processed by the Sessions
+   * service, or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the updated state of this session after
+   *         the close request has been applied
+   *
+   * @see #purge()
+   * @see #delete()
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> close() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.closeSession(toCloseSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+
+  /**
+   * Purges this session's data in the ArmoniK cluster.
+   * <p>
+   * Purging a session removes the underlying data for its blobs (task inputs and
+   * outputs) from the storage layer while keeping the session and task metadata.
+   * This operation is useful to reclaim storage space once the actual data is no
+   * longer needed but you still want to keep an audit trail or execution history.
+   * <p>
+   * After a purge, attempts to download blob data associated with this session
+   * will fail, but session and task information remain available until the session
+   * is deleted.
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} once the purge request has been processed by the Sessions
+   * service, or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the updated state of this session after
+   *         the purge request has been applied
+   *
+   * @see #delete()
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> purge() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.purgeSession(toPurgeSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+
+  /**
+   * Deletes this session from the ArmoniK cluster.
+   * <p>
+   * Deleting a session permanently removes its metadata from the Sessions, Tasks,
+   * and Blobs. This is typically the final step in the lifecycle of a
+   * session once it has been closed and, optionally, purged.
+   * <p>
+   * After deletion, this handle still exists as a local object but any further
+   * interaction with the remote session (such as submitting tasks or querying
+   * state) will fail because the session no longer exists in the cluster.
+   * Clients are expected to discard the handle after deletion.
+   * The returned completion stage is completed asynchronously with the updated
+   * {@link SessionState} reported by the Sessions service just before removal,
+   * or completed exceptionally if the request fails.
+   *
+   * @return a completion stage that yields the last known state of this session
+   *         before it is removed from the cluster
+   *
+   * @see #close()
+   * @see #purge()
+   * @see SessionState
+   */
+  public CompletionStage<SessionState> delete() {
+    return channelPool.executeAsync(channel -> {
+      var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
+      return Futures.toCompletionStage(sessionsFutureStub.deleteSession(toDeleteSessionRequest(sessionInfo.id())))
+                    .thenApply(response -> toSessionState(response.getSession()));
+    });
+  }
+
+
 
   private Function<ManagedChannel, CompletionStage<BlobInfo>> createBlobInfo(BlobDefinition blobDefinition) {
     return channel -> {

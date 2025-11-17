@@ -86,6 +86,34 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should close a session")
+  void should_close_an_existing_session() {
+    // Given
+    var sessionId = SessionId.from("session_1");
+
+    // When
+    client.closeSession(sessionId);
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest.getSessionId()).isEqualTo(sessionId.asString());
+  }
+
+  @Test
+  @DisplayName("should cancel a session")
+  void should_cancel_an_existing_session() {
+    // Given
+    var sessionId = SessionId.from("session_1");
+
+    // When
+    client.cancelSession(sessionId);
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest.getSessionId()).isEqualTo(sessionId.asString());
+  }
+
+  @Test
   @DisplayName("should throw exception when session does not exist")
   void should_throw_exception_when_session_does_not_exist() {
     // Given

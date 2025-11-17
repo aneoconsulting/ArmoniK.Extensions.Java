@@ -28,8 +28,13 @@ import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.*;
 public class SessionsGrpcMock extends SessionsGrpc.SessionsImplBase {
 
   public CreateSessionRequest submittedCreateSessionRequest;
-
   public GetSessionRequest submittedGetSessionRequest;
+  public CancelSessionRequest submittedCancelSessionRequest;
+  public PauseSessionRequest submittedPauseSessionRequest;
+  public ResumeSessionRequest submittedResumeSessionRequest;
+  public CloseSessionRequest submittedCloseSessionRequest;
+  public PurgeSessionRequest submittedPurgeSessionRequest;
+  public DeleteSessionRequest submittedDeleteSessionRequest;
 
   @Override
   public void createSession(CreateSessionRequest request, StreamObserver<CreateSessionReply> responseObserver) {
@@ -47,18 +52,101 @@ public class SessionsGrpcMock extends SessionsGrpc.SessionsImplBase {
     } else {
       responseObserver.onNext(GetSessionResponse.newBuilder()
                                                 .setSession(
-                                         SessionRaw.newBuilder()
-                                                   .setSessionId(request.getSessionId())
-                                                   .addAllPartitionIds(List.of("partition1", "partition2"))
-                                                   .setOptions(TaskOptions.newBuilder()
-                                                                          .setPartitionId("partition1")
-                                                                          .setMaxRetries(2)
-                                                                          .setPriority(5)
-                                                                          .setMaxDuration(Duration.newBuilder().setSeconds(3600))
-                                                                          .putAllOptions(Map.of("option1", "value1")))
-                                                   .build())
+                                                  SessionRaw.newBuilder()
+                                                            .setSessionId(request.getSessionId())
+                                                            .addAllPartitionIds(List.of("partition1", "partition2"))
+                                                            .setOptions(taskOptions())
+                                                            .build())
                                                 .build());
     }
     responseObserver.onCompleted();
+  }
+
+  @Override
+  public void cancelSession(CancelSessionRequest request, StreamObserver<CancelSessionResponse> responseObserver) {
+    this.submittedCancelSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(CancelSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void pauseSession(PauseSessionRequest request, StreamObserver<PauseSessionResponse> responseObserver) {
+    this.submittedPauseSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(PauseSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void resumeSession(ResumeSessionRequest request, StreamObserver<ResumeSessionResponse> responseObserver) {
+    this.submittedResumeSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(ResumeSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void closeSession(CloseSessionRequest request, StreamObserver<CloseSessionResponse> responseObserver) {
+    this.submittedCloseSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(CloseSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void purgeSession(PurgeSessionRequest request, StreamObserver<PurgeSessionResponse> responseObserver) {
+    this.submittedPurgeSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(PurgeSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void deleteSession(DeleteSessionRequest request, StreamObserver<DeleteSessionResponse> responseObserver) {
+    this.submittedDeleteSessionRequest = request;
+
+    var raw = SessionRaw.newBuilder()
+                        .setSessionId(request.getSessionId())
+                        .setOptions(taskOptions())
+                        .build();
+
+    responseObserver.onNext(DeleteSessionResponse.newBuilder().setSession(raw).build());
+    responseObserver.onCompleted();
+  }
+
+  private static TaskOptions taskOptions() {
+    return TaskOptions.newBuilder()
+                      .setPartitionId("partition1")
+                      .setMaxRetries(2)
+                      .setPriority(5)
+                      .setMaxDuration(Duration.newBuilder().setSeconds(3600))
+                      .putAllOptions(Map.of("option1", "value1"))
+                      .build();
   }
 }

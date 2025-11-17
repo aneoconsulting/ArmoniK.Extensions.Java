@@ -41,9 +41,18 @@ import static java.nio.file.StandardOpenOption.*;
  *
  * <h2>Security Limits</h2>
  * <ul>
- *   <li><strong>Max extraction size:</strong> 500 MB (prevents ZIP bombs)</li>
+ *   <li><strong>Default max extraction size:</strong> 750 MB (prevents ZIP bombs)</li>
+ *   <li><strong>Configurable via:</strong> {@code ARMONIK_WORKER_MAX_ZIP_EXTRACTION_SIZE_MB} environment variable</li>
  *   <li><strong>Buffer size:</strong> 8 KB (balances performance and memory)</li>
  * </ul>
+ *
+ * <h2>Configuration</h2>
+ * <p>
+ * Set {@code ARMONIK_WORKER_MAX_ZIP_EXTRACTION_SIZE_MB} to override the default 750 MB limit:
+ * </p>
+ * <pre>
+ * export ARMONIK_WORKER_MAX_ZIP_EXTRACTION_SIZE_MB=1000  # Allow up to 1 GB
+ * </pre>
  *
  * <h2>Thread Safety</h2>
  * <p>
@@ -53,14 +62,59 @@ import static java.nio.file.StandardOpenOption.*;
 final class ZipExtractor {
   private static final Logger logger = LoggerFactory.getLogger(ZipExtractor.class);
 
-  private static final long DEFAULT_MAX_EXTRACTION_SIZE = 500L * 1024 * 1024; // 500 MB
+  private static final String ENV_MAX_EXTRACTION_SIZE_MB = "ARMONIK_WORKER_MAX_ZIP_EXTRACTION_SIZE_MB";
+  private static final long DEFAULT_MAX_EXTRACTION_SIZE_MB = 750L;  // 750 MB
   private static final int BUFFER_SIZE = 8192; // 8 KB
+
+  private static long maxExtractionSize;
+
+  static {
+    loadMaxExtractionSize();
+  }
 
   private ZipExtractor() {
   }
 
   /**
-   * Extracts a ZIP file to the specified destination directory with default size limit (500 MB).
+   * Loads the maximum extraction size from environment variable.
+   * <p>
+   * This method is called from the static initializer and can be called again
+   * from tests to reload the configuration when environment variables change.
+   * </p>
+   */
+  static void loadMaxExtractionSize() {
+    var envValue = System.getenv(ENV_MAX_EXTRACTION_SIZE_MB);
+
+    if (envValue == null || envValue.trim().isEmpty()) {
+      logger.debug("Using default max extraction size: {} MB", DEFAULT_MAX_EXTRACTION_SIZE_MB);
+      maxExtractionSize = DEFAULT_MAX_EXTRACTION_SIZE_MB * 1024 * 1024;
+    } else {
+      try {
+        long sizeMB = Long.parseLong(envValue.trim());
+        if (sizeMB <= 0) {
+          logger.warn("Invalid max extraction size in {}: {} (must be positive). Using default: {} MB", ENV_MAX_EXTRACTION_SIZE_MB, envValue, DEFAULT_MAX_EXTRACTION_SIZE_MB);
+          maxExtractionSize = DEFAULT_MAX_EXTRACTION_SIZE_MB * 1024 * 1024;
+
+        } else {
+          logger.info("Using configured max extraction size: {} MB", sizeMB);
+          maxExtractionSize = sizeMB * 1024 * 1024;
+        }
+      } catch (NumberFormatException e) {
+        logger.warn("Invalid number format for {}: {}. Using default: {} MB", ENV_MAX_EXTRACTION_SIZE_MB, envValue, DEFAULT_MAX_EXTRACTION_SIZE_MB);
+        maxExtractionSize = DEFAULT_MAX_EXTRACTION_SIZE_MB * 1024 * 1024;
+      }
+    }
+  }
+
+  /**
+   * Extracts a ZIP file to the specified destination directory.
+   * <p>
+   * The maximum extraction size is determined at class loading time by:
+   * </p>
+   * <ol>
+   *   <li>{@code ARMONIK_WORKER_MAX_ZIP_EXTRACTION_SIZE_MB} environment variable (in MB)</li>
+   *   <li>Default of 750 MB if environment variable is not set or invalid</li>
+   * </ol>
    * <p>
    * This method:
    * </p>
@@ -77,23 +131,6 @@ final class ZipExtractor {
    * @throws ArmoniKException if extraction fails, security violation detected, or ZIP bomb detected
    */
   static Path extract(Path zipFile, Path destination) {
-    return extract(zipFile, destination, DEFAULT_MAX_EXTRACTION_SIZE);
-  }
-
-  /**
-   * Extracts a ZIP file with a custom maximum extraction size limit.
-   * <p>
-   * This package-private overload is primarily used for testing with smaller size limits
-   * to avoid generating large test files.
-   * </p>
-   *
-   * @param zipFile            the ZIP file to extract; must exist and be readable
-   * @param destination        the destination directory; created if doesn't exist
-   * @param maxExtractionSize  maximum allowed total extraction size in bytes
-   * @return the destination directory path (same as input)
-   * @throws ArmoniKException if extraction fails, security violation detected, or size exceeds limit
-   */
-  static Path extract(Path zipFile, Path destination, long maxExtractionSize) {
     logger.debug("Extracting ZIP: {} to {} (max size: {} MB)", zipFile, destination, maxExtractionSize / 1024 / 1024);
 
     try {
@@ -121,7 +158,7 @@ final class ZipExtractor {
           fileCount++;
 
           if (totalExtracted > maxExtractionSize) {
-            throw new ArmoniKException("ZIP bomb detected: extraction size exceeds " +(maxExtractionSize / 1024 / 1024) + " MB limit" );
+            throw new ArmoniKException("ZIP bomb detected: extraction size exceeds " + (maxExtractionSize / 1024 / 1024) + " MB limit");
           }
         }
 

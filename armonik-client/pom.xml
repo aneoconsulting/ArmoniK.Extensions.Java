@@ -42,12 +42,13 @@
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <slf4j.version>2.0.12</slf4j.version>
-    <logback.version>1.5.19</logback.version>
-    <assertj-core.version>3.25.3</assertj-core.version>
-    <junit.version>5.14.0</junit.version>
-    <mockito.version>5.10.0</mockito.version>
-    <armonik-client-api.version>3.28.0-edge.19.c492dde-SNAPSHOT</armonik-client-api.version>
+    <armonik-client-api.version>3.28.0</armonik-client-api.version>
+    <slf4j.version>2.0.17</slf4j.version>
+    <gson.version>2.13.2</gson.version>
+    <assertj-core.version>3.27.6</assertj-core.version>
+    <junit.version>5.14.1</junit.version>
+    <mockito.version>5.20.0</mockito.version>
+    <logback.version>1.5.20</logback.version>
   </properties>
 
   <dependencies>
@@ -64,7 +65,7 @@
     <dependency>
       <groupId>com.google.code.gson</groupId>
       <artifactId>gson</artifactId>
-      <version>2.13.1</version>
+      <version>${gson.version}</version>
     </dependency>
 
     <!-- Test dependencies -->
@@ -117,7 +118,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-wrapper-plugin</artifactId>
-        <version>3.2.0</version>
+        <version>3.3.4</version>
         <configuration>
           <mavenVersion>3.9.6</mavenVersion>
         </configuration>
@@ -125,7 +126,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.12.1</version>
+        <version>3.14.1</version>
         <configuration>
           <release>${maven.compiler.release}</release>
           <encoding>${project.build.sourceEncoding}</encoding>
@@ -135,17 +136,17 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>versions-maven-plugin</artifactId>
-        <version>2.17.1</version>
+        <version>2.19.1</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
+        <version>3.5.4</version>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
-        <version>3.3.0</version>
+        <version>3.3.1</version>
         <executions>
           <execution>
             <id>attach-sources</id>
@@ -159,7 +160,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
-        <version>3.6.3</version>
+        <version>3.12.0</version>
         <executions>
           <execution>
             <id>attach-javadoc</id>

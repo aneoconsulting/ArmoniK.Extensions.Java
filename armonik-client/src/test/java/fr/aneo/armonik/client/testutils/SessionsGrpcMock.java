@@ -15,21 +15,50 @@
  */
 package fr.aneo.armonik.client.testutils;
 
+import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import io.grpc.stub.StreamObserver;
 
-import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.CreateSessionReply;
-import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.CreateSessionRequest;
+import java.util.List;
+import java.util.Map;
 
-public class SessionsGrpcMock extends SessionsGrpc.SessionsImplBase{
+import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
+import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.*;
+
+public class SessionsGrpcMock extends SessionsGrpc.SessionsImplBase {
 
   public CreateSessionRequest submittedCreateSessionRequest;
 
+  public GetSessionRequest submittedGetSessionRequest;
+
   @Override
   public void createSession(CreateSessionRequest request, StreamObserver<CreateSessionReply> responseObserver) {
-    var response = CreateSessionReply.newBuilder().setSessionId("SessionId").build();
     this.submittedCreateSessionRequest = request;
-    responseObserver.onNext(response);
+    responseObserver.onNext(CreateSessionReply.newBuilder().setSessionId("SessionId").build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void getSession(GetSessionRequest request, StreamObserver<GetSessionResponse> responseObserver) {
+    this.submittedGetSessionRequest = request;
+
+    if (request.getSessionId().equals("does not exist")) {
+      responseObserver.onError(io.grpc.Status.NOT_FOUND.withDescription("Session not found").asRuntimeException());
+    } else {
+      responseObserver.onNext(GetSessionResponse.newBuilder()
+                                                .setSession(
+                                         SessionRaw.newBuilder()
+                                                   .setSessionId(request.getSessionId())
+                                                   .addAllPartitionIds(List.of("partition1", "partition2"))
+                                                   .setOptions(TaskOptions.newBuilder()
+                                                                          .setPartitionId("partition1")
+                                                                          .setMaxRetries(2)
+                                                                          .setPriority(5)
+                                                                          .setMaxDuration(Duration.newBuilder().setSeconds(3600))
+                                                                          .putAllOptions(Map.of("option1", "value1")))
+                                                   .build())
+                                                .build());
+    }
     responseObserver.onCompleted();
   }
 }

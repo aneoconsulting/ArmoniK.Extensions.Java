@@ -34,6 +34,9 @@ public class TestDataFactory {
   static SessionInfo sessionInfo(String partition) {
     return new SessionInfo(SessionId.from("SessionId"), Set.of(partition), defaultConfiguration());
   }
+  static SessionInfo sessionInfo(String partition, TaskConfiguration taskConfiguration) {
+    return new SessionInfo(SessionId.from("SessionId"), Set.of(partition), taskConfiguration);
+  }
 
   public static BlobId blobId(String blobId) {
     return BlobId.from(blobId);

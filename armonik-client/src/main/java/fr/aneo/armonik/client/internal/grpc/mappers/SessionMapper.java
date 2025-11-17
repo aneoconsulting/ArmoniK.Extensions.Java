@@ -15,9 +15,11 @@
  */
 package fr.aneo.armonik.client.internal.grpc.mappers;
 
+import fr.aneo.armonik.client.SessionId;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 
 import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.CreateSessionRequest;
+import static fr.aneo.armonik.api.grpc.v1.sessions.SessionsCommon.GetSessionRequest;
 import static fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper.toTaskOptions;
 
 public final class SessionMapper {
@@ -30,5 +32,11 @@ public final class SessionMapper {
                                .addAllPartitionIds(sessionDefinition.partitionIds())
                                .setDefaultTaskOption(toTaskOptions(sessionDefinition.taskConfiguration()))
                                .build();
+  }
+
+  public static GetSessionRequest toGetSessionRequest(SessionId sessionId) {
+    return GetSessionRequest.newBuilder()
+                            .setSessionId(sessionId.asString())
+                            .build();
   }
 }

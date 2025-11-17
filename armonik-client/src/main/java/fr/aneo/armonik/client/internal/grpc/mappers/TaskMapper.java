@@ -59,4 +59,15 @@ public final class TaskMapper {
                       .putAllOptions(taskConfiguration.options())
                       .build();
   }
+
+  public static TaskConfiguration toTaskConfiguration(TaskOptions taskOptions) {
+    return new TaskConfiguration(
+      taskOptions.getMaxRetries(),
+      taskOptions.getPriority(),
+      taskOptions.getPartitionId(),
+      java.time.Duration.ofSeconds(taskOptions.getMaxDuration().getSeconds(), taskOptions.getMaxDuration().getNanos()),
+      taskOptions.getOptionsMap()
+    );
+  }
+
 }

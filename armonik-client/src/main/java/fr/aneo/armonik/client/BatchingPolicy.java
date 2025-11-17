@@ -73,7 +73,7 @@ import java.time.Duration;
  * @see BlobCompletionCoordinator
  * @see SessionDefinition
  */
-public record BatchingPolicy(
+record BatchingPolicy(
   int batchSize,
   Duration maxDelay,
   int maxConcurrentBatches,
@@ -94,7 +94,7 @@ public record BatchingPolicy(
    *
    * @see SessionDefinition
    */
-  public static final BatchingPolicy DEFAULT = new BatchingPolicy(50, Duration.ofMillis(200), 5, 100);
+   static final BatchingPolicy DEFAULT = new BatchingPolicy(50, Duration.ofMillis(200), 5, 100);
 
   /**
    * Validates all policy parameters and their relationships.
@@ -110,7 +110,7 @@ public record BatchingPolicy(
    *                                  or {@code capPerBatch} is {@code <= 0}
    * @throws IllegalArgumentException if {@code maxDelay} is {@code null}, zero, or negative
    */
-  public BatchingPolicy {
+   BatchingPolicy {
     if (batchSize <= 0) {
       throw new IllegalArgumentException("batchSize must be > 0, got: " + batchSize);
     }

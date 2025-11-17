@@ -17,11 +17,15 @@ package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import fr.aneo.armonik.client.definition.SessionDefinition;
+import fr.aneo.armonik.client.exception.ArmoniKException;
 import io.grpc.ManagedChannel;
 
 import java.time.Duration;
+import java.util.HashSet;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.toCreateSessionRequest;
+import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.toGetSessionRequest;
+import static fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper.toTaskConfiguration;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -104,8 +108,87 @@ public class ArmoniKClient implements AutoCloseable {
   public SessionHandle openSession(SessionDefinition sessionDefinition) {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
-    var id = createSession(sessionDefinition);
-    return new SessionHandle(id, sessionDefinition, channelPool);
+    var sessionInfo = createSession(sessionDefinition);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool);
+  }
+
+  /**
+   * Connects to an existing session in the ArmoniK cluster.
+   * <p>
+   * This method retrieves the session metadata associated with the given {@link SessionId}
+   * and returns a {@link SessionHandle} that can be used to submit tasks and monitor
+   * output blob completions
+   * <p>
+   * If a {@link BlobCompletionListener} is provided, the returned {@code SessionHandle}
+   * will automatically start listening for output blob completion events for this
+   * session.
+   *
+   * <p><strong>Error Handling:</strong>
+   * If the session does not exist, this method throws an {@link ArmoniKException}
+   *
+   * @param sessionId
+   *        the identifier of the existing session to connect to
+   * @param outputListener
+   *        an optional listener for output blob completion events;
+   *        if {@code null}, no listener is registered
+   *
+   * @return a {@link SessionHandle} bound to the existing session
+   *
+   * @throws NullPointerException
+   *         if {@code sessionId} is {@code null}
+   * @throws ArmoniKException
+   *         if the session does not exist, or if a communication error occurs
+   *
+   * @see SessionHandle
+   * @see BlobCompletionListener
+   */
+  public SessionHandle getSession(SessionId sessionId, BlobCompletionListener outputListener) {
+    requireNonNull(sessionId, "sessionId must not be null");
+
+    try {
+      var sessionResponse = channelPool.execute(
+        channel -> SessionsGrpc.newBlockingStub(channel).getSession(toGetSessionRequest(sessionId))
+      );
+      if (!sessionResponse.hasSession()) throw new ArmoniKException("Session not found");
+
+      var sessionInfo = new SessionInfo(
+        sessionId,
+        new HashSet<>(sessionResponse.getSession().getPartitionIdsList()),
+        toTaskConfiguration(sessionResponse.getSession().getOptions())
+      );
+
+      return new SessionHandle(sessionInfo, outputListener, channelPool);
+    } catch (Exception e) {
+      throw new ArmoniKException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Connects to an existing session in the ArmoniK cluster without registering
+   * an output listener.
+   * <p>
+   * This is a convenience overload equivalent to calling:
+   * <pre>{@code
+   * getSession(sessionId, null);
+   * }</pre>
+   *
+   * <p><strong>Error Handling:</strong>
+   * If the session does not exist, this method throws an {@link ArmoniKException}.
+   *
+   * @param sessionId
+   *        the identifier of the existing session to connect to
+   *
+   * @return a {@link SessionHandle} for interacting with the session
+   *
+   * @throws NullPointerException
+   *         if {@code sessionId} is {@code null}
+   * @throws ArmoniKException
+   *         if the session does not exist, or if a communication error occurs
+   *
+   * @see #getSession(SessionId, BlobCompletionListener)
+   */
+  public SessionHandle getSession(SessionId sessionId) {
+    return getSession(sessionId, null);
   }
 
   /**

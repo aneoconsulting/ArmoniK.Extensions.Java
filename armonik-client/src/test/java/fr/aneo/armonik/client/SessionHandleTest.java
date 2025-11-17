@@ -16,7 +16,6 @@
 package fr.aneo.armonik.client;
 
 import com.google.gson.Gson;
-import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.definition.blob.OutputBlobDefinition;
@@ -33,7 +32,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 
@@ -42,7 +40,7 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultS
 import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
 import static fr.aneo.armonik.client.WorkerLibrary.*;
-import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.*;
+import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.MetadataRequest;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -63,15 +61,10 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
   @BeforeEach
   void setUp() {
+    var taskConfiguration = new TaskConfiguration(3, 1, "partition_1", Duration.ofMinutes(60), Map.of("option1", "value1"));
     outputTaskListener = new BlobCompletionListenerMock();
-    var sessionDefinition = new SessionDefinition(
-      Set.of("partition_1"),
-      new TaskConfiguration(3, 1, "partition_1", Duration.ofMinutes(60), Map.of("option1", "value1")),
-      outputTaskListener,
-      new BatchingPolicy(1, Duration.ofSeconds(1), 1, 1)
-    );
-    sessionInfo = sessionInfo("partition_1");
-    sessionHandle = new SessionHandle(sessionInfo, sessionDefinition, channelPool);
+    sessionInfo = sessionInfo("partition_1", taskConfiguration);
+    sessionHandle = new SessionHandle(sessionInfo, outputTaskListener, channelPool);
     resultsGrpcMock.reset();
   }
 

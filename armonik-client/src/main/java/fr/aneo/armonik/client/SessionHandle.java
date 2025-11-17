@@ -59,24 +59,26 @@ public final class SessionHandle {
 
 
   /**
-   * Constructs a new session handle with the specified session information and configuration.
+   * Constructs a session handle for an existing or newly created session in the ArmoniK cluster.
    * <p>
-   * This constructor initializes the handle with the necessary components for task submission
-   * and output processing within the session context. The handle will use the provided
-   * gRPC channel for all cluster communications.
+   * It initializes the handle with the session metadata and configures task submission
+   * and optional output blob monitoring using the provided {@link BlobCompletionListener}.
+   * <p>
+   * If an output listener is supplied, this handle automatically begins monitoring
+   * output blob completions using the default batching strategy (not exposed in the public API).
    *
-   * @param sessionInfo       the immutable session metadata including session ID and configuration
-   * @param sessionDefinition the session definition used for task default configurations
-   * @param channelPool       the gRPC channel pool for cluster communication
-   * @throws NullPointerException if any parameter is null
+   * @param sessionInfo    immutable metadata describing the session, including the session ID
+   * @param outputListener optional listener notified when output blobs reach completion; may be {@code null}
+   * @param channelPool    the gRPC channel pool used for communication with the cluster
+   * @throws NullPointerException if {@code sessionInfo} or {@code channelPool} is {@code null}
    * @see SessionInfo
-   * @see SessionDefinition
+   * @see BlobCompletionListener
+   * @see ArmoniKClient#openSession(SessionDefinition)
+   * @see ArmoniKClient#getSession(SessionId, BlobCompletionListener)
    */
-  SessionHandle(SessionInfo sessionInfo, SessionDefinition sessionDefinition, ChannelPool channelPool) {
-    requireNonNull(sessionDefinition, "sessionDefinition must not be null");
-
+  SessionHandle(SessionInfo sessionInfo, BlobCompletionListener outputListener, ChannelPool channelPool) {
     this.sessionInfo = requireNonNull(sessionInfo, "sessionInfo must not be null");
-    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionDefinition, channelPool);
+    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionInfo.taskConfiguration(), outputListener, channelPool);
     this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
   }
 

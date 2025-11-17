@@ -26,7 +26,6 @@ import fr.aneo.armonik.worker.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -221,7 +220,7 @@ final class GrpcBlobService implements BlobService {
     var result = new HashMap<String, BlobHandle>(entries.size());
     IntStream.range(0, entries.size()).forEach(i -> {
       var entry = entries.get(i);
-      result.put(entry.getKey(), new BlobHandle(sessionId, entry.getValue().name(), deferredBlobInfos.get(i)));
+      result.put(entry.getKey(), new BlobHandle(entry.getValue().name(), deferredBlobInfos.get(i)));
     });
 
     logger.info("Prepared {} blob metadata", result.size());
@@ -266,7 +265,7 @@ final class GrpcBlobService implements BlobService {
                                                                             blobFileWriter.write(blobInfo.id(), fileBasedBlobs.get(name).asStream());
                                                                             return blobInfo;
                                                                           });
-                                           return new BlobHandle(sessionId, handle.name(), blobInfoAfterWrite);
+                                           return new BlobHandle(handle.name(), blobInfoAfterWrite);
                                          }
                                        ));
   }
@@ -288,7 +287,7 @@ final class GrpcBlobService implements BlobService {
     var deferredBlobInfo = Futures.toCompletionStage(agentFutureStub.createResults(request))
                                   .thenApply(response -> toBlobInfo(response.getResults(0)));
 
-    return new BlobHandle(sessionId, blob.name(), deferredBlobInfo);
+    return new BlobHandle(blob.name(), deferredBlobInfo);
   }
 
   /**
@@ -297,10 +296,7 @@ final class GrpcBlobService implements BlobService {
   private static BlobInfo toBlobInfo(ResultMetaData metaData) {
     return new BlobInfo(
       BlobId.from(metaData.getResultId()),
-      BlobStatus.fromStatusCode(metaData.getStatus().getNumber()),
-      Instant.ofEpochSecond(
-        metaData.getCreatedAt().getSeconds(),
-        metaData.getCreatedAt().getNanos()
-      ));
+      BlobStatus.fromStatusCode(metaData.getStatus().getNumber())
+    );
   }
 }

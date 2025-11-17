@@ -24,6 +24,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 
 /**
  * Provides write-only access to task output data.
@@ -72,6 +73,7 @@ import static java.util.Objects.requireNonNull;
  * @see TaskContext
  * @see TaskInput
  * @see TaskProcessor
+ * @see BlobHandle
  */
 public final class TaskOutput {
   private static final Logger logger = LoggerFactory.getLogger(TaskOutput.class);
@@ -88,6 +90,34 @@ public final class TaskOutput {
 
   public BlobId id() {
     return id;
+  }
+
+  /**
+   * Converts this task output to a blob handle.
+   * <p>
+   * This method creates a {@link BlobHandle} representing this output blob with a
+   * {@link BlobStatus#COMPLETED} status. The returned handle can be used to delegate
+   * output production to subtasks or to reference this output in subsequent operations.
+   * </p>
+   * <p>
+   * The blob information is immediately available (non-deferred) since the output
+   * blob metadata was created during task setup.
+   * </p>
+   *
+   * <h4>Common Use Cases</h4>
+   * <ul>
+   *   <li><strong>Output delegation</strong>: Passing task outputs to subtasks for production</li>
+   *   <li><strong>Dynamic graphs</strong>: Building task graphs where outputs are computed by different tasks</li>
+   *   <li><strong>Result references</strong>: Reusing output blob references across task submissions</li>
+   * </ul>
+   *
+   * @return a blob handle with {@link BlobStatus#COMPLETED} status; never {@code null}
+   * @see BlobHandle
+   * @see BlobStatus#COMPLETED
+   */
+  public BlobHandle asBlobHandle() {
+    var blobInfo = new BlobInfo(id, BlobStatus.COMPLETED);
+    return new BlobHandle(logicalName, completedFuture(blobInfo));
   }
 
   /**

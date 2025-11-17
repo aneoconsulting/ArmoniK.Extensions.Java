@@ -75,7 +75,7 @@ class TaskOutputTest {
   @DisplayName("writes input stream to blob writer")
   void writes_input_stream_to_blob_writer() {
     // Given
-    BlobWriter writer = mock(BlobWriter.class);
+    var writer = mock(BlobWriter.class);
     var output = new TaskOutput(blobId, "data", writer);
     var data = randomBytes(1024);
     var inputStream = new ByteArrayInputStream(data);
@@ -85,6 +85,20 @@ class TaskOutputTest {
 
     // Then
     verify(writer).write(blobId, inputStream);
+  }
+
+  @Test
+  @DisplayName("convert to BlobHandle")
+  void convert_to_blob_handle() {
+    // Given
+    var writer = mock(BlobWriter.class);
+    var output = new TaskOutput(blobId, "data", writer);
+
+    // When
+    var blobHandle = output.asBlobHandle();
+
+    // Then
+    assertThat(blobHandle.deferredBlobInfo()).isCompletedWithValue(new BlobInfo(blobId, BlobStatus.CREATED));
   }
 
   private static byte[] randomBytes(int size) {

@@ -93,7 +93,7 @@ class TaskContextTest {
   void should_submit_task_with_input_and_output_definitions() {
     // Given
     var taskConfig = new TaskConfiguration(2, 5, "compute-partition", Duration.ofMinutes(10), Map.of("key", "value"));
-    var existing = blobHandle("test-session", "existing-id");
+    var existing = blobHandle("existing-id");
     var parentInput = taskContext.getInput("input1");
     var parentOutput = taskContext.getOutput("output1");
     var inputData1Definition = InputBlobDefinition.from("inputData1", new byte[100]);
@@ -139,6 +139,14 @@ class TaskContextTest {
     assertThat(taskHandle).isNotNull();
     assertThat(taskHandle.sessionId()).isEqualTo(SessionId.from("test-session"));
     assertThat(taskHandle.taskConfiguration()).isEqualTo(taskConfig);
+    assertThat(taskHandle.inputs()).containsOnlyKeys("inputDefinition", "existingBlobHandle", "parentInput");
+    assertThat(taskHandle.inputs())
+      .hasEntrySatisfying("existingBlobHandle", blobHandle -> assertThat(blobHandle.deferredBlobInfo().toCompletableFuture().join().id()).isEqualTo(BlobId.from("existing-id")))
+      .hasEntrySatisfying("parentInput", blobHandle -> assertThat(blobHandle.deferredBlobInfo().toCompletableFuture().join().id()).isEqualTo(BlobId.from("input1-id")));
+
+    assertThat(taskHandle.outputs()).containsOnlyKeys("result", "resultDefinition", "parentOutput");
+    assertThat(taskHandle.outputs()).
+      hasEntrySatisfying("parentOutput", blobHandle -> assertThat(blobHandle.deferredBlobInfo().toCompletableFuture().join().id()).isEqualTo(BlobId.from("output1-id")));
   }
 
 
@@ -163,7 +171,7 @@ class TaskContextTest {
     assertThat(finishedEarly).isFalse();
 
     // When: Complete the blob creation
-    delayedBlobInfo.complete(new BlobInfo(BlobId.from("slowBlob-id"), CREATED, now()));
+    delayedBlobInfo.complete(new BlobInfo(BlobId.from("slowBlob-id"), CREATED));
 
     // Then: Should now complete within 2 seconds
     boolean finishedAfterCompletion = awaitCompletionFinished.await(2, TimeUnit.SECONDS);
@@ -268,9 +276,9 @@ class TaskContextTest {
                                                      Map.Entry::getKey,
                                                      entry -> {
                                                        if (delayedBlobInfo != null && entry.getKey().equals("slowBlob")) {
-                                                         return new BlobHandle(SessionId.from("test-session"), entry.getKey(), delayedBlobInfo);
+                                                         return new BlobHandle(entry.getKey(), delayedBlobInfo);
                                                        } else {
-                                                         return blobHandle("test-session", entry.getKey() + "-id");
+                                                         return blobHandle(entry.getKey() + "-id");
                                                        }
                                                      }));
       createBlobsResponse.add(createBlobResponse);
@@ -287,7 +295,7 @@ class TaskContextTest {
     @Override
     public BlobHandle createBlob(InputBlobDefinition inputBlobDefinition) {
       createBlobRequest.add(inputBlobDefinition);
-      var blobHandle = blobHandle("test-session", "singleBlob-id");
+      var blobHandle = blobHandle("singleBlob-id");
       createBlobResponse.add(blobHandle);
       createBlobIdResponse.add(blobHandle.deferredBlobInfo().toCompletableFuture().join().id());
 
@@ -301,7 +309,7 @@ class TaskContextTest {
                                                .stream()
                                                .collect(toMap(
                                                  Map.Entry::getKey,
-                                                 entry -> blobHandle("test-session", entry.getKey() + "-id")));
+                                                 entry -> blobHandle(entry.getKey() + "-id")));
       prepareBlobsResponse.add(prepareBlobResponse);
       prepareBlobIdsResponse.add(prepareBlobResponse.values().stream().map(blobHandle -> blobHandle.deferredBlobInfo().toCompletableFuture().join().id()).toList());
       return prepareBlobResponse;

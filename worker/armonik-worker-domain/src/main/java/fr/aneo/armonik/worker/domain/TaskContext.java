@@ -31,6 +31,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import static java.util.Objects.requireNonNull;
@@ -139,10 +140,19 @@ public class TaskContext {
                      Map<String, TaskOutput> outputs) {
     this.blobService = requireNonNull(blobService, "blobService cannot be null");
     this.taskService = requireNonNull(taskService, "taskService cannot be null");
-    this.payloadSerializer = payloadSerializer;
+    this.payloadSerializer = requireNonNull(payloadSerializer, "payloadSerializer cannot be null");
     this.sessionId = requireNonNull(sessionId, "sessionId cannot be null");
     this.inputs = requireNonNull(inputs, "inputs cannot be null");
     this.outputs = requireNonNull(outputs, "outputs cannot be null");
+  }
+
+  /**
+   * Returns the identifier of the session in which this task is executing.
+   *
+   * @return the non-null identifier of the current session
+   */
+  public SessionId sessionId() {
+    return sessionId;
   }
 
   /**
@@ -304,70 +314,14 @@ public class TaskContext {
   public TaskHandle submitTask(TaskDefinition taskDefinition) {
     requireNonNull(taskDefinition, "taskDefinition cannot be null");
 
-    logger.debug("Submitting task with {} input definitions and {} output definitions",
-      taskDefinition.inputDefinitions().size(),
-      taskDefinition.outputDefinitions().size());
+    var allInputHandles = prepareInputHandles(taskDefinition);
+    var allOutputHandles = prepareOutputHandles(taskDefinition);
 
-    var inputHandles = blobService.createBlobs(taskDefinition.inputDefinitions());
-    trackBlobCompletions(inputHandles.values());
-
-    var outputBlobHandles = blobService.prepareBlobs(taskDefinition.outputDefinitions());
-    trackBlobCompletions(outputBlobHandles.values());
-
-    var allInputHandles = new HashMap<>(inputHandles);
-    allInputHandles.putAll(taskDefinition.inputHandles());
-    logger.debug("Total inputs after merging: {}", allInputHandles.size());
-
-    var inputIdsByName = getIdsFrom(allInputHandles);
-    var outputIdsByName = getIdsFrom(outputBlobHandles);
-
-    var deferredTaskInfo = Futures.allOf(List.of(inputIdsByName, outputIdsByName))
-                                  .thenCompose(allIds -> {
-                                    var taskInputIds = getTaskInputIds(taskDefinition);
-                                    var allInputIds = new HashMap<>(allIds.get(0));
-                                    allInputIds.putAll(taskInputIds);
-
-                                    var taskOutputIds = getTaskOutputIds(taskDefinition);
-                                    var allOutputIds = new HashMap<>(allIds.get(1));
-                                    allOutputIds.putAll(taskOutputIds);
-
-                                    logger.debug("Creating payload with input keys:{} and output keys:{}", allInputIds.keySet(), allOutputIds.keySet());
-
-                                    var payload = Payload.from(allInputIds, allOutputIds);
-                                    return blobService.createBlob(InputBlobDefinition.from("payload", payloadSerializer.serialize(payload)))
-                                                      .deferredBlobInfo()
-                                                      .thenCompose(submitTask(taskDefinition, payload));
-                                  })
-                                  .whenComplete((taskInfo, throwable) -> {
-                                    if (throwable != null) {
-                                      logger.error("Task submission failed", throwable);
-                                    } else {
-                                      logger.debug("Task submitted successfully with id: {}", taskInfo.id());
-                                    }
-                                  });
+    var deferredTaskInfo = getIdsFrom(allInputHandles).thenCombine(getIdsFrom(allOutputHandles), createPayload())
+                                                      .thenCompose(payload -> createPayloadHandle(payload).thenCompose(submitTask(taskDefinition, payload)));
     trackTaskCompletion(deferredTaskInfo);
 
-    return new TaskHandle(sessionId, taskDefinition.configuration(), deferredTaskInfo, allInputHandles, outputBlobHandles);
-  }
-
-  private Map<String, BlobId> getTaskOutputIds(TaskDefinition taskDefinition) {
-    return taskDefinition.taskOutputs()
-                         .entrySet()
-                         .stream()
-                         .collect(toMap(
-                           Map.Entry::getKey,
-                           entry -> entry.getValue().id()
-                         ));
-  }
-
-  private static Map<String, BlobId> getTaskInputIds(TaskDefinition taskDefinition) {
-    return taskDefinition.taskInputs()
-                         .entrySet()
-                         .stream()
-                         .collect(toMap(
-                           Map.Entry::getKey,
-                           entry -> entry.getValue().id()
-                         ));
+    return new TaskHandle(sessionId, taskDefinition.configuration(), deferredTaskInfo, allInputHandles, allOutputHandles);
   }
 
   /**
@@ -436,6 +390,38 @@ public class TaskContext {
     }
   }
 
+  private static BiFunction<Map<String, BlobId>, Map<String, BlobId>, Payload> createPayload() {
+    return (inputIds, outputIds) -> {
+      logger.debug("Creating payload with input keys:{} and output keys:{}", inputIds.keySet(), outputIds.keySet());
+      return Payload.from(inputIds, outputIds);
+    };
+  }
+
+  private Map<String, BlobHandle> prepareInputHandles(TaskDefinition taskDefinition) {
+    var createdInputHandles = blobService.createBlobs(taskDefinition.inputDefinitions());
+    trackBlobCompletions(createdInputHandles.values());
+
+    return merge(
+      createdInputHandles,
+      taskDefinition.inputHandles(),
+      taskDefinition.taskInputHandles()
+    );
+  }
+
+  private Map<String, BlobHandle> prepareOutputHandles(TaskDefinition taskDefinition) {
+    var createdOutputBlobHandles = blobService.prepareBlobs(taskDefinition.outputDefinitions());
+    trackBlobCompletions(createdOutputBlobHandles.values());
+
+    return merge(
+      createdOutputBlobHandles,
+      taskDefinition.taskOutputHandles()
+    );
+  }
+
+  private CompletionStage<BlobInfo> createPayloadHandle(Payload payload) {
+    return blobService.createBlob(InputBlobDefinition.from("payload", payloadSerializer.serialize(payload))).deferredBlobInfo();
+  }
+
   private Function<BlobInfo, CompletionStage<TaskInfo>> submitTask(TaskDefinition taskDefinition, Payload payload) {
     return payloadInfo -> {
       logger.debug("Submitting task to Agent with payload id: {}", payloadInfo.id());
@@ -491,5 +477,27 @@ public class TaskContext {
     return map.entrySet()
               .stream()
               .collect(toMap(Map.Entry::getKey, entry -> mapper.apply(entry.getValue())));
+  }
+
+  /**
+   * Merges multiple maps into a single map.
+   * <p>
+   * Entries from later maps in the argument list override entries with the same key
+   * from earlier maps. The returned map is a new {@link HashMap} and modifications to
+   * it do not affect the original maps.
+   * </p>
+   *
+   * @param maps the maps to merge; must not be {@code null} and must not contain {@code null} maps
+   * @param <K>  the key type
+   * @param <V>  the value type
+   * @return a new map containing all entries from the provided maps; never {@code null}
+   */
+  @SafeVarargs
+  private static <K, V> Map<K, V> merge(Map<K, V>... maps) {
+    var result = new HashMap<K, V>();
+    for (var map : maps) {
+      result.putAll(map);
+    }
+    return result;
   }
 }

@@ -18,15 +18,14 @@ package fr.aneo.armonik.worker.domain;
 import fr.aneo.armonik.worker.domain.internal.BlobWriter;
 
 import java.nio.file.Path;
-import java.time.Instant;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.mockito.Mockito.mock;
 
 public class TestDataFactory {
 
-  public static BlobHandle blobHandle(String sessionId, String blobId) {
-    return new BlobHandle(SessionId.from(sessionId), blobId, completedFuture(new BlobInfo(BlobId.from(blobId), BlobStatus.CREATED, Instant.now())));
+  public static BlobHandle blobHandle(String blobId) {
+    return new BlobHandle(blobId, completedFuture(new BlobInfo(BlobId.from(blobId), BlobStatus.CREATED)));
   }
 
   public static TaskInput taskInput(String id, String name) {

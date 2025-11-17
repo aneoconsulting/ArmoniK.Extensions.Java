@@ -57,7 +57,6 @@ import static java.util.Objects.requireNonNull;
  * @see TaskHandle
  */
 public final class BlobHandle {
-  private final SessionId sessionId;
   private final String name;
   private final CompletionStage<BlobInfo> deferredBlobInfo;
 
@@ -70,7 +69,6 @@ public final class BlobHandle {
    * when implementing custom task processors.
    * </p>
    *
-   * @param sessionId        the session containing this blob; must not be {@code null}
    * @param name             the blob's internal name as defined by the blob definition;
    *                         may be {@code null}
    * @param deferredBlobInfo completion stage that will provide blob metadata when
@@ -79,24 +77,9 @@ public final class BlobHandle {
    * @see BlobService#createBlob(fr.aneo.armonik.worker.domain.definition.blob.InputBlobDefinition)
    * @see BlobService#prepareBlobs(java.util.Map)
    */
-  public BlobHandle(SessionId sessionId, String name, CompletionStage<BlobInfo> deferredBlobInfo) {
-    this.sessionId = requireNonNull(sessionId, "sessionId cannot be null");
+  public BlobHandle(String name, CompletionStage<BlobInfo> deferredBlobInfo) {
     this.name = name;
     this.deferredBlobInfo = requireNonNull(deferredBlobInfo, "deferredBlobInfo cannot be null");
-  }
-
-  /**
-   * Returns the identifier of the session containing this blob.
-   * <p>
-   * All blobs belong to a session context that defines their lifecycle
-   * and access scope.
-   * </p>
-   *
-   * @return the session identifier; never {@code null}
-   * @see SessionId
-   */
-  public SessionId sessionId() {
-    return sessionId;
   }
 
   /**
@@ -151,6 +134,6 @@ public final class BlobHandle {
 
   @Override
   public String toString() {
-    return "BlobHandle[sessionId=" + sessionId + ", name='" + name + "']";
+    return "BlobHandle[name='" + name + "']";
   }
 }

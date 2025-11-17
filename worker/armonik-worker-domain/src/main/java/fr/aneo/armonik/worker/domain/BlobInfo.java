@@ -15,14 +15,13 @@
  */
 package fr.aneo.armonik.worker.domain;
 
-import java.time.Instant;
 import java.util.Objects;
 
 /**
  * Immutable metadata about a blob in the ArmoniK cluster.
  * <p>
  * This class represents blob information as provided by the ArmoniK cluster,
- * including the blob's unique identifier, current status, and creation timestamp.
+ * including the blob's unique identifier, current status.
  * Instances are typically created by the worker infrastructure when blobs are
  * created or retrieved from the cluster.
  * </p>
@@ -36,7 +35,7 @@ import java.util.Objects;
  * <h2>Equality</h2>
  * <p>
  * Two {@code BlobInfo} instances are considered equal if they have the same blob ID,
- * regardless of status or creation date. This reflects the fact that a blob's identity
+ * regardless of status. This reflects the fact that a blob's identity
  * is determined solely by its ID.
  * </p>
  *
@@ -47,7 +46,6 @@ import java.util.Objects;
 public final class BlobInfo {
   private final BlobId id;
   private final BlobStatus status;
-  private final Instant creationDate;
 
   /**
    * Creates blob information with the specified metadata.
@@ -58,15 +56,13 @@ public final class BlobInfo {
    * custom task processors.
    * </p>
    *
-   * @param id           the blob identifier assigned by the cluster; must not be {@code null}
-   * @param status       the current status of the blob; must not be {@code null}
-   * @param creationDate the timestamp when the blob was created; must not be {@code null}
+   * @param id     the blob identifier assigned by the cluster; must not be {@code null}
+   * @param status the current status of the blob; must not be {@code null}
    * @throws NullPointerException if any parameter is {@code null}
    */
-  public BlobInfo(BlobId id, BlobStatus status, Instant creationDate) {
+  public BlobInfo(BlobId id, BlobStatus status) {
     this.id = Objects.requireNonNull(id, "id cannot be null");
     this.status = Objects.requireNonNull(status, "status cannot be null");
-    this.creationDate = Objects.requireNonNull(creationDate, "creationDate cannot be null");
   }
 
   /**
@@ -87,15 +83,6 @@ public final class BlobInfo {
     return status;
   }
 
-  /**
-   * Returns the timestamp when this blob was created.
-   *
-   * @return the creation timestamp; never {@code null}
-   */
-  public Instant creationDate() {
-    return creationDate;
-  }
-
   @Override
   public boolean equals(Object obj) {
     if (obj == this) return true;
@@ -111,6 +98,6 @@ public final class BlobInfo {
 
   @Override
   public String toString() {
-    return "BlobInfo[id=" + id + ", status=" + status + ", creationDate=" + creationDate + ']';
+    return "BlobInfo[id=" + id + ", status=" + status + "]";
   }
 }

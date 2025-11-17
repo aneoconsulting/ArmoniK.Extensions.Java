@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>fr.aneo</groupId>
+    <artifactId>armonik-worker-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <artifactId>armonik-worker-domain</artifactId>
+  <packaging>jar</packaging>
+
+  <name>ArmoniK Worker Domain</name>
+  <description>Domain model and interfaces for implementing custom ArmoniK task processors</description>
+
+  <url>https://github.com/aneoconsulting/ArmoniK.Extensions.Java</url>
+
+  <organization>
+    <name>ANEO</name>
+    <url>https://aneo.fr</url>
+  </organization>
+
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>http://www.apache.org/licenses/</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>Christophe Amory</name>
+      <email>camory@ext.aneo.fr</email>
+    </developer>
+  </developers>
+
+  <scm>
+    <url>https://github.com/aneoconsulting/ArmoniK.Extensions.Java</url>
+    <connection>scm:git:https://github.com/aneoconsulting/ArmoniK.Extensions.Java.git</connection>
+    <developerConnection>scm:git:https://github.com/aneoconsulting/ArmoniK.Extensions.Java.git</developerConnection>
+    <tag>HEAD</tag>
+  </scm>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+
+    <!-- Test dependencies -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+    </dependency>
+  </dependencies>
+</project>

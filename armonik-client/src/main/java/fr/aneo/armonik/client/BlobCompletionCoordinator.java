@@ -85,11 +85,11 @@ final class BlobCompletionCoordinator {
    * @see BlobCompletionListener
    * @see BlobCompletionEventWatcher
    */
-  BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, SessionDefinition sessionDefinition) {
+  BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener outputListener) {
     this(
       sessionId,
-      new BlobCompletionEventWatcher(sessionId, channelPool, sessionDefinition.outputListener()),
-      sessionDefinition.outputBatchingPolicy(),
+      new BlobCompletionEventWatcher(sessionId, channelPool, outputListener),
+      BatchingPolicy.DEFAULT,
       Schedulers.shared()
     );
   }
@@ -116,7 +116,7 @@ final class BlobCompletionCoordinator {
   ) {
     this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
     this.watcher = requireNonNull(watcher, "watcher must not be null");
-    this.batchingPolicy = requireNonNull(batchingPolicy, "batchingPolicy must not be null");
+    this.batchingPolicy = requireNonNullElse(batchingPolicy, BatchingPolicy.DEFAULT);
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.permits = new Semaphore(batchingPolicy.maxConcurrentBatches());
   }

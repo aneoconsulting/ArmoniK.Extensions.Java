@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client;
 
 import fr.aneo.armonik.client.definition.SessionDefinition;
+import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
 import io.grpc.BindableService;
@@ -46,6 +47,7 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should open a new session successfully")
   void should_open_a_new_session_successfully() {
     // When
     var sessionHandle = client.openSession(sessionDefinition);
@@ -62,6 +64,63 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getMaxDuration().getNanos()).isEqualTo(0);
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getPriority()).isEqualTo(1);
     assertThat(sessionsGrpcMock.submittedCreateSessionRequest.getDefaultTaskOption().getOptionsMap()).isEqualTo(Map.of("option1", "value1"));
+  }
+
+  @Test
+  @DisplayName("should get an existing session")
+  void should_get_an_existing_session() {
+    // Given
+    var sessionId = SessionId.from("session_1");
+
+    // When
+    var sessionHandle = client.getSession(sessionId);
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedGetSessionRequest.getSessionId()).isEqualTo(sessionId.asString());
+    assertThat(sessionHandle.sessionInfo()).isEqualTo(
+      new SessionInfo(
+        sessionId,
+        Set.of("partition1", "partition2"),
+        new TaskConfiguration(2, 5, "partition1", Duration.ofMinutes(60), Map.of("option1", "value1"))
+      ));
+  }
+
+  @Test
+  @DisplayName("should close a session")
+  void should_close_an_existing_session() {
+    // Given
+    var sessionId = SessionId.from("session_1");
+
+    // When
+    client.closeSession(sessionId);
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCloseSessionRequest.getSessionId()).isEqualTo(sessionId.asString());
+  }
+
+  @Test
+  @DisplayName("should cancel a session")
+  void should_cancel_an_existing_session() {
+    // Given
+    var sessionId = SessionId.from("session_1");
+
+    // When
+    client.cancelSession(sessionId);
+
+    // Then
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest).isNotNull();
+    assertThat(sessionsGrpcMock.submittedCancelSessionRequest.getSessionId()).isEqualTo(sessionId.asString());
+  }
+
+  @Test
+  @DisplayName("should throw exception when session does not exist")
+  void should_throw_exception_when_session_does_not_exist() {
+    // Given
+    var sessionId = SessionId.from("does not exist");
+
+    // When / Then
+    assertThatThrownBy(() -> client.getSession(sessionId)).isInstanceOf(ArmoniKException.class);
   }
 
   @Test

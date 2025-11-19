@@ -18,7 +18,6 @@ package fr.aneo.armonik.client;
 import com.google.gson.Gson;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
-import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
@@ -49,6 +48,8 @@ import static fr.aneo.armonik.client.WorkerLibrary.LIBRARY_BLOB_ID;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
+import static java.util.Objects.requireNonNullElse;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.stream.Collectors.toMap;
 
 /**
@@ -89,27 +90,35 @@ final class TaskSubmitter {
   /**
    * Creates a new task submitter for the specified session context.
    * <p>
-   * The task submitter will use the session's configuration for default task settings and
-   * will optionally set up blob completion coordination if an output listener is configured
-   * in the session definition.
+   * This constructor is used internally by {@link SessionHandle} when a session is opened
+   * or retrieved via {@link ArmoniKClient}. It configures the default task settings for the
+   * session and, if an {@link BlobCompletionListener} is provided, initializes output blob
+   * completion coordination using the default batching strategy.
+   * <p>
+   * When {@code taskConfiguration} is {@code null}, the global
+   * {@link TaskConfiguration#defaultConfiguration() default configuration} is applied.
    *
    * @param sessionId         the identifier of the session context for task submission
-   * @param sessionDefinition the session definition containing task configuration and output listener
+   * @param taskConfiguration the default task configuration to apply for submissions in this session;
+   *                          may be {@code null} to use the global default
+   * @param outputListener    optional listener for output blob completion events; may be {@code null}
    * @param channelPool       the gRPC channel pool for cluster communication
-   * @throws NullPointerException if any parameter is null
-   * @see SessionDefinition
+   * @throws NullPointerException if {@code sessionId} or {@code channelPool} is {@code null}
+   * @see SessionHandle
+   * @see TaskConfiguration
+   * @see BlobCompletionListener
    * @see BlobCompletionCoordinator
    */
   TaskSubmitter(SessionId sessionId,
-                SessionDefinition sessionDefinition,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
                 ChannelPool channelPool) {
 
-    this.sessionId = sessionId;
-    this.defaultTaskConfiguration = sessionDefinition.taskConfiguration() != null ? sessionDefinition.taskConfiguration() : defaultConfiguration();
-    this.channelPool = channelPool;
-
-    if (sessionDefinition.outputListener() != null) {
-      this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, sessionDefinition);
+    this.sessionId = requireNonNull(sessionId);
+    this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
+    this.channelPool = requireNonNull(channelPool);
+    if (outputListener != null) {
+      this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, outputListener);
     }
   }
 
@@ -198,7 +207,11 @@ final class TaskSubmitter {
    * @see SessionHandle#awaitOutputsProcessed()
    */
   CompletionStage<Void> waitUntilFinished() {
-    return blobCompletionCoordinator.waitUntilIdle();
+    if (blobCompletionCoordinator != null) {
+      return blobCompletionCoordinator.waitUntilIdle();
+    } else  {
+      return completedFuture(null);
+    }
   }
 
   /**

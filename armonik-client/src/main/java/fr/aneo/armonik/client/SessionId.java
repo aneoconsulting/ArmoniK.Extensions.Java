@@ -48,7 +48,7 @@ public final class SessionId {
     return id;
   }
 
-  static SessionId from(String sessionId) {
+  public static SessionId from(String sessionId) {
     return new SessionId(sessionId);
   }
 

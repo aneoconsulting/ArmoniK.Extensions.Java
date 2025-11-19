@@ -15,8 +15,6 @@
  */
 package fr.aneo.armonik.client.internal.concurrent;
 
-import fr.aneo.armonik.client.BatchingPolicy;
-
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 
@@ -38,7 +36,6 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
  * A JVM shutdown hook is automatically registered to properly shut down the executor when
  * the application terminates, ensuring clean resource cleanup.
  *
- * @see BatchingPolicy
  */
 public class Schedulers {
 

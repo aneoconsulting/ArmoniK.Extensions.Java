@@ -19,6 +19,8 @@ import fr.aneo.armonik.client.*;
 
 import java.util.Set;
 
+import static java.util.Objects.requireNonNullElse;
+
 
 /**
  * Definition specifying the configuration and parameters for creating a session in ArmoniK.
@@ -35,18 +37,15 @@ import java.util.Set;
  * @param partitionIds the set of partition identifiers where tasks within this session can be executed
  * @param taskConfiguration the default task configuration applied to tasks submitted within this session
  * @param outputListener the listener to receive task output completion events for this session
- * @param outputBatchingPolicy the batching policy used for coordinating task output completion monitoring
  * @see ArmoniKClient#openSession(SessionDefinition)
  * @see SessionHandle
  * @see TaskConfiguration
  * @see BlobCompletionListener
- * @see BatchingPolicy
  */
 public record SessionDefinition(
   Set<String> partitionIds,
   TaskConfiguration taskConfiguration,
-  BlobCompletionListener outputListener,
-  BatchingPolicy outputBatchingPolicy
+  BlobCompletionListener outputListener
 ) {
 
   /**
@@ -59,10 +58,9 @@ public record SessionDefinition(
    * @param partitionIds the set of partition identifiers where tasks can be executed
    * @throws NullPointerException if partitionIds is null
    * @see TaskConfiguration#defaultConfiguration()
-   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition(Set<String> partitionIds) {
-    this(partitionIds, TaskConfiguration.defaultConfiguration(), null, BatchingPolicy.DEFAULT);
+    this(partitionIds, TaskConfiguration.defaultConfiguration(), null);
   }
 
   /**
@@ -76,10 +74,9 @@ public record SessionDefinition(
    * @param taskConfiguration the default task configuration for tasks in this session
    * @throws NullPointerException if any parameter is null
    * @see TaskConfiguration
-   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition(Set<String> partitionIds, TaskConfiguration taskConfiguration) {
-    this(partitionIds, taskConfiguration, null, BatchingPolicy.DEFAULT);
+    this(partitionIds, taskConfiguration, null);
   }
 
   /**
@@ -94,19 +91,16 @@ public record SessionDefinition(
    * Default values are applied for null parameters:
    * <ul>
    *   <li>Task configuration defaults to {@link TaskConfiguration#defaultConfiguration()}</li>
-   *   <li>Output batching policy defaults to {@link BatchingPolicy#DEFAULT}</li>
    * </ul>
    *
    * @throws NullPointerException if partitionIds is null
    * @throws IllegalArgumentException if partitionIds is empty or if task configuration
    *                                  specifies a partition not included in the session's partition set
    * @see TaskConfiguration#defaultConfiguration()
-   * @see BatchingPolicy#DEFAULT
    */
   public SessionDefinition {
-    taskConfiguration = taskConfiguration == null ? TaskConfiguration.defaultConfiguration() : taskConfiguration;
-    partitionIds = partitionIds == null ? Set.of() : partitionIds;
-    outputBatchingPolicy = outputBatchingPolicy == null ?  BatchingPolicy.DEFAULT : outputBatchingPolicy;
+    taskConfiguration = requireNonNullElse(taskConfiguration, TaskConfiguration.defaultConfiguration());
+    partitionIds = requireNonNullElse(partitionIds, Set.of());
     validateTaskDefaultPartition(partitionIds, taskConfiguration);
   }
 

@@ -43,6 +43,10 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
+          gpg-private-key: ${{ secrets.GPG_SIGNING_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
 
       - name: Set project version
         working-directory: ${{ matrix.module }}
@@ -66,6 +70,8 @@ jobs:
       - name: Verify build
         working-directory: ${{ matrix.module }}
         run: ./mvnw -B -ntp -Pci-release verify
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
 
   publish-modules:
     name: Publish ${{ matrix.module }}
@@ -94,6 +100,10 @@ jobs:
           server-password: MAVEN_PASSWORD
           gpg-private-key: ${{ secrets.GPG_SIGNING_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
 
       - name: Set project version
         working-directory: ${{ matrix.module }}
@@ -103,9 +113,9 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: ./mvnw -B -ntp -Pci-release deploy -DskipTests
         env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
           MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_SIGNING_KEY_PASSWORD }}
 
   publish-docker-image:
     name: Build and publish Docker image

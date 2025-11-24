@@ -51,11 +51,17 @@ jobs:
       - name: Check for SNAPSHOT dependencies
         working-directory: ${{ matrix.module }}
         run: |
-          if find . -name "pom.xml" -exec grep -l "SNAPSHOT" {} \;; then
+          echo "🔍 Checking for SNAPSHOT dependencies..."
+          SNAPSHOT_FILES=$(find . -name "pom.xml" -type f -exec grep -l "SNAPSHOT" {} \;)
+          if [ -n "$SNAPSHOT_FILES" ]; then
             echo "❌ ERROR: SNAPSHOT dependencies found in release build!"
+            echo ""
+            echo "Files containing SNAPSHOT:"
+            echo "$SNAPSHOT_FILES"
             exit 1
           fi
-          echo "✅ No SNAPSHOT dependencies"
+          
+          echo "✅ No SNAPSHOT dependencies found"
 
       - name: Verify build
         working-directory: ${{ matrix.module }}

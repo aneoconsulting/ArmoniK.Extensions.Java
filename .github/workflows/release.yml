@@ -133,6 +133,12 @@ jobs:
           java-version: '17'
           cache: maven
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_LOGIN }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
       - name: Set project version
         working-directory: worker
         run: ./mvnw -B -ntp versions:set -DnewVersion=${{ needs.extract-version.outputs.version }} -DprocessAllModules=true -DgenerateBackupPoms=false
@@ -140,9 +146,6 @@ jobs:
       - name: Build and push Docker image
         working-directory: worker
         run: ./mvnw -B -ntp clean package -Pdocker
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_HUB_LOGIN }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Verify Docker image
         run: |

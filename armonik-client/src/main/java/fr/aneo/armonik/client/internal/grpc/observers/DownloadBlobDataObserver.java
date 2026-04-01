@@ -80,26 +80,16 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
 
   @Override
   public void onError(Throwable throwable) {
-    logger.atError()
-          .addKeyValue("operation", "downloadBlob")
-          .addKeyValue("sessionId", sessionId.asString())
-          .addKeyValue("blobId", blobId.asString())
-          .addKeyValue("error", throwable.getClass().getSimpleName())
-          .setCause(throwable)
-          .log("Blob download failed");
-
+    logger.error("Blob download failed: operation={}, sessionId={}, blobId={}, error={}",
+      "downloadBlob", sessionId.asString(), blobId.asString(), throwable.getClass().getSimpleName(),
+      throwable);
     result.setException(throwable);
   }
 
   @Override
   public void onCompleted() {
-    logger.atDebug()
-          .addKeyValue("operation", "downloadBlob")
-          .addKeyValue("sessionId", sessionId.asString())
-          .addKeyValue("blobId", blobId.asString())
-          .addKeyValue("downloadSize", buffer.size())
-          .log("Blob download completed");
-
+    logger.debug("Blob download completed: operation={}, sessionId={}, blobId={}, downloadSize={}",
+      "downloadBlob", sessionId.asString(), blobId.asString(), buffer.size());
     result.set(buffer.toByteArray());
   }
 

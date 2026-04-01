@@ -10,6 +10,7 @@
   <version>1.0.0-SNAPSHOT</version>
 
   <name>armonik-client</name>
+  <description>Java client library for ArmoniK distributed computing platform</description>
   <url>https://github.com/aneoconsulting/ArmoniK.Extensions.Java</url>
 
   <organization>

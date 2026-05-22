@@ -16,7 +16,6 @@
 package fr.aneo.armonik.worker.internal;
 
 import fr.aneo.armonik.api.grpc.v1.Objects.Output.Error;
-import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerGrpc.WorkerImplBase;
 import fr.aneo.armonik.worker.ArmoniKWorker;
 import fr.aneo.armonik.worker.TaskContextFactory;
@@ -31,13 +30,11 @@ import org.slf4j.MDC;
 
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.Empty;
 import static fr.aneo.armonik.api.grpc.v1.Objects.Output;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.*;
-import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.NOT_SERVING;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.SERVING;
 
 /**
@@ -68,16 +65,6 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  *         Output/Error
  * </pre>
  *
- * <h2>Health Check Behavior</h2>
- * <p>
- * The Worker reports its serving status through the {@link #healthCheck(Empty, StreamObserver)} method:
- * <ul>
- *   <li>{@link ServingStatus#SERVING}: Worker is idle and ready to accept tasks</li>
- *   <li>{@link ServingStatus#NOT_SERVING}: Worker is currently processing a task</li>
- * </ul>
- * <p>
- * The Agent uses this status to determine whether to assign new tasks to the Worker.
- *
  * <h2>Exception Handling Strategy</h2>
  * <p>
  * Any exception thrown during task processing is caught and handled as follows:
@@ -85,7 +72,6 @@ import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.S
  *   <li>The exception message is extracted (or {@code toString()} if message is {@code null})</li>
  *   <li>A {@link TaskOutcome.Error} is created with the exception message</li>
  *   <li>The error is converted to a gRPC {@link Output} message</li>
- *   <li>The Worker's status is restored to {@link ServingStatus#SERVING}</li>
  *   <li>The response is sent back to the Agent</li>
  * </ol>
  * <p>
@@ -109,7 +95,6 @@ public class TaskProcessingService extends WorkerImplBase {
   private final TaskProcessor taskProcessor;
   private final TaskContextFactory taskContextFactory;
   private final DynamicTaskProcessorLoader dynamicTaskProcessorLoader;
-  final AtomicReference<ServingStatus> servingStatus;
 
   private volatile LoadedTaskProcessor currentLoadedProcessor;
 
@@ -122,7 +107,6 @@ public class TaskProcessingService extends WorkerImplBase {
     this.taskProcessor = taskProcessor;
     this.taskContextFactory = taskContextFactory;
     this.dynamicTaskProcessorLoader = processorLoader;
-    this.servingStatus = new AtomicReference<>(SERVING);
   }
 
   TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, TaskContextFactory taskContextFactory) {
@@ -136,12 +120,10 @@ public class TaskProcessingService extends WorkerImplBase {
    * It orchestrates the complete task processing lifecycle:
    * </p>
    * <ol>
-   *   <li>Sets serving status to {@link ServingStatus#NOT_SERVING}</li>
    *   <li>Creates a {@link TaskContext} using the factory</li>
    *   <li>Invokes the {@link TaskProcessor} with the context</li>
    *   <li>Converts the {@link TaskOutcome} to a gRPC {@link Output}</li>
    *   <li>Sends the response to the Agent</li>
-   *   <li>Restores serving status to {@link ServingStatus#SERVING}</li>
    * </ol>
    *
    * <h4>Exception Handling</h4>
@@ -155,12 +137,6 @@ public class TaskProcessingService extends WorkerImplBase {
    *   <li>The error is sent to the Agent as a normal response (not a gRPC error)</li>
    * </ul>
    *
-   * <h4>Status Updates</h4>
-   * <p>
-   * The serving status is guaranteed to be restored to {@link ServingStatus#SERVING} even if
-   * an exception occurs.
-   * </p>
-   *
    * @param request          the task processing request from the Agent containing task metadata,
    *                         payload, data dependencies, and expected outputs; never {@code null}
    * @param responseObserver the gRPC response observer for sending the processing result
@@ -172,7 +148,6 @@ public class TaskProcessingService extends WorkerImplBase {
     MDC.put("sessionId", request.getSessionId());
 
     long startTime = System.nanoTime();
-    servingStatus.set(NOT_SERVING);
 
     try {
       var workerLibrary = WorkerLibrary.from(request.getTaskOptions().getOptionsMap());
@@ -215,7 +190,6 @@ public class TaskProcessingService extends WorkerImplBase {
                                           .build());
     } finally {
       cleanupDynamicTaskProcessor();
-      servingStatus.set(SERVING);
       responseObserver.onCompleted();
       MDC.clear();
     }
@@ -229,25 +203,6 @@ public class TaskProcessingService extends WorkerImplBase {
    * and determine whether the Worker is ready to accept new tasks.
    * </p>
    *
-   * <h4>Serving Status</h4>
-   * <p>
-   * The returned status indicates:
-   * </p>
-   * <ul>
-   *   <li>{@link ServingStatus#SERVING}: Worker is idle and can accept a new task</li>
-   *   <li>{@link ServingStatus#NOT_SERVING}: Worker is busy processing a task</li>
-   * </ul>
-   *
-   * <h4>Agent Behavior</h4>
-   * <p>
-   * The Agent uses this status to:
-   * </p>
-   * <ul>
-   *   <li>Verify the Worker is alive before assigning tasks</li>
-   *   <li>Avoid sending tasks to busy Workers</li>
-   *   <li>Detect and restart unresponsive Workers</li>
-   * </ul>
-   *
    * @param request          empty request (health checks have no parameters)
    * @param responseObserver the gRPC response observer for sending the health status
    *                         back to the Agent; never {@code null}
@@ -255,7 +210,7 @@ public class TaskProcessingService extends WorkerImplBase {
   @Override
   public void healthCheck(Empty request, StreamObserver<HealthCheckReply> responseObserver) {
     responseObserver.onNext(HealthCheckReply.newBuilder()
-                                            .setStatus(servingStatus.get())
+                                            .setStatus(SERVING)
                                             .build());
     responseObserver.onCompleted();
   }

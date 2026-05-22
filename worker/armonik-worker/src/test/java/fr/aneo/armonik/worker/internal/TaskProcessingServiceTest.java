@@ -32,7 +32,6 @@ import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.Empty;
-import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.NOT_SERVING;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply.ServingStatus.SERVING;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessReply;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
@@ -158,42 +157,6 @@ class TaskProcessingServiceTest {
   }
 
   @Test
-  @DisplayName("should report NOT_SERVING while process() is running")
-  void should_report_not_serving_while_process_is_running() throws Exception {
-    // Given
-    var processObserver = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
-    var request = ProcessRequest.newBuilder().build();
-    var processingStarted = new CountDownLatch(1);
-    var allowCompletion = new CountDownLatch(1);
-    when(taskProcessor.processTask(taskContext)).thenAnswer(invocation -> {
-      processingStarted.countDown();
-      allowCompletion.await(2, SECONDS);
-      return SUCCESS;
-    });
-    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
-    var processingThread = new Thread(() -> taskProcessingService.process(request, processObserver));
-    processingThread.start();
-    processingStarted.await(1, SECONDS);
-
-    // When
-    var healthCheckObserver = (StreamObserver<HealthCheckReply>) mock(StreamObserver.class);
-    taskProcessingService.healthCheck(Empty.getDefaultInstance(), healthCheckObserver);
-
-    // Then: Health check should report NOT_SERVING
-    var replyCap = ArgumentCaptor.forClass(HealthCheckReply.class);
-    var inOrder = inOrder(healthCheckObserver);
-    inOrder.verify(healthCheckObserver).onNext(replyCap.capture());
-    inOrder.verify(healthCheckObserver).onCompleted();
-    inOrder.verifyNoMoreInteractions();
-
-    assertThat(replyCap.getValue().getStatus()).isEqualTo(NOT_SERVING);
-
-    // Cleanup
-    allowCompletion.countDown();
-    processingThread.join(2000);
-  }
-
-  @Test
   @DisplayName("should report SERVING after process() completes")
   void should_report_serving_after_process_completes() {
     // Given: Normal task processing
@@ -266,40 +229,6 @@ class TaskProcessingServiceTest {
     assertThat(reply.getOutput().hasError()).isTrue();
   }
 
-
-  @Test
-  @DisplayName("should remain NOT_SERVING during awaitCompletion")
-  void should_remain_not_serving_during_await_completion() throws Exception {
-    // Given
-    var awaitCompletionStarted = new CountDownLatch(1);
-    var allowAwaitCompletion = new CountDownLatch(1);
-    when(taskProcessor.processTask(taskContext)).thenReturn(SUCCESS);
-    doAnswer(invocation -> {
-      awaitCompletionStarted.countDown();
-      allowAwaitCompletion.await(2, SECONDS);
-      return null;
-    }).when(taskContext).awaitCompletion();
-    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
-    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
-    var request = ProcessRequest.newBuilder().build();
-
-    // When
-    var processingThread = new Thread(() -> taskProcessingService.process(request, observer));
-    processingThread.start();
-
-    // Wait for awaitCompletion to be called
-    awaitCompletionStarted.await(1, SECONDS);
-
-    // Then: Should still be NOT_SERVING during awaitCompletion
-    assertThat(taskProcessingService.servingStatus.get()).isEqualTo(NOT_SERVING);
-
-    // When: Allow awaitCompletion to finish
-    allowAwaitCompletion.countDown();
-    processingThread.join(2000);
-
-    // Then: Should now be SERVING
-    assertThat(taskProcessingService.servingStatus.get()).isEqualTo(SERVING);
-  }
 
   @Test
   @DisplayName("should NOT call awaitCompletion when processTask throws exception")

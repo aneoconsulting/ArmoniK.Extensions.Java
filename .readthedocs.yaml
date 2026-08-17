@@ -7,6 +7,11 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.13"
+  apt_packages:
+    - openjdk-17-jdk-headless
+  jobs:
+    pre_build:
+      - tools/generate-javadoc.sh
 
 # Move anchors out of the titles
 # Build documentation in the ".docs/" directory with Sphinx

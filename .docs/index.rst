@@ -8,4 +8,3 @@ ArmoniK.Extensions.Java documentation
    :numbered:
 
    content/*
-   api/*

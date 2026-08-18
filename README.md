@@ -9,7 +9,7 @@ ArmoniK follows a client–worker model with a clear separation of responsibilit
 - **Clients** create and manage sessions, submit tasks and their dependencies as a task graph, and manage input/output blobs.
 - **Workers** implement the computation logic for a task, read its inputs, produce its outputs, and may submit further tasks to build dynamic workflows.
 
-Clients and workers are interoperable across ArmoniK's supported languages: a Java client can drive tasks executed by Python or C# workers, and vice versa.
+Clients and workers are interoperable across ArmoniK's supported languages: a Java client can drive tasks executed by C++ or C# workers, and vice versa.
 
 ## Modules
 

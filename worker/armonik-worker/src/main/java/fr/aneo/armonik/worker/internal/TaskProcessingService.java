@@ -97,8 +97,6 @@ public class TaskProcessingService extends WorkerImplBase {
   private final TaskContextFactory taskContextFactory;
   private final DynamicTaskProcessorLoader dynamicTaskProcessorLoader;
 
-  private volatile LoadedTaskProcessor currentLoadedProcessor;
-
   public TaskProcessingService(AgentFutureStub agentStub, TaskProcessor taskProcessor, DynamicTaskProcessorLoader dynamicTaskProcessorLoader) {
     this(agentStub, taskProcessor, new DefaultTaskContextFactory(), dynamicTaskProcessorLoader);
   }
@@ -190,7 +188,6 @@ public class TaskProcessingService extends WorkerImplBase {
                                           .setOutput(toOutput(new TaskOutcome.Error(errorMessage)))
                                           .build());
     } finally {
-      cleanupDynamicTaskProcessor();
       responseObserver.onCompleted();
       MDC.clear();
     }
@@ -276,15 +273,12 @@ public class TaskProcessingService extends WorkerImplBase {
   }
 
   /**
-   * Loads a TaskProcessor dynamically from a library.
+   * Creates a TaskProcessor from a library, reusing the library if it is already cached.
    */
   private TaskProcessor loadDynamicProcessor(WorkerLibrary library, String dataFolder) {
     try {
       var dataFolderPath = Path.of(dataFolder);
-      var loadedTaskProcessor = dynamicTaskProcessorLoader.load(library, dataFolderPath);
-      this.currentLoadedProcessor = loadedTaskProcessor;
-
-      return loadedTaskProcessor.taskProcessor();
+      return dynamicTaskProcessorLoader.load(library, dataFolderPath);
     } catch (ArmoniKException exception) {
       logger.error("Failed to load dynamic processor: {}", exception.getMessage(), exception);
       throw exception;
@@ -314,22 +308,5 @@ public class TaskProcessingService extends WorkerImplBase {
     return ProcessReply.newBuilder()
                        .setOutput(Output.newBuilder().setError(Error.newBuilder().setDetails(errorMessage)))
                        .build();
-  }
-
-  /**
-   * Cleans up dynamically loaded processor resources.
-   * Called in finally block to ensure cleanup even on errors.
-   */
-  private void cleanupDynamicTaskProcessor() {
-    if (currentLoadedProcessor != null) {
-      try {
-        currentLoadedProcessor.close();
-        logger.debug("Dynamic processor cleaned up successfully");
-      } catch (Exception e) {
-        logger.warn("Failed to cleanup dynamic processor", e);
-      } finally {
-        currentLoadedProcessor = null;
-      }
-    }
   }
 }

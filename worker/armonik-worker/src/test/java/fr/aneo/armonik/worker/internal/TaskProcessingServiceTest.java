@@ -355,11 +355,9 @@ class TaskProcessingServiceTest {
     // Given
     var dynamicTaskProcessorLoader = mock(DynamicTaskProcessorLoader.class);
     var taskProcessor = mock(TaskProcessor.class);
-    var loadedTaskProcessor = mock(LoadedTaskProcessor.class);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
 
-    when(loadedTaskProcessor.taskProcessor()).thenReturn(taskProcessor);
-    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(loadedTaskProcessor);
+    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(taskProcessor);
     when(taskProcessor.processTask(any())).thenReturn(TaskOutcome.SUCCESS);
 
     var service = new TaskProcessingService(agentStub, null, (a, r) -> taskContext, dynamicTaskProcessorLoader);
@@ -371,30 +369,30 @@ class TaskProcessingServiceTest {
     // Then
     verify(dynamicTaskProcessorLoader).load(any(WorkerLibrary.class), eq(Path.of("/data/task-abc")));
     verify(taskProcessor).processTask(any());
-    verify(loadedTaskProcessor).close();
+    verify(dynamicTaskProcessorLoader, never()).close();
   }
 
   @Test
-  @DisplayName("should cleanup dynamic processor even when processing fails")
-  void should_cleanup_even_on_error() {
+  @DisplayName("should report error when dynamic processor fails")
+  void should_report_error_when_dynamic_processor_fails() {
     // Given
     var dynamicTaskProcessorLoader = mock(DynamicTaskProcessorLoader.class);
     var taskProcessor = mock(TaskProcessor.class);
-    var loadedTaskProcessor = mock(LoadedTaskProcessor.class);
     var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
 
-    when(loadedTaskProcessor.taskProcessor()).thenReturn(taskProcessor);
-    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(loadedTaskProcessor);
+    when(dynamicTaskProcessorLoader.load(any(), any())).thenReturn(taskProcessor);
     when(taskProcessor.processTask(any())).thenThrow(new RuntimeException("Processing failed"));
 
-    var service = new TaskProcessingService(agentStub,null,(a, r) -> taskContext,dynamicTaskProcessorLoader);
+    var service = new TaskProcessingService(agentStub, null, (a, r) -> taskContext, dynamicTaskProcessorLoader);
 
     // When
-    var request = createDynamicTaskProcessorRequest();
-    service.process(request, observer);
+    service.process(createDynamicTaskProcessorRequest(), observer);
 
-    // Then: Cleanup still called
-    verify(loadedTaskProcessor).close();
+    // Then
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    verify(observer).onNext(replyCaptor.capture());
+    verify(observer).onCompleted();
+    assertThat(replyCaptor.getValue().getOutput().getError().getDetails()).isEqualTo("Processing failed");
   }
 
   private static ProcessRequest createDynamicTaskProcessorRequest() {

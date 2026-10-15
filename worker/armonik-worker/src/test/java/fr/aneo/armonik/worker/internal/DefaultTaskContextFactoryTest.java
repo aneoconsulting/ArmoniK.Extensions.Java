@@ -18,6 +18,7 @@ package fr.aneo.armonik.worker.internal;
 import com.google.protobuf.Duration;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import fr.aneo.armonik.worker.domain.ArmoniKException;
+import fr.aneo.armonik.worker.domain.BlobId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,48 @@ class DefaultTaskContextFactoryTest {
     assertThat(taskContext.getOutput("result1")).isNotNull();
     assertThat(taskContext.getOutput("result2")).isNotNull();
     assertThat(taskContext.hasOutput("result2")).isTrue();
+  }
+
+  @Test
+  @DisplayName("Should expose the task options of the request as task configuration")
+  void should_expose_task_options_as_task_configuration() throws IOException {
+    // Given
+    writeString("payload-id", payloadContent);
+    writeRandomBytes("name-id");
+    writeRandomBytes("age-id");
+    var dynamicRequest = request.toBuilder()
+                                .setTaskOptions(request.getTaskOptions().toBuilder()
+                                                       .putOptions("LibraryBlobId", "library-id")
+                                                       .putOptions("LibraryPath", "lib/processor.jar")
+                                                       .putOptions("Symbol", "Processor")
+                                                       .putOptions("ConventionVersion", "v1"))
+                                .build();
+
+    // When
+    var taskContext = contextFactory.create(agentStub, dynamicRequest);
+
+    // Then
+    var configuration = taskContext.taskConfiguration();
+    assertThat(configuration.partitionId()).isEqualTo("partition-id");
+    assertThat(configuration.priority()).isEqualTo(3);
+    assertThat(configuration.maxRetries()).isEqualTo(5);
+    assertThat(configuration.maxDuration()).isEqualTo(java.time.Duration.ofSeconds(10, 10));
+    assertThat(configuration.options()).containsEntry("Symbol", "Processor");
+    assertThat(taskContext.workerLibrary().blobId()).isEqualTo(BlobId.from("library-id"));
+    assertThat(taskContext.workerLibrary().symbol()).isEqualTo("Processor");
+  }
+
+  @Test
+  @DisplayName("Should raise zero retries and priority to 1 in the task configuration")
+  void should_raise_zero_retries_and_priority_to_one() {
+    // When
+    var configuration = DefaultTaskContextFactory.toTaskConfiguration(TaskOptions.newBuilder().setPartitionId("p").build());
+
+    // Then
+    assertThat(configuration.maxRetries()).isEqualTo(1);
+    assertThat(configuration.priority()).isEqualTo(1);
+    assertThat(configuration.partitionId()).isEqualTo("p");
+    assertThat(configuration.options()).isEmpty();
   }
 
 

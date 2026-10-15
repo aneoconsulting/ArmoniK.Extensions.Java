@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.api.grpc.v1.Objects.Output.Error;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerGrpc.WorkerImplBase;
 import fr.aneo.armonik.worker.ArmoniKWorker;

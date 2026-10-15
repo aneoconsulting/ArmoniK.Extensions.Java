@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.worker.domain.ArmoniKException;
 import fr.aneo.armonik.worker.domain.TaskProcessor;
 import org.slf4j.Logger;

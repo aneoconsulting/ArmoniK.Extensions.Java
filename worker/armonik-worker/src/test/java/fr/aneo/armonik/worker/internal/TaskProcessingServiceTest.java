@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
 import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.HealthCheckReply;

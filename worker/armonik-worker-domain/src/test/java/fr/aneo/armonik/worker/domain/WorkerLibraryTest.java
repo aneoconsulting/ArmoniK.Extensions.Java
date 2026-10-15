@@ -1,6 +1,5 @@
-package fr.aneo.armonik.worker.internal;
+package fr.aneo.armonik.worker.domain;
 
-import fr.aneo.armonik.worker.domain.BlobId;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -115,5 +114,36 @@ class WorkerLibraryTest {
 
     // Then
     assertThat(workerLibrary.isEmpty()).isTrue();
+  }
+
+  @Test
+  @DisplayName("should convert WorkerLibrary back to task options")
+  void should_convert_WorkerLibrary_to_task_options() {
+    // Given
+    var properties = Map.of(
+      "LibraryBlobId", "1234567890",
+      "LibraryPath", "/path/to/library",
+      "Symbol", "mySymbol",
+      "ConventionVersion", "v1"
+    );
+
+    // When - Then
+    assertThat(WorkerLibrary.from(properties).asTaskOptions()).isEqualTo(properties);
+    assertThat(WorkerLibrary.NO_WORKER_LIBRARY.asTaskOptions()).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should change only the symbol with withSymbol")
+  void should_change_only_the_symbol() {
+    // Given
+    var workerLibrary = new WorkerLibrary(BlobId.from("1234567890"), "/path/to/library", "mySymbol", "v1");
+
+    // When
+    var other = workerLibrary.withSymbol("otherSymbol");
+
+    // Then
+    assertThat(other).isEqualTo(new WorkerLibrary(BlobId.from("1234567890"), "/path/to/library", "otherSymbol", "v1"));
+    assertThatThrownBy(() -> workerLibrary.withSymbol(" ")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> WorkerLibrary.NO_WORKER_LIBRARY.withSymbol("mySymbol")).isInstanceOf(IllegalStateException.class);
   }
 }

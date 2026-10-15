@@ -1,6 +1,4 @@
-package fr.aneo.armonik.worker.internal;
-
-import fr.aneo.armonik.worker.domain.BlobId;
+package fr.aneo.armonik.worker.domain;
 
 import java.util.Map;
 import java.util.stream.Stream;
@@ -69,7 +67,8 @@ import java.util.stream.Stream;
  * @param path    the relative path to the library artifact within the ZIP
  * @param symbol  the language-specific symbol identifying the entry point class
  * @param version the SDK convention version (currently "v1")
- * @see fr.aneo.armonik.worker.internal.DynamicTaskProcessorLoader
+ * @see TaskContext#workerLibrary()
+ * @see fr.aneo.armonik.worker.domain.definition.task.TaskDefinition#withWorkerLibrary(WorkerLibrary)
  * @see <a href="https://armonik.readthedocs.io/en/latest/">ArmoniK SDK Conventions</a>
  */
 public record WorkerLibrary(
@@ -164,6 +163,53 @@ public record WorkerLibrary(
   public static final String CONVENTION_VERSION = "ConventionVersion";
 
   /**
+   * The only SDK convention version currently supported: {@value}.
+   */
+  public static final String SUPPORTED_CONVENTION_VERSION = "v1";
+
+  /**
+   * A WorkerLibrary carrying no library information.
+   * <p>
+   * Tasks without a worker library are processed by a statically configured TaskProcessor.
+   * </p>
+   */
+  public static final WorkerLibrary NO_WORKER_LIBRARY = new WorkerLibrary(null, null, null, null);
+
+  /**
+   * Returns a copy of this library pointing to another entry point of the same archive.
+   * <p>
+   * Useful in a dynamically loaded TaskProcessor that submits subtasks handled by a different
+   * class packaged in the same library.
+   * </p>
+   *
+   * @param symbol the language-specific symbol of the new entry point
+   * @return a new {@link WorkerLibrary} with the same blob, path and version
+   * @throws IllegalStateException    if this library is empty
+   * @throws IllegalArgumentException if {@code symbol} is null or blank
+   */
+  public WorkerLibrary withSymbol(String symbol) {
+    if (isEmpty()) throw new IllegalStateException("Cannot change the symbol of an empty WorkerLibrary");
+    if (isBlank(symbol)) throw new IllegalArgumentException("symbol cannot be null or blank");
+    return new WorkerLibrary(blobId, path, symbol, version);
+  }
+
+  /**
+   * Returns the task options describing this library, following the ArmoniK SDK conventions.
+   *
+   * @return a map with the keys {@value #LIBRARY_BLOB_ID}, {@value #LIBRARY_PATH}, {@value #SYMBOL}
+   * and {@value #CONVENTION_VERSION}, or an empty map if this library is empty
+   */
+  public Map<String, String> asTaskOptions() {
+    if (isEmpty()) return Map.of();
+    return Map.of(
+      LIBRARY_BLOB_ID, blobId.asString(),
+      LIBRARY_PATH, path,
+      SYMBOL, symbol,
+      CONVENTION_VERSION, version
+    );
+  }
+
+  /**
    * Checks if this WorkerLibrary instance contains no library information.
    * <p>
    * A library is considered empty if all its components (blobId, path, symbol, version)
@@ -204,7 +250,7 @@ public record WorkerLibrary(
         !properties.containsKey(LIBRARY_PATH) &&
         !properties.containsKey(SYMBOL) &&
         !properties.containsKey(CONVENTION_VERSION))) {
-      return new WorkerLibrary(null, null, null, null);
+      return NO_WORKER_LIBRARY;
     }
     validateProperties(properties);
 
@@ -235,7 +281,7 @@ public record WorkerLibrary(
     if (!missing.isEmpty())
       throw new IllegalArgumentException("Incomplete Worker Library information. Missing keys: " + String.join(", ", missing));
 
-    if (!properties.get(CONVENTION_VERSION).equals("v1"))
+    if (!properties.get(CONVENTION_VERSION).equals(SUPPORTED_CONVENTION_VERSION))
       throw new IllegalArgumentException("Wrong ConventionVersion. Supported version: 'v1', actual: " + properties.get(CONVENTION_VERSION));
   }
 

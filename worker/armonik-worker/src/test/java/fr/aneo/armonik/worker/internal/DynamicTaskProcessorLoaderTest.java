@@ -1,5 +1,6 @@
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.worker.domain.ArmoniKException;
 import fr.aneo.armonik.worker.domain.TaskOutcome;
 import org.junit.AssumptionViolatedException;

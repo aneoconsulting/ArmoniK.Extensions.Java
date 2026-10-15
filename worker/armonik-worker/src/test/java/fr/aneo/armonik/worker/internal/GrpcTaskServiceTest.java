@@ -19,6 +19,7 @@ import fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc;
 import fr.aneo.armonik.worker.domain.BlobId;
 import fr.aneo.armonik.worker.domain.SessionId;
 import fr.aneo.armonik.worker.domain.TaskConfiguration;
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.worker.testutils.AgentGrpcMock;
 import fr.aneo.armonik.worker.testutils.InProcessGrpcTestBase;
 import io.grpc.BindableService;
@@ -81,5 +82,42 @@ class GrpcTaskServiceTest extends InProcessGrpcTestBase {
     assertThat(taskCreation.taskOptions().getMaxRetries()).isEqualTo(2);
     assertThat(taskCreation.taskOptions().getPartitionId()).isEqualTo("custom-partition");
     assertThat(taskCreation.taskOptions().getOptionsMap()).containsEntry("custom-key", "custom-value");
+  }
+
+  @Test
+  @DisplayName("should add the worker library blob to the data dependencies")
+  void should_add_worker_library_blob_to_data_dependencies() {
+    // Given
+    var inputIds = List.of(BlobId.from("input1-id"));
+    var outputIds = List.of(BlobId.from("output1-id"));
+    var taskConfig = new TaskConfiguration(2, 5, "dynamic", Duration.ofMinutes(10), Map.of(
+      WorkerLibrary.LIBRARY_BLOB_ID, "library-id",
+      WorkerLibrary.LIBRARY_PATH, "lib/processor.jar",
+      WorkerLibrary.SYMBOL, "Processor",
+      WorkerLibrary.CONVENTION_VERSION, "v1"
+    ));
+
+    // When
+    taskService.submitTask(inputIds, outputIds, BlobId.from("payload-id"), taskConfig).toCompletableFuture().join();
+
+    // Then
+    var taskCreation = agentGrpcMock.submittedTasks.taskCreations().get(0);
+    assertThat(taskCreation.dataDependencies()).containsExactly("input1-id", "library-id");
+    assertThat(taskCreation.taskOptions().getOptionsMap()).containsEntry(WorkerLibrary.LIBRARY_BLOB_ID, "library-id");
+  }
+
+  @Test
+  @DisplayName("should not duplicate the worker library blob already in the inputs")
+  void should_not_duplicate_worker_library_blob_already_in_inputs() {
+    // Given
+    var inputIds = List.of(BlobId.from("library-id"));
+    var outputIds = List.of(BlobId.from("output1-id"));
+    var taskConfig = new TaskConfiguration(2, 5, "dynamic", Duration.ofMinutes(10), Map.of(WorkerLibrary.LIBRARY_BLOB_ID, "library-id"));
+
+    // When
+    taskService.submitTask(inputIds, outputIds, BlobId.from("payload-id"), taskConfig).toCompletableFuture().join();
+
+    // Then
+    assertThat(agentGrpcMock.submittedTasks.taskCreations().get(0).dataDependencies()).containsExactly("library-id");
   }
 }

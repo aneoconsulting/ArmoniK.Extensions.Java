@@ -53,7 +53,8 @@ import java.util.Map;
  *
  * <h2>Eviction</h2>
  * <p>
- * The cache holds at most {@code capacity} libraries. When full, the least recently used library
+ * The cache holds at most {@code capacity} libraries, read from the environment variable
+ * {@value #ENV_CACHE_CAPACITY} (default {@value #DEFAULT_CAPACITY}). When full, the least recently used library
  * is closed: its ClassLoader is closed and its extraction directory deleted. {@link #close()}
  * releases all cached libraries.
  * </p>
@@ -73,13 +74,21 @@ public final class DynamicTaskProcessorLoader implements AutoCloseable {
    */
   public static final int DEFAULT_CAPACITY = 4;
 
+  /**
+   * Environment variable setting the maximum number of cached libraries: {@value}.
+   */
+  public static final String ENV_CACHE_CAPACITY = "ARMONIK_WORKER_LIBRARY_CACHE_CAPACITY";
+
   private final Map<LibraryKey, LoadedLibrary> libraries;
 
   /**
-   * Creates a loader caching at most {@link #DEFAULT_CAPACITY} libraries.
+   * Creates a loader whose capacity is read from {@value #ENV_CACHE_CAPACITY}.
+   * <p>
+   * If the variable is unset, not an integer, or lower than 1, {@link #DEFAULT_CAPACITY} is used.
+   * </p>
    */
   public DynamicTaskProcessorLoader() {
-    this(DEFAULT_CAPACITY);
+    this(capacityFromEnvironment());
   }
 
   /**
@@ -133,6 +142,27 @@ public final class DynamicTaskProcessorLoader implements AutoCloseable {
     logger.info("Closing {} cached libraries", libraries.size());
     libraries.values().forEach(LoadedLibrary::close);
     libraries.clear();
+  }
+
+  static int capacityFromEnvironment() {
+    var envValue = System.getenv(ENV_CACHE_CAPACITY);
+    if (envValue == null || envValue.isBlank()) {
+      logger.debug("Using default library cache capacity: {}", DEFAULT_CAPACITY);
+      return DEFAULT_CAPACITY;
+    }
+
+    try {
+      var capacity = Integer.parseInt(envValue.trim());
+      if (capacity < 1) {
+        logger.warn("Invalid library cache capacity in {}: {} (must be at least 1). Using default: {}", ENV_CACHE_CAPACITY, envValue, DEFAULT_CAPACITY);
+        return DEFAULT_CAPACITY;
+      }
+      logger.info("Using configured library cache capacity: {}", capacity);
+      return capacity;
+    } catch (NumberFormatException e) {
+      logger.warn("Invalid number format for {}: {}. Using default: {}", ENV_CACHE_CAPACITY, envValue, DEFAULT_CAPACITY);
+      return DEFAULT_CAPACITY;
+    }
   }
 
   synchronized int cachedLibraryCount() {

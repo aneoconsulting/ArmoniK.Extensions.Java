@@ -13,6 +13,7 @@ import javax.tools.ToolProvider;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -21,6 +22,7 @@ import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static uk.org.webcompere.systemstubs.SystemStubs.withEnvironmentVariables;
 
 class DynamicTaskProcessorLoaderTest {
 
@@ -169,6 +171,25 @@ class DynamicTaskProcessorLoaderTest {
   @DisplayName("should reject capacity lower than 1")
   void should_reject_invalid_capacity() {
     assertThatThrownBy(() -> new DynamicTaskProcessorLoader(0)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("should read cache capacity from environment variable")
+  void should_read_capacity_from_environment() throws Exception {
+    withEnvironmentVariables(DynamicTaskProcessorLoader.ENV_CACHE_CAPACITY, "10").execute(
+      () -> assertThat(DynamicTaskProcessorLoader.capacityFromEnvironment()).isEqualTo(10)
+    );
+  }
+
+  @Test
+  @DisplayName("should use default cache capacity when environment variable is invalid")
+  void should_use_default_capacity_when_environment_is_invalid() throws Exception {
+    for (var value : List.of("", "0", "-3", "abc")) {
+      withEnvironmentVariables(DynamicTaskProcessorLoader.ENV_CACHE_CAPACITY, value).execute(
+        () -> assertThat(DynamicTaskProcessorLoader.capacityFromEnvironment()).as("value '%s'", value)
+                                                                             .isEqualTo(DynamicTaskProcessorLoader.DEFAULT_CAPACITY)
+      );
+    }
   }
 
   private static WorkerLibrary libraryFor(Path zipFile, String symbol) {

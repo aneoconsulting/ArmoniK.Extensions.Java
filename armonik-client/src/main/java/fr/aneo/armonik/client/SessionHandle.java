@@ -123,6 +123,33 @@ public final class SessionHandle {
   }
 
   /**
+   * Submits several tasks for execution within this session, sharing the gRPC calls between them.
+   * <p>
+   * Each definition is handled as in {@link #submitTask(TaskDefinition)}, but the blob metadata of
+   * all tasks is created in batched calls, and the tasks are submitted with one call per 1000 tasks
+   * instead of one call per task. Input data is still uploaded blob by blob.
+   * <p>
+   * Tasks submitted in the same call to the cluster succeed or fail together: if a call fails, the
+   * {@link TaskHandle#deferredTaskInfo()} of every task in it completes exceptionally.
+   *
+   * <pre>{@code
+   * var definitions = inputs.stream()
+   *                         .map(data -> new TaskDefinition().withInput("data", InputBlobDefinition.from(data))
+   *                                                          .withOutput("result"))
+   *                         .toList();
+   * List<TaskHandle> handles = session.submitTasks(definitions);
+   * }</pre>
+   *
+   * @param taskDefinitions the definitions of the tasks to submit
+   * @return one handle per definition, in the order of {@code taskDefinitions}
+   * @throws NullPointerException if {@code taskDefinitions} is null or contains null
+   * @see #submitTask(TaskDefinition)
+   */
+  public List<TaskHandle> submitTasks(List<TaskDefinition> taskDefinitions) {
+    return taskSubmitter.submitAll(taskDefinitions);
+  }
+
+  /**
    * Blocks until all currently pending task outputs are completed and the configured
    * task output listener has been invoked for each of them.
    * <p>

@@ -19,7 +19,8 @@ import fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse.TaskInf
 import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
 import io.grpc.stub.StreamObserver;
 
-import java.util.UUID;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest;
@@ -28,14 +29,16 @@ import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse;
 public class TasksGrpcMock extends TasksGrpc.TasksImplBase {
 
   public SubmitTasksRequest submittedTasksRequest;
+  public final List<SubmitTasksRequest> submitTasksRequests = new CopyOnWriteArrayList<>();
 
   @Override
   public void submitTasks(SubmitTasksRequest request, StreamObserver<SubmitTasksResponse> responseObserver) {
     SubmitTasksResponse.Builder builder = SubmitTasksResponse.newBuilder();
     submittedTasksRequest = request;
+    submitTasksRequests.add(request);
     IntStream.range(0, request.getTaskCreationsCount()).forEach(index ->
       builder.addTaskInfos(TaskInfo.newBuilder()
-                                   .setTaskId(UUID.randomUUID().toString())
+                                   .setTaskId("task-" + request.getTaskCreations(index).getPayloadId())
                                    .setPayloadId(request.getTaskCreations(index).getPayloadId())
                                    .addAllDataDependencies(request.getTaskCreations(index).getDataDependenciesList())
                                    .addAllExpectedOutputIds(request.getTaskCreations(index).getExpectedOutputKeysList()))

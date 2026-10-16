@@ -20,6 +20,7 @@ import fr.aneo.armonik.worker.domain.BlobId;
 import fr.aneo.armonik.worker.domain.SessionId;
 import fr.aneo.armonik.worker.domain.TaskConfiguration;
 import fr.aneo.armonik.worker.domain.WorkerLibrary;
+import fr.aneo.armonik.worker.domain.internal.TaskSubmission;
 import fr.aneo.armonik.worker.testutils.AgentGrpcMock;
 import fr.aneo.armonik.worker.testutils.InProcessGrpcTestBase;
 import io.grpc.BindableService;
@@ -30,8 +31,10 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class GrpcTaskServiceTest extends InProcessGrpcTestBase {
 
@@ -119,5 +122,53 @@ class GrpcTaskServiceTest extends InProcessGrpcTestBase {
 
     // Then
     assertThat(agentGrpcMock.submittedTasks.taskCreations().get(0).dataDependencies()).containsExactly("library-id");
+  }
+
+  @Test
+  @DisplayName("should submit several tasks in one request and return task infos in order")
+  void should_submit_several_tasks_in_one_request() {
+    // Given
+    var submissions = IntStream.range(0, 3).mapToObj(GrpcTaskServiceTest::submission).toList();
+
+    // When
+    var taskInfos = taskService.submitTasks(submissions).stream().map(stage -> stage.toCompletableFuture().join()).toList();
+
+    // Then
+    assertThat(agentGrpcMock.submitTasksCalls).isEqualTo(1);
+    assertThat(agentGrpcMock.submittedTasks.taskCreations()).extracting(AgentGrpcMock.CapturedTaskCreation::payloadId)
+                                                           .containsExactly("payload0", "payload1", "payload2");
+    assertThat(taskInfos).extracting(taskInfo -> taskInfo.id().asString())
+                         .containsExactly("task-payload0", "task-payload1", "task-payload2");
+  }
+
+  @Test
+  @DisplayName("should split submissions into requests of MAX_TASKS_PER_REQUEST tasks")
+  void should_split_submissions_into_groups() {
+    // Given
+    var submissions = IntStream.range(0, GrpcTaskService.MAX_TASKS_PER_REQUEST + 1).mapToObj(GrpcTaskServiceTest::submission).toList();
+
+    // When
+    var stages = taskService.submitTasks(submissions);
+
+    // Then
+    assertThat(stages).hasSize(GrpcTaskService.MAX_TASKS_PER_REQUEST + 1);
+    assertThat(stages.get(GrpcTaskService.MAX_TASKS_PER_REQUEST).toCompletableFuture().join().id().asString()).isEqualTo("task-payload1000");
+    assertThat(agentGrpcMock.submitTasksCalls).isEqualTo(2);
+  }
+
+  @Test
+  @DisplayName("should reject the whole list without calling the Agent when a submission has no output")
+  void should_reject_list_with_invalid_submission() {
+    // Given
+    var invalid = new TaskSubmission(List.of(BlobId.from("in")), List.of(), BlobId.from("payload"), null);
+    var submissions = List.of(submission(0), invalid);
+
+    // When / Then
+    assertThatThrownBy(() -> taskService.submitTasks(submissions)).isInstanceOf(IllegalArgumentException.class);
+    assertThat(agentGrpcMock.submitTasksCalls).isZero();
+  }
+
+  private static TaskSubmission submission(int i) {
+    return new TaskSubmission(List.of(BlobId.from("in" + i)), List.of(BlobId.from("out" + i)), BlobId.from("payload" + i), null);
   }
 }

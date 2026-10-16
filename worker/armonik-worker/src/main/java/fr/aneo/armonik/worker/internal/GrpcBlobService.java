@@ -27,9 +27,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.*;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
@@ -51,6 +52,20 @@ import static java.util.stream.Collectors.toMap;
  * <ul>
  *   <li><strong>Inline upload</strong>: For small blobs (≤ 4 MB), data is sent directly via RPC</li>
  *   <li><strong>File-based upload</strong>: For large blobs (> 4 MB) or streams, data is written to shared folder</li>
+ * </ul>
+ *
+ * <h2>Grouped Agent Calls</h2>
+ * <p>
+ * Each call to {@link #createBlobs(Map)} or {@link #prepareBlobs(Map)} sends as few Agent requests
+ * as possible:
+ * </p>
+ * <ul>
+ *   <li>Inline blobs are packed into {@code CreateResults} requests holding at most
+ *       {@value #MAX_UPLOAD_SIZE} bytes of data and {@value #MAX_BLOBS_PER_REQUEST} blobs
+ *       (first-fit decreasing)</li>
+ *   <li>Metadata is created with one {@code CreateResultsMetaData} request per
+ *       {@value #MAX_BLOBS_PER_REQUEST} blobs</li>
+ *   <li>An empty map sends no request</li>
  * </ul>
  *
  * <h2>Metadata Preparation (prepareBlobs)</h2>
@@ -77,6 +92,11 @@ final class GrpcBlobService implements BlobService {
   private static final Logger logger = LoggerFactory.getLogger(GrpcBlobService.class);
 
   static final int MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
+
+  /**
+   * Maximum number of blobs in one {@code CreateResults} or {@code CreateResultsMetaData} request: {@value}.
+   */
+  static final int MAX_BLOBS_PER_REQUEST = 1000;
 
   private final AgentFutureStub agentFutureStub;
   private final BlobFileWriter blobFileWriter;
@@ -200,28 +220,27 @@ final class GrpcBlobService implements BlobService {
 
     logger.debug("Preparing {} blob metadata", blobDefinitions.size());
     var entries = new ArrayList<>(blobDefinitions.entrySet());
-    var metadata = entries.stream()
+    var result = new HashMap<String, BlobHandle>(entries.size());
+    for (int start = 0; start < entries.size(); start += MAX_BLOBS_PER_REQUEST) {
+      var group = entries.subList(start, Math.min(start + MAX_BLOBS_PER_REQUEST, entries.size()));
+      var metadata = group.stream()
                           .map(entry -> CreateResultsMetaDataRequest.ResultCreate.newBuilder()
                                                                                  .setName(entry.getValue().name())
                                                                                  .build())
                           .toList();
-    var request = CreateResultsMetaDataRequest.newBuilder()
-                                              .setCommunicationToken(communicationToken)
-                                              .setSessionId(sessionId.asString())
-                                              .addAllResults(metadata)
-                                              .build();
+      var request = CreateResultsMetaDataRequest.newBuilder()
+                                                .setCommunicationToken(communicationToken)
+                                                .setSessionId(sessionId.asString())
+                                                .addAllResults(metadata)
+                                                .build();
 
-    var response = Futures.toCompletionStage(agentFutureStub.createResultsMetaData(request));
-
-    var deferredBlobInfos = IntStream.range(0, entries.size())
-                                     .mapToObj(i -> response.thenApply(r -> toBlobInfo(r.getResults(i))))
-                                     .toList();
-
-    var result = new HashMap<String, BlobHandle>(entries.size());
-    IntStream.range(0, entries.size()).forEach(i -> {
-      var entry = entries.get(i);
-      result.put(entry.getKey(), new BlobHandle(entry.getValue().name(), deferredBlobInfos.get(i)));
-    });
+      var response = Futures.toCompletionStage(agentFutureStub.createResultsMetaData(request));
+      for (int i = 0; i < group.size(); i++) {
+        var index = i;
+        var entry = group.get(i);
+        result.put(entry.getKey(), new BlobHandle(entry.getValue().name(), response.thenApply(r -> toBlobInfo(r.getResults(index)))));
+      }
+    }
 
     logger.info("Prepared {} blob metadata", result.size());
     return result;
@@ -241,12 +260,56 @@ final class GrpcBlobService implements BlobService {
    * </p>
    */
   private Map<String, BlobHandle> uploadBlobs(Map<String, InputBlobDefinition> uploadableBlobs) {
-    return uploadableBlobs.entrySet()
-                          .stream()
-                          .collect(toMap(
-                            Map.Entry::getKey,
-                            entry -> uploadBlob((InMemoryBlobDefinition) entry.getValue())
-                          ));
+    var result = new HashMap<String, BlobHandle>(uploadableBlobs.size());
+    for (var group : packBySize(uploadableBlobs)) {
+      var request = CreateResultsRequest.newBuilder()
+                                        .setCommunicationToken(communicationToken)
+                                        .setSessionId(sessionId.asString())
+                                        .addAllResults(group.stream().map(entry -> toResultCreate(entry.getValue())).toList())
+                                        .build();
+      logger.debug("Uploading {} blobs inline in one request", group.size());
+
+      var response = Futures.toCompletionStage(agentFutureStub.createResults(request));
+      for (int i = 0; i < group.size(); i++) {
+        var index = i;
+        var entry = group.get(i);
+        result.put(entry.getKey(), new BlobHandle(entry.getValue().name(), response.thenApply(r -> toBlobInfo(r.getResults(index)))));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Groups inline blobs into requests with first-fit decreasing: blobs are sorted by decreasing size,
+   * and each goes into the first group with room for it, or into a new group.
+   */
+  static List<List<Map.Entry<String, InMemoryBlobDefinition>>> packBySize(Map<String, InputBlobDefinition> uploadableBlobs) {
+    var sorted = uploadableBlobs.entrySet()
+                                .stream()
+                                .map(entry -> Map.entry(entry.getKey(), (InMemoryBlobDefinition) entry.getValue()))
+                                .sorted(Comparator.comparingInt((Map.Entry<String, InMemoryBlobDefinition> entry) -> entry.getValue().data().length).reversed())
+                                .toList();
+
+    var groups = new ArrayList<List<Map.Entry<String, InMemoryBlobDefinition>>>();
+    var groupSizes = new ArrayList<Long>();
+    for (var entry : sorted) {
+      var size = entry.getValue().data().length;
+      int target = -1;
+      for (int g = 0; g < groups.size(); g++) {
+        if (groups.get(g).size() < MAX_BLOBS_PER_REQUEST && groupSizes.get(g) + size <= MAX_UPLOAD_SIZE) {
+          target = g;
+          break;
+        }
+      }
+      if (target < 0) {
+        groups.add(new ArrayList<>());
+        groupSizes.add(0L);
+        target = groups.size() - 1;
+      }
+      groups.get(target).add(entry);
+      groupSizes.set(target, groupSizes.get(target) + size);
+    }
+    return groups;
   }
 
   /**
@@ -270,25 +333,13 @@ final class GrpcBlobService implements BlobService {
                                        ));
   }
 
-  /**
-   * Uploads a small in-memory blob inline via CreateResults RPC.
-   */
-  private BlobHandle uploadBlob(InMemoryBlobDefinition blob) {
-    var resultCreate = CreateResultsRequest.ResultCreate.newBuilder()
-                                                        .setName(blob.name())
-                                                        .setData(UnsafeByteOperations.unsafeWrap(blob.data()))
-                                                        .build();
-    var request = CreateResultsRequest.newBuilder()
-                                      .setCommunicationToken(communicationToken)
-                                      .setSessionId(sessionId.asString())
-                                      .addResults(resultCreate)
-                                      .build();
-
-    var deferredBlobInfo = Futures.toCompletionStage(agentFutureStub.createResults(request))
-                                  .thenApply(response -> toBlobInfo(response.getResults(0)));
-
-    return new BlobHandle(blob.name(), deferredBlobInfo);
+  private static CreateResultsRequest.ResultCreate toResultCreate(InMemoryBlobDefinition blob) {
+    return CreateResultsRequest.ResultCreate.newBuilder()
+                                            .setName(blob.name())
+                                            .setData(UnsafeByteOperations.unsafeWrap(blob.data()))
+                                            .build();
   }
+
 
   /**
    * Converts gRPC result metadata to domain blob info.

@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.worker.internal;
 
+import fr.aneo.armonik.worker.domain.WorkerLibrary;
 import fr.aneo.armonik.worker.domain.ArmoniKException;
 import fr.aneo.armonik.worker.domain.TaskProcessor;
 import org.slf4j.Logger;
@@ -25,57 +26,167 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
- * Loads TaskProcessor implementations dynamically from ZIP files.
+ * Loads TaskProcessor implementations dynamically from ZIP files, caching the loaded libraries.
  * <p>
- * This loader orchestrates the complete dynamic loading process:
+ * The first time a library is requested, the loader:
  * </p>
  * <ol>
  *   <li>Locates the library ZIP file in the shared data folder</li>
  *   <li>Extracts the ZIP to a temporary directory</li>
  *   <li>Locates the JAR file within the extracted files</li>
  *   <li>Creates a URLClassLoader for the JAR</li>
- *   <li>Loads the TaskProcessor class</li>
- *   <li>Instantiates the TaskProcessor</li>
- *   <li>Returns a LoadedTaskProcessor for cleanup management</li>
  * </ol>
+ * <p>
+ * The extraction directory and the ClassLoader are then cached, keyed by the library blob ID and
+ * JAR path. A blob is immutable once completed, so a cached entry never becomes stale. Later tasks
+ * using the same library skip the extraction and reuse the already loaded classes.
+ * </p>
+ * <p>
+ * Each call to {@link #load(WorkerLibrary, Path)} creates a new TaskProcessor instance, so no
+ * instance state is shared between tasks. Static state of the library classes is shared, since
+ * they are loaded once per cached library.
+ * </p>
+ *
+ * <h2>Eviction</h2>
+ * <p>
+ * The cache holds at most {@code capacity} libraries, read from the environment variable
+ * {@value #ENV_CACHE_CAPACITY} (default {@value #DEFAULT_CAPACITY}). When full, the least recently used library
+ * is closed: its ClassLoader is closed and its extraction directory deleted. {@link #close()}
+ * releases all cached libraries.
+ * </p>
  *
  * <h2>Thread Safety</h2>
  * <p>
- * This class is stateless and thread-safe.
+ * This class is thread-safe. Eviction assumes that a library is not in use by an in-flight task
+ * when it becomes the least recently used one, which holds as long as the number of concurrent
+ * tasks does not exceed the capacity. The Agent sends one task at a time to a worker.
  * </p>
  */
-public final class DynamicTaskProcessorLoader {
+public final class DynamicTaskProcessorLoader implements AutoCloseable {
   private static final Logger logger = LoggerFactory.getLogger(DynamicTaskProcessorLoader.class);
 
   /**
-   * Loads a TaskProcessor from a library ZIP file.
+   * Default maximum number of cached libraries: {@value}.
+   */
+  public static final int DEFAULT_CAPACITY = 4;
+
+  /**
+   * Environment variable setting the maximum number of cached libraries: {@value}.
+   */
+  public static final String ENV_CACHE_CAPACITY = "ARMONIK_WORKER_LIBRARY_CACHE_CAPACITY";
+
+  private final Map<LibraryKey, LoadedLibrary> libraries;
+
+  /**
+   * Creates a loader whose capacity is read from {@value #ENV_CACHE_CAPACITY}.
+   * <p>
+   * If the variable is unset, not an integer, or lower than 1, {@link #DEFAULT_CAPACITY} is used.
+   * </p>
+   */
+  public DynamicTaskProcessorLoader() {
+    this(capacityFromEnvironment());
+  }
+
+  /**
+   * Creates a loader caching at most {@code capacity} libraries.
+   *
+   * @param capacity maximum number of cached libraries; must be at least 1
+   * @throws IllegalArgumentException if {@code capacity} is less than 1
+   */
+  public DynamicTaskProcessorLoader(int capacity) {
+    if (capacity < 1) throw new IllegalArgumentException("capacity must be at least 1, actual: " + capacity);
+    this.libraries = new LinkedHashMap<>(16, 0.75f, true) {
+      @Override
+      protected boolean removeEldestEntry(Map.Entry<LibraryKey, LoadedLibrary> eldest) {
+        if (size() <= capacity) return false;
+        logger.info("Evicting library from cache: blobId={}, path={}", eldest.getKey().blobId(), eldest.getKey().path());
+        eldest.getValue().close();
+        return true;
+      }
+    };
+  }
+
+  /**
+   * Creates a new TaskProcessor instance from a library, loading the library if it is not cached.
    *
    * @param library    the library metadata containing blob ID, JAR path, and class name
-   * @param dataFolder the shared data folder containing the library ZIP file
-   * @return a LoadedTaskProcessor wrapping the taskProcessor and its resources
+   * @param dataFolder the shared data folder containing the library ZIP file; only read when
+   *                   the library is not cached
+   * @return a new TaskProcessor instance
    * @throws ArmoniKException if loading fails at any step
    */
-  LoadedTaskProcessor load(WorkerLibrary library, Path dataFolder) {
-    logger.info("Loading TaskProcessor: blobId={}, symbol={}", library.blobId(), library.symbol());
+  synchronized TaskProcessor load(WorkerLibrary library, Path dataFolder) {
+    var key = new LibraryKey(library.blobId().asString(), library.path());
+    var loadedLibrary = libraries.get(key);
+    if (loadedLibrary == null) {
+      loadedLibrary = loadLibrary(library, dataFolder);
+      libraries.put(key, loadedLibrary);
+    } else {
+      logger.info("Using cached library: blobId={}, path={}", key.blobId(), key.path());
+    }
+
+    var taskProcessor = loadTaskProcessor(loadedLibrary.classLoader(), library.symbol());
+    logger.info("TaskProcessor loaded: {}", library.symbol());
+    return taskProcessor;
+  }
+
+  /**
+   * Closes all cached libraries and empties the cache.
+   */
+  @Override
+  public synchronized void close() {
+    logger.info("Closing {} cached libraries", libraries.size());
+    libraries.values().forEach(LoadedLibrary::close);
+    libraries.clear();
+  }
+
+  static int capacityFromEnvironment() {
+    var envValue = System.getenv(ENV_CACHE_CAPACITY);
+    if (envValue == null || envValue.isBlank()) {
+      logger.debug("Using default library cache capacity: {}", DEFAULT_CAPACITY);
+      return DEFAULT_CAPACITY;
+    }
 
     try {
+      var capacity = Integer.parseInt(envValue.trim());
+      if (capacity < 1) {
+        logger.warn("Invalid library cache capacity in {}: {} (must be at least 1). Using default: {}", ENV_CACHE_CAPACITY, envValue, DEFAULT_CAPACITY);
+        return DEFAULT_CAPACITY;
+      }
+      logger.info("Using configured library cache capacity: {}", capacity);
+      return capacity;
+    } catch (NumberFormatException e) {
+      logger.warn("Invalid number format for {}: {}. Using default: {}", ENV_CACHE_CAPACITY, envValue, DEFAULT_CAPACITY);
+      return DEFAULT_CAPACITY;
+    }
+  }
+
+  synchronized int cachedLibraryCount() {
+    return libraries.size();
+  }
+
+  private LoadedLibrary loadLibrary(WorkerLibrary library, Path dataFolder) {
+    logger.info("Loading library: blobId={}, path={}", library.blobId(), library.path());
+
+    Path extractionDir = null;
+    URLClassLoader classLoader = null;
+    try {
       var zipFile = locateLibraryBlob(library, dataFolder);
-      var extractionDir = createTempDirectory(library);
+      extractionDir = createTempDirectory(library);
 
       ZipExtractor.extract(zipFile, extractionDir);
 
       var jarFile = locateJar(extractionDir, library);
-      var classLoader = createClassLoader(jarFile);
-      var taskProcessor = loadTaskProcessor(classLoader, library.symbol());
+      classLoader = createClassLoader(jarFile);
+      return new LoadedLibrary(classLoader, extractionDir);
 
-      logger.info("TaskProcessor loaded: {}", library.symbol());
-      return new LoadedTaskProcessor(taskProcessor, classLoader, extractionDir);
-
-    } catch (ArmoniKException exception) {
-      throw exception;
     } catch (Exception e) {
+      if (extractionDir != null) new LoadedLibrary(classLoader, extractionDir).close();
+      if (e instanceof ArmoniKException armoniKException) throw armoniKException;
       throw new ArmoniKException("Failed to load TaskProcessor: " + e.getMessage(), e);
     }
   }
@@ -126,8 +237,13 @@ public final class DynamicTaskProcessorLoader {
       throw new ArmoniKException("TaskProcessor class not found: " + symbol, e);
     } catch (NoSuchMethodException e) {
       throw new ArmoniKException("TaskProcessor must have no-arg constructor: " + symbol, e);
+    } catch (ArmoniKException e) {
+      throw e;
     } catch (Exception e) {
       throw new ArmoniKException("Failed to instantiate TaskProcessor: " + e.getMessage(), e);
     }
+  }
+
+  private record LibraryKey(String blobId, String path) {
   }
 }

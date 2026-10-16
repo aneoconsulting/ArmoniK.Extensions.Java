@@ -88,6 +88,18 @@ import static java.util.stream.Collectors.toMap;
  * // Parent doesn't write to resultOutput - subtask will produce it
  * }</pre>
  *
+ * <h2>Subtasks of a Dynamically Loaded TaskProcessor</h2>
+ * <p>
+ * A TaskProcessor loaded from a worker library must set a library on its subtasks, otherwise the
+ * dynamic-loading worker cannot process them. {@link #workerLibrary()} returns the current one:
+ * </p>
+ * <pre>{@code
+ * var subtask = new TaskDefinition()
+ *     .withInput("config", configInput)
+ *     .withOutput("result", resultOutput)
+ *     .withWorkerLibrary(taskContext.workerLibrary());
+ * }</pre>
+ *
  * <h2>Asynchronous Operations</h2>
  * <p>
  * Task submission and blob creation are asynchronous. The {@link #awaitCompletion()} method,
@@ -115,6 +127,7 @@ public class TaskContext {
   private final SessionId sessionId;
   private final Map<String, TaskInput> inputs;
   private final Map<String, TaskOutput> outputs;
+  private final TaskConfiguration taskConfiguration;
   private final Queue<CompletionStage<?>> pendingOperations = new ConcurrentLinkedQueue<>();
 
   /**
@@ -130,6 +143,7 @@ public class TaskContext {
    * @param sessionId         the session identifier; must not be {@code null}
    * @param inputs            map of input names to input tasks; must not be {@code null}
    * @param outputs           map of output names to output tasks; must not be {@code null}
+   * @param taskConfiguration the configuration of the task being processed; must not be {@code null}
    * @throws NullPointerException if any parameter is {@code null}
    */
   public TaskContext(BlobService blobService,
@@ -137,13 +151,36 @@ public class TaskContext {
                      PayloadSerializer payloadSerializer,
                      SessionId sessionId,
                      Map<String, TaskInput> inputs,
-                     Map<String, TaskOutput> outputs) {
+                     Map<String, TaskOutput> outputs,
+                     TaskConfiguration taskConfiguration) {
     this.blobService = requireNonNull(blobService, "blobService cannot be null");
     this.taskService = requireNonNull(taskService, "taskService cannot be null");
     this.payloadSerializer = requireNonNull(payloadSerializer, "payloadSerializer cannot be null");
     this.sessionId = requireNonNull(sessionId, "sessionId cannot be null");
     this.inputs = requireNonNull(inputs, "inputs cannot be null");
     this.outputs = requireNonNull(outputs, "outputs cannot be null");
+    this.taskConfiguration = requireNonNull(taskConfiguration, "taskConfiguration cannot be null");
+  }
+
+  /**
+   * Creates a task context whose task configuration is {@link TaskConfiguration#defaultConfiguration()}.
+   *
+   * @param blobService       the blob service for managing task data; must not be {@code null}
+   * @param taskService       the task service for submitting subtasks; must not be {@code null}
+   * @param payloadSerializer the serializer for payload encoding/decoding; must not be {@code null}
+   * @param sessionId         the session identifier; must not be {@code null}
+   * @param inputs            map of input names to input tasks; must not be {@code null}
+   * @param outputs           map of output names to output tasks; must not be {@code null}
+   * @throws NullPointerException if any parameter is {@code null}
+   * @see #TaskContext(BlobService, TaskService, PayloadSerializer, SessionId, Map, Map, TaskConfiguration)
+   */
+  public TaskContext(BlobService blobService,
+                     TaskService taskService,
+                     PayloadSerializer payloadSerializer,
+                     SessionId sessionId,
+                     Map<String, TaskInput> inputs,
+                     Map<String, TaskOutput> outputs) {
+    this(blobService, taskService, payloadSerializer, sessionId, inputs, outputs, TaskConfiguration.defaultConfiguration());
   }
 
   /**
@@ -153,6 +190,34 @@ public class TaskContext {
    */
   public SessionId sessionId() {
     return sessionId;
+  }
+
+  /**
+   * Returns the configuration of the task being processed, as received from the Agent.
+   * <p>
+   * Its options include the worker library keys when the task runs on a dynamic-loading worker.
+   * </p>
+   *
+   * @return the non-null configuration of the current task
+   */
+  public TaskConfiguration taskConfiguration() {
+    return taskConfiguration;
+  }
+
+  /**
+   * Returns the worker library processing the current task.
+   * <p>
+   * In a dynamically loaded TaskProcessor, pass it to
+   * {@link TaskDefinition#withWorkerLibrary(WorkerLibrary)} so that subtasks are processed by the
+   * same library, or derive another entry point with {@link WorkerLibrary#withSymbol(String)}.
+   * </p>
+   *
+   * @return the current worker library, or {@link WorkerLibrary#NO_WORKER_LIBRARY} when the task
+   * is processed by a statically configured TaskProcessor
+   * @throws IllegalArgumentException if the task options hold incomplete library information
+   */
+  public WorkerLibrary workerLibrary() {
+    return WorkerLibrary.from(taskConfiguration.options());
   }
 
   /**
@@ -296,6 +361,13 @@ public class TaskContext {
    *   <li>The task is submitted to the Agent with all dependencies</li>
    * </ol>
    *
+   * <h4>Worker Library</h4>
+   * <p>
+   * If the definition has a worker library, its options are merged into the task configuration.
+   * When the definition has no configuration, the configuration of the current task is used as
+   * a base, so the subtask keeps the current partition and retry policy.
+   * </p>
+   *
    * <h4>Asynchronous Execution</h4>
    * <p>
    * This method returns immediately with a {@link TaskHandle}. The actual task submission
@@ -314,14 +386,15 @@ public class TaskContext {
   public TaskHandle submitTask(TaskDefinition taskDefinition) {
     requireNonNull(taskDefinition, "taskDefinition cannot be null");
 
+    var configuration = effectiveConfiguration(taskDefinition);
     var allInputHandles = prepareInputHandles(taskDefinition);
     var allOutputHandles = prepareOutputHandles(taskDefinition);
 
     var deferredTaskInfo = getIdsFrom(allInputHandles).thenCombine(getIdsFrom(allOutputHandles), createPayload())
-                                                      .thenCompose(payload -> createPayloadHandle(payload).thenCompose(submitTask(taskDefinition, payload)));
+                                                      .thenCompose(payload -> createPayloadHandle(payload).thenCompose(submitTask(configuration, payload)));
     trackTaskCompletion(deferredTaskInfo);
 
-    return new TaskHandle(sessionId, taskDefinition.configuration(), deferredTaskInfo, allInputHandles, allOutputHandles);
+    return new TaskHandle(sessionId, configuration, deferredTaskInfo, allInputHandles, allOutputHandles);
   }
 
   /**
@@ -422,11 +495,22 @@ public class TaskContext {
     return blobService.createBlob(InputBlobDefinition.from("payload", payloadSerializer.serialize(payload))).deferredBlobInfo();
   }
 
-  private Function<BlobInfo, CompletionStage<TaskInfo>> submitTask(TaskDefinition taskDefinition, Payload payload) {
+  private Function<BlobInfo, CompletionStage<TaskInfo>> submitTask(TaskConfiguration configuration, Payload payload) {
     return payloadInfo -> {
       logger.debug("Submitting task to Agent with payload id: {}", payloadInfo.id());
-      return taskService.submitTask(payload.inputsMapping().values(), payload.outputsMapping().values(), payloadInfo.id(), taskDefinition.configuration());
+      return taskService.submitTask(payload.inputsMapping().values(), payload.outputsMapping().values(), payloadInfo.id(), configuration);
     };
+  }
+
+  private TaskConfiguration effectiveConfiguration(TaskDefinition taskDefinition) {
+    var workerLibrary = taskDefinition.workerLibrary();
+    if (workerLibrary.isEmpty()) return taskDefinition.configuration();
+
+    var base = taskDefinition.configuration() != null ? taskDefinition.configuration() : taskConfiguration;
+    var options = new HashMap<>(base.options());
+    options.putAll(workerLibrary.asTaskOptions());
+    logger.debug("Submitting task with worker library: symbol={}, blobId={}", workerLibrary.symbol(), workerLibrary.blobId());
+    return new TaskConfiguration(base.maxRetries(), base.priority(), base.partitionId(), base.maxDuration(), options);
   }
 
   private void trackBlobCompletions(Collection<BlobHandle> blobHandles) {

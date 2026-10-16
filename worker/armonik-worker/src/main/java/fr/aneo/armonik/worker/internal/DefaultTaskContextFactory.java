@@ -25,9 +25,12 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Function;
 
+import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
 import static fr.aneo.armonik.api.grpc.v1.worker.WorkerCommon.ProcessRequest;
 import static fr.aneo.armonik.worker.internal.PathValidator.resolveWithin;
@@ -94,8 +97,29 @@ final class DefaultTaskContextFactory implements TaskContextFactory {
     var payload = getPayload(dataFolderPath, request.getPayloadId(), payloadSerializer);
     var inputs = createInputs(payload, dataFolderPath);
     var outputs = createOutputs(payload, blobFileWriter);
+    var taskConfiguration = toTaskConfiguration(request.getTaskOptions());
 
-    return new TaskContext(blobService, taskService, payloadSerializer, sessionId, inputs, outputs);
+    return new TaskContext(blobService, taskService, payloadSerializer, sessionId, inputs, outputs, taskConfiguration);
+  }
+
+  /**
+   * Maps the task options received from the Agent to a domain {@link TaskConfiguration}.
+   * <p>
+   * {@link TaskConfiguration} requires {@code maxRetries} and {@code priority} to be at least 1,
+   * so lower values are raised to 1. They only matter when the configuration is reused for subtasks.
+   * </p>
+   */
+  static TaskConfiguration toTaskConfiguration(TaskOptions taskOptions) {
+    var maxDuration = taskOptions.hasMaxDuration()
+      ? Duration.ofSeconds(taskOptions.getMaxDuration().getSeconds(), taskOptions.getMaxDuration().getNanos())
+      : null;
+    return new TaskConfiguration(
+      Math.max(1, taskOptions.getMaxRetries()),
+      Math.max(1, taskOptions.getPriority()),
+      taskOptions.getPartitionId(),
+      maxDuration,
+      new HashMap<>(taskOptions.getOptionsMap())
+    );
   }
 
 

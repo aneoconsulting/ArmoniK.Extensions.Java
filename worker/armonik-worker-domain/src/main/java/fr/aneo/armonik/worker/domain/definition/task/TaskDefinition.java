@@ -34,6 +34,7 @@ import static java.util.stream.Collectors.toMap;
  *   <li>Input blobs - as definitions (data to upload), handles (existing data), or task inputs (parent inputs)</li>
  *   <li>Expected output blobs - names of results the task will produce</li>
  *   <li>Optional task-specific configuration</li>
+ *   <li>Optional worker library, for tasks processed by a dynamic-loading worker</li>
  * </ul>
  * <p>
  * This class uses a fluent API for building task definitions. Inputs can be provided
@@ -66,6 +67,7 @@ public class TaskDefinition {
   private final Map<String, TaskInput> taskInputs;
   private final Map<String, OutputBlobDefinition> outputDefinitions;
   private final Map<String, TaskOutput> taskOutputs;
+  private WorkerLibrary workerLibrary = WorkerLibrary.NO_WORKER_LIBRARY;
 
   /**
    * Creates a new empty task definition.
@@ -251,6 +253,45 @@ public class TaskDefinition {
    */
   public TaskDefinition withConfiguration(TaskConfiguration taskConfiguration) {
     this.configuration = taskConfiguration;
+    return this;
+  }
+
+  /**
+   * Returns the worker library that will process this task.
+   *
+   * @return the worker library, or {@link WorkerLibrary#NO_WORKER_LIBRARY} if none is set
+   * @see #withWorkerLibrary(WorkerLibrary)
+   */
+  public WorkerLibrary workerLibrary() {
+    return workerLibrary;
+  }
+
+  /**
+   * Sets the worker library that will process this task on a dynamic-loading worker.
+   * <p>
+   * On submission, the library's task options ({@value WorkerLibrary#LIBRARY_BLOB_ID},
+   * {@value WorkerLibrary#LIBRARY_PATH}, {@value WorkerLibrary#SYMBOL},
+   * {@value WorkerLibrary#CONVENTION_VERSION}) are merged into the task configuration and the
+   * library blob is added to the task's data dependencies. If no configuration is set on this
+   * definition, the configuration of the currently executing task is used as a base.
+   * </p>
+   * <p>
+   * Inside a dynamically loaded TaskProcessor, {@link TaskContext#workerLibrary()} returns the
+   * library of the running task, so subtasks can run the same code:
+   * </p>
+   * <pre>{@code
+   * new TaskDefinition().withWorkerLibrary(context.workerLibrary())
+   * }</pre>
+   *
+   * @param workerLibrary the worker library, or {@code null} to leave unchanged
+   * @return this definition for method chaining
+   * @see TaskContext#workerLibrary()
+   * @see WorkerLibrary#withSymbol(String)
+   */
+  public TaskDefinition withWorkerLibrary(WorkerLibrary workerLibrary) {
+    if (workerLibrary != null) {
+      this.workerLibrary = workerLibrary;
+    }
     return this;
   }
 
@@ -448,6 +489,7 @@ public class TaskDefinition {
       ", outputDefinitions=" + outputDefinitions.keySet() +
       ", taskOutputs=" + taskOutputs.keySet() +
       ", configuration=" + configuration +
+      ", workerLibrary=" + workerLibrary +
       ']';
   }
 }

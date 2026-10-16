@@ -15,7 +15,6 @@
  */
 package fr.aneo.armonik.worker.internal;
 
-import fr.aneo.armonik.worker.domain.TaskProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,28 +25,18 @@ import java.nio.file.Path;
 import java.util.Comparator;
 
 /**
- * Wrapper for a dynamically loaded TaskProcessor with associated resources.
+ * An extracted worker library and the ClassLoader reading its JAR.
  * <p>
- * This record holds the taskProcessor, its ClassLoader, and the temporary extraction directory.
- * When closed, it releases file handles and deletes temporary files.
+ * Instances are cached by {@link DynamicTaskProcessorLoader} and shared by all tasks using the
+ * same library. Closing releases the JAR file handles and deletes the extraction directory.
  * </p>
- *
- * <h2>Usage</h2>
- * <pre>{@code
- * try (LoadedProcessor loaded = loader.load(library, zipFile)) {
- *   TaskProcessor taskProcessor = loaded.taskProcessor();
- *   TaskOutcome outcome = taskProcessor.processTask(context);
- *   // ...
- * } // Automatic cleanup: ClassLoader closed, temp files deleted
- * }</pre>
  */
-record LoadedTaskProcessor(
-  TaskProcessor taskProcessor,
+record LoadedLibrary(
   URLClassLoader classLoader,
   Path extractionDir
 ) implements AutoCloseable {
 
-  private static final Logger logger = LoggerFactory.getLogger(LoadedTaskProcessor.class);
+  private static final Logger logger = LoggerFactory.getLogger(LoadedLibrary.class);
 
   @Override
   public void close() {
@@ -65,9 +54,10 @@ record LoadedTaskProcessor(
   }
 
   private void closeClassLoader() {
+    if (classLoader == null) return;
     try {
       classLoader.close();
-      logger.debug("ClassLoader closed for Task processor: {}", taskProcessor.getClass().getName());
+      logger.debug("ClassLoader closed for library: {}", extractionDir);
     } catch (IOException e) {
       logger.warn("Failed to close ClassLoader", e);
     }

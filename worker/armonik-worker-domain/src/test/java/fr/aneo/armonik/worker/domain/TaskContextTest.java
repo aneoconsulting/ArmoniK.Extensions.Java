@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -250,6 +251,107 @@ class TaskContextTest {
     assertThat(taskService.submissions).hasSize(2);
     assertThat(taskService.submissions.get(0).inputIds).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
     assertThat(taskService.submissions.get(1).inputIds).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
+  }
+
+  @Test
+  @DisplayName("should expose no worker library when the task configuration has none")
+  void should_expose_no_worker_library_when_task_configuration_has_none() {
+    assertThat(taskContext.taskConfiguration()).isEqualTo(TaskConfiguration.defaultConfiguration());
+    assertThat(taskContext.workerLibrary()).isEqualTo(WorkerLibrary.NO_WORKER_LIBRARY);
+  }
+
+  @Test
+  @DisplayName("should expose the worker library of the current task")
+  void should_expose_worker_library_of_current_task() {
+    // Given
+    var context = dynamicTaskContext(new TaskConfiguration(3, 2, "dynamic", Duration.ofMinutes(5), libraryOptions("Processor")));
+
+    // When
+    var workerLibrary = context.workerLibrary();
+
+    // Then
+    assertThat(workerLibrary.blobId()).isEqualTo(BlobId.from("library-id"));
+    assertThat(workerLibrary.path()).isEqualTo("lib/processor.jar");
+    assertThat(workerLibrary.symbol()).isEqualTo("Processor");
+    assertThat(workerLibrary.version()).isEqualTo("v1");
+  }
+
+  @Test
+  @DisplayName("should submit subtask with the current task configuration when only a worker library is set")
+  void should_submit_subtask_with_current_configuration_when_only_worker_library_is_set() {
+    // Given
+    var currentOptions = new HashMap<>(libraryOptions("Processor"));
+    currentOptions.put("custom", "value");
+    var currentConfig = new TaskConfiguration(3, 2, "dynamic", Duration.ofMinutes(5), currentOptions);
+    var context = dynamicTaskContext(currentConfig);
+    var taskDef = new TaskDefinition().withInput("data", blobHandle("data-id"))
+                                      .withOutput("result")
+                                      .withWorkerLibrary(context.workerLibrary().withSymbol("OtherProcessor"));
+
+    // When
+    var taskHandle = context.submitTask(taskDef);
+    context.awaitCompletion();
+
+    // Then
+    var expectedOptions = new HashMap<>(libraryOptions("OtherProcessor"));
+    expectedOptions.put("custom", "value");
+    var expectedConfig = new TaskConfiguration(3, 2, "dynamic", Duration.ofMinutes(5), expectedOptions);
+    assertThat(taskService.submissions).hasSize(1);
+    assertThat(taskService.submissions.get(0).taskConfiguration()).isEqualTo(expectedConfig);
+    assertThat(taskHandle.taskConfiguration()).isEqualTo(expectedConfig);
+  }
+
+  @Test
+  @DisplayName("should merge worker library options into the subtask configuration")
+  void should_merge_worker_library_options_into_subtask_configuration() {
+    // Given
+    var context = dynamicTaskContext(new TaskConfiguration(3, 2, "dynamic", Duration.ofMinutes(5), libraryOptions("Processor")));
+    var subtaskConfig = new TaskConfiguration(1, 7, "other", Duration.ofMinutes(1), Map.of("key", "value"));
+    var taskDef = new TaskDefinition().withInput("data", blobHandle("data-id"))
+                                      .withOutput("result")
+                                      .withConfiguration(subtaskConfig)
+                                      .withWorkerLibrary(context.workerLibrary());
+
+    // When
+    context.submitTask(taskDef);
+    context.awaitCompletion();
+
+    // Then
+    var expectedOptions = new HashMap<>(libraryOptions("Processor"));
+    expectedOptions.put("key", "value");
+    assertThat(taskService.submissions.get(0).taskConfiguration())
+      .isEqualTo(new TaskConfiguration(1, 7, "other", Duration.ofMinutes(1), expectedOptions));
+  }
+
+  @Test
+  @DisplayName("should keep the definition configuration when no worker library is set")
+  void should_keep_definition_configuration_when_no_worker_library_is_set() {
+    // Given
+    var context = dynamicTaskContext(new TaskConfiguration(3, 2, "dynamic", Duration.ofMinutes(5), libraryOptions("Processor")));
+    var taskDef = new TaskDefinition().withInput("data", blobHandle("data-id"))
+                                      .withOutput("result");
+
+    // When
+    context.submitTask(taskDef);
+    context.awaitCompletion();
+
+    // Then
+    assertThat(taskService.submissions.get(0).taskConfiguration()).isNull();
+  }
+
+  private TaskContext dynamicTaskContext(TaskConfiguration taskConfiguration) {
+    var payloadSerializer = mock(PayloadSerializer.class);
+    when(payloadSerializer.serialize(any())).thenReturn(new byte[0]);
+    return new TaskContext(blobService, taskService, payloadSerializer, SessionId.from("test-session"), Map.of(), Map.of(), taskConfiguration);
+  }
+
+  private static Map<String, String> libraryOptions(String symbol) {
+    return Map.of(
+      WorkerLibrary.LIBRARY_BLOB_ID, "library-id",
+      WorkerLibrary.LIBRARY_PATH, "lib/processor.jar",
+      WorkerLibrary.SYMBOL, symbol,
+      WorkerLibrary.CONVENTION_VERSION, "v1"
+    );
   }
 
   static class BlobServiceMock implements BlobService {

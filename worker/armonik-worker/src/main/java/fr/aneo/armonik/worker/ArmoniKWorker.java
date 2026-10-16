@@ -119,6 +119,7 @@ public class ArmoniKWorker {
   private Server server;
   private InetSocketAddress workerAddress;
   private ManagedChannel agentChannel;
+  private DynamicTaskProcessorLoader dynamicTaskProcessorLoader;
 
   /**
    * Creates a new ArmoniK Worker with the specified task processor (static mode).
@@ -179,6 +180,7 @@ public class ArmoniKWorker {
     }
 
 
+    dynamicTaskProcessorLoader = new DynamicTaskProcessorLoader();
     server = NettyServerBuilder.forAddress(workerAddress)
                                .permitKeepAliveWithoutCalls(true)
                                .permitKeepAliveTime(30, SECONDS)
@@ -189,7 +191,7 @@ public class ArmoniKWorker {
                                .addService(new TaskProcessingService(
                                  AgentGrpc.newFutureStub(agentChannel),
                                  taskProcessor,
-                                 new DynamicTaskProcessorLoader()))
+                                 dynamicTaskProcessorLoader))
                                .build();
 
     server.start();
@@ -214,6 +216,7 @@ public class ArmoniKWorker {
    *   <li>Waits up to 30 seconds for in-flight requests to complete</li>
    *   <li>Forces shutdown if graceful termination times out</li>
    *   <li>Waits an additional 5 seconds for a forced shutdown to complete</li>
+   *   <li>Releases the cached worker libraries</li>
    *   <li>Shuts down the agent channel gracefully (30csecond timeout)</li>
    *   <li>Forces agent channel shutdown if graceful termination times out (5 seconds timeout)</li>
    * </ol>
@@ -234,6 +237,10 @@ public class ArmoniKWorker {
       logger.info("gRPC worker stopped successfully.");
     } else {
       logger.debug("Shutdown requested but server was not running.");
+    }
+
+    if (dynamicTaskProcessorLoader != null) {
+      dynamicTaskProcessorLoader.close();
     }
 
     if (agentChannel != null) {

@@ -23,11 +23,13 @@ import fr.aneo.armonik.worker.domain.internal.TaskService;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
 
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.concurrent.CompletionStage;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.SubmitTasksRequest;
 import static fr.aneo.armonik.api.grpc.v1.agent.AgentGrpc.AgentFutureStub;
+import static fr.aneo.armonik.worker.domain.WorkerLibrary.LIBRARY_BLOB_ID;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -145,7 +147,8 @@ class GrpcTaskService implements TaskService {
    * </p>
    * <ul>
    *   <li>Payload ID (reference to the payload blob)</li>
-   *   <li>Data dependencies (input blob IDs as strings)</li>
+   *   <li>Data dependencies (input blob IDs as strings, plus the worker library blob if the
+   *       task options reference one, so that a dynamic-loading worker receives it)</li>
    *   <li>Expected output keys (output blob IDs as strings)</li>
    *   <li>Task options (from the provided task configuration)</li>
    * </ul>
@@ -153,16 +156,22 @@ class GrpcTaskService implements TaskService {
    * @param inputBlobIds      collection of input blob IDs; must not be {@code null}
    * @param outputBlobIds     collection of output blob IDs; must not be {@code null}
    * @param payloadId         payload blob ID; must not be {@code null}
-   * @param taskConfiguration task configuration; }
+   * @param taskConfiguration task configuration; may be {@code null}
    * @return a task creation message ready for submission; never {@code null}
    */
   private static TaskCreation toTaskCreation(Collection<BlobId> inputBlobIds,
                                              Collection<BlobId> outputBlobIds,
                                              BlobId payloadId,
                                              TaskConfiguration taskConfiguration) {
+    var dataDependencies = new LinkedHashSet<String>();
+    inputBlobIds.forEach(id -> dataDependencies.add(id.asString()));
+    if (taskConfiguration != null && taskConfiguration.options().containsKey(LIBRARY_BLOB_ID)) {
+      dataDependencies.add(taskConfiguration.options().get(LIBRARY_BLOB_ID));
+    }
+
     var builder = TaskCreation.newBuilder()
                               .setPayloadId(payloadId.asString())
-                              .addAllDataDependencies(inputBlobIds.stream().map(BlobId::asString).toList())
+                              .addAllDataDependencies(dataDependencies)
                               .addAllExpectedOutputKeys(outputBlobIds.stream().map(BlobId::asString).toList());
     if (taskConfiguration != null) {
       builder.setTaskOptions(toTaskOptions(taskConfiguration));

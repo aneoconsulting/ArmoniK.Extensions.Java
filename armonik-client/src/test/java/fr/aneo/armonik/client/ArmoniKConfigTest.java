@@ -187,4 +187,15 @@ class ArmoniKConfigTest {
                                           .build())
       .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  @DisplayName("should use default task submission batching unless configured")
+  void should_configure_task_submission_batching() {
+    var defaultConfig = ArmoniKConfig.builder().endpoint("http://localhost:5001").build();
+    var customBatching = new TaskSubmissionBatching(10, Duration.ofMillis(5));
+    var customConfig = ArmoniKConfig.builder().endpoint("http://localhost:5001").withTaskSubmissionBatching(customBatching).build();
+
+    assertThat(defaultConfig.taskSubmissionBatching()).isEqualTo(TaskSubmissionBatching.DEFAULT);
+    assertThat(customConfig.taskSubmissionBatching()).isEqualTo(customBatching);
+  }
 }

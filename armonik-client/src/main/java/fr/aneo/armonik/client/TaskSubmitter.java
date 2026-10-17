@@ -32,6 +32,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 import java.util.function.IntFunction;
@@ -97,6 +99,7 @@ final class TaskSubmitter {
   private final TaskConfiguration defaultTaskConfiguration;
   private final ChannelPool channelPool;
   private final Gson gson = new Gson();
+  private final BlobCompletionListener outputListener;
   private BlobCompletionCoordinator blobCompletionCoordinator;
 
   /**
@@ -129,6 +132,7 @@ final class TaskSubmitter {
     this.sessionId = requireNonNull(sessionId);
     this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
     this.channelPool = requireNonNull(channelPool);
+    this.outputListener = outputListener;
     if (outputListener != null) {
       this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, outputListener);
     }
@@ -200,10 +204,6 @@ final class TaskSubmitter {
                                         .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
       uploadPayload(allInputHandlesByName, allocation);
 
-      if (blobCompletionCoordinator != null) {
-        blobCompletionCoordinator.enqueue(allocation.outputHandlesByName().values().stream().toList());
-      }
-
       var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
       var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
       var payloadIdStage = allocation.payloadHandle.deferredBlobInfo().thenApply(BlobInfo::id);
@@ -230,6 +230,7 @@ final class TaskSubmitter {
         allInputHandles.get(i),
         allocations.get(i).outputHandlesByName()
       ));
+      watchOutputsOnceSubmitted(deferredTaskInfos.get(i), allocations.get(i).outputHandlesByName().values());
     }
     return taskHandles;
   }
@@ -255,6 +256,45 @@ final class TaskSubmitter {
       return blobCompletionCoordinator.waitUntilIdle();
     } else  {
       return completedFuture(null);
+    }
+  }
+
+  /**
+   * Watches the outputs of a task once the cluster has accepted the task. If the submission fails,
+   * no task will ever produce the outputs, so they are reported to the listener as failed instead
+   * of being watched. Until then, the coordinator counts them as in flight, so
+   * {@link #waitUntilFinished()} waits for the submission.
+   */
+  private void watchOutputsOnceSubmitted(CompletionStage<TaskInfo> taskInfo, Collection<BlobHandle> outputHandles) {
+    if (blobCompletionCoordinator == null || outputHandles.isEmpty()) return;
+
+    var outputs = List.copyOf(outputHandles);
+    blobCompletionCoordinator.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
+      if (ex != null) return reportFailedOutputs(outputs, ex instanceof CompletionException ? ex.getCause() : ex);
+      blobCompletionCoordinator.enqueue(outputs);
+      return completedFuture(null);
+    }));
+  }
+
+  /**
+   * Calls {@link BlobCompletionListener#onError} for each output that was created. An output whose
+   * metadata creation failed has no id to report, and its {@link BlobHandle#deferredBlobInfo()}
+   * already carries the failure.
+   */
+  private CompletionStage<Void> reportFailedOutputs(List<BlobHandle> outputs, Throwable cause) {
+    return CompletableFuture.allOf(outputs.stream()
+                                          .map(output -> output.deferredBlobInfo()
+                                                               .thenAccept(blobInfo -> notifyFailedOutput(blobInfo, cause))
+                                                               .exceptionally(ex -> null)
+                                                               .toCompletableFuture())
+                                          .toArray(CompletableFuture[]::new));
+  }
+
+  private void notifyFailedOutput(BlobInfo blobInfo, Throwable cause) {
+    try {
+      outputListener.onError(new BlobCompletionListener.BlobError(blobInfo, cause));
+    } catch (Throwable throwable) {
+      logger.error("Listener threw exception. Session id:{}, blob id:{}", sessionId.asString(), blobInfo.id().asString(), throwable);
     }
   }
 
@@ -423,7 +463,7 @@ final class TaskSubmitter {
    * @param payloadHandle       the blob handle for the task's JSON payload containing input/output mappings
    * @param inputHandlesByName  map of input blob handles keyed by their logical input names
    * @param outputHandlesByName map of output blob handles keyed by their logical output names
-   * @see #allocateBlobHandles(TaskDefinition)
+   * @see #allocateBlobHandles(List)
    */
   private record BlobHandlesAllocation(BlobHandle payloadHandle,
                                        Map<String, BlobHandle> inputHandlesByName,

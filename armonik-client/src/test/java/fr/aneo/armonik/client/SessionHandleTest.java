@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
@@ -92,6 +93,71 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     validateSubmittedTask(taskHandle, workerLibrary);
     validateSubmittedTaskOptions();
     validateTaskOutputListener(outputTaskListener);
+  }
+
+  @Test
+  @DisplayName("should submit several tasks with one metadata call and one submission call")
+  void should_submit_several_tasks_with_shared_calls() {
+    // Given
+    var definitions = IntStream.range(0, 3)
+                               .mapToObj(i -> new TaskDefinition().withInput("data", InputBlobDefinition.from(("data" + i).getBytes()))
+                                                                  .withOutput("result"))
+                               .toList();
+
+    // When
+    var handles = sessionHandle.submitTasks(definitions);
+    var taskInfos = handles.stream().map(handle -> handle.deferredTaskInfo().toCompletableFuture().join()).toList();
+
+    // Then
+    assertThat(resultsGrpcMock.metadataCalls).isEqualTo(1);
+    assertThat(resultsGrpcMock.metadataRequests).hasSize(9);
+    assertThat(taskGrpcMock.submitTasksRequests).hasSize(1);
+
+    var taskCreations = taskGrpcMock.submittedTasksRequest.getTaskCreationsList();
+    assertThat(taskCreations).hasSize(3);
+    for (int i = 0; i < 3; i++) {
+      assertThat(taskCreations.get(i).getExpectedOutputKeysList()).containsExactly(idFrom(handles.get(i).outputs().get("result")).asString());
+      assertThat(taskCreations.get(i).getDataDependenciesList()).containsExactly(idFrom(handles.get(i).inputs().get("data")).asString());
+      assertThat(taskInfos.get(i).id().asString()).isEqualTo("task-" + taskCreations.get(i).getPayloadId());
+    }
+  }
+
+  @Test
+  @DisplayName("should split large submissions into calls of at most 1000 tasks and 1000 blobs")
+  void should_split_large_submissions() {
+    // Given: 1001 tasks with a payload and one output each, so 2002 blobs
+    var definitions = IntStream.range(0, TaskSubmitter.MAX_TASKS_PER_REQUEST + 1)
+                               .mapToObj(i -> new TaskDefinition().withInput("data", blobHandle("sessionId", "data-id"))
+                                                                  .withOutput("result"))
+                               .toList();
+
+    // When
+    var handles = sessionHandle.submitTasks(definitions);
+    handles.forEach(handle -> handle.deferredTaskInfo().toCompletableFuture().join());
+
+    // Then
+    assertThat(resultsGrpcMock.metadataCalls).isEqualTo(3);
+    assertThat(taskGrpcMock.submitTasksRequests).extracting(request -> request.getTaskCreationsCount())
+                                                .containsExactlyInAnyOrder(1000, 1);
+  }
+
+  @Test
+  @DisplayName("should make no call when submitting an empty list")
+  void should_make_no_call_for_empty_list() {
+    assertThat(sessionHandle.submitTasks(List.of())).isEmpty();
+    assertThat(resultsGrpcMock.metadataCalls).isZero();
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should reject a list containing null")
+  void should_reject_list_containing_null() {
+    var definitions = new ArrayList<TaskDefinition>();
+    definitions.add(new TaskDefinition().withOutput("result"));
+    definitions.add(null);
+
+    assertThatThrownBy(() -> sessionHandle.submitTasks(definitions)).isInstanceOf(NullPointerException.class);
+    assertThat(resultsGrpcMock.metadataCalls).isZero();
   }
 
   @Test

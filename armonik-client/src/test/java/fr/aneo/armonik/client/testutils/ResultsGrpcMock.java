@@ -39,6 +39,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private byte[] downloadContent;
   public List<UploadedDataInfo> uploadedDataInfos = new ArrayList<>();
   public List<MetadataRequest> metadataRequests = new ArrayList<>();
+  public int metadataCalls;
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
@@ -57,12 +58,14 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.downloadContent = null;
     this.uploadedDataInfos = new ArrayList<>();
     this.metadataRequests = new ArrayList<>();
+    this.metadataCalls = 0;
     this.pendingUploads.clear();
   }
 
   @Override
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
     var builder = CreateResultsMetaDataResponse.newBuilder();
+    metadataCalls++;
     metadataRequests.addAll(request.getResultsList()
                                    .stream()
                                    .map(metadata -> new MetadataRequest(request.getSessionId(), metadata.getName(), metadata.getManualDeletion()))

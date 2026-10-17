@@ -29,10 +29,12 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
 
+import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_BLOBS_PER_REQUEST;
 import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_UPLOAD_SIZE;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -218,5 +220,93 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
     assertThat(tempDir.resolve(inputBlobInfo.id().asString())).doesNotExist();
     assertThat(tempDir.resolve(outputBlobInfo.id().asString())).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("should upload several small blobs in one CreateResults request")
+  void should_upload_small_blobs_in_one_request() {
+    // Given
+    var inputs = Map.of(
+      "a", InputBlobDefinition.from("blobA", new byte[1024]),
+      "b", InputBlobDefinition.from("blobB", new byte[2048]),
+      "c", InputBlobDefinition.from("blobC", new byte[10]));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(1);
+    assertThat(agentGrpcMock.uploadedBlobs.blobs()).containsOnlyKeys("blobA", "blobB", "blobC");
+    assertThat(handles).containsOnlyKeys("a", "b", "c");
+    assertThat(handles.get("a").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobA-id");
+    assertThat(handles.get("b").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobB-id");
+    assertThat(handles.get("c").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobC-id");
+  }
+
+  @Test
+  @DisplayName("should pack inline blobs by first-fit decreasing within MAX_UPLOAD_SIZE")
+  void should_pack_inline_blobs_within_max_upload_size() {
+    // Given: 0.6 + 0.3 fits, 0.6 + 0.6 does not
+    var large = MAX_UPLOAD_SIZE * 6 / 10;
+    var small = MAX_UPLOAD_SIZE * 3 / 10;
+    Map<String, InputBlobDefinition> inputs = Map.of(
+      "large1", InputBlobDefinition.from("large1", new byte[large]),
+      "large2", InputBlobDefinition.from("large2", new byte[large]),
+      "small1", InputBlobDefinition.from("small1", new byte[small]),
+      "small2", InputBlobDefinition.from("small2", new byte[small]));
+
+    // When
+    var groups = GrpcBlobService.packBySize(inputs);
+
+    // Then
+    assertThat(groups).hasSize(2);
+    assertThat(groups).allSatisfy(group -> {
+      assertThat(group).hasSize(2);
+      assertThat(group.stream().mapToLong(entry -> entry.getValue().data().length).sum()).isLessThanOrEqualTo(MAX_UPLOAD_SIZE);
+    });
+  }
+
+  @Test
+  @DisplayName("should not put more than MAX_BLOBS_PER_REQUEST blobs in one request")
+  void should_limit_blob_count_per_request() {
+    // Given
+    var inputs = new HashMap<String, InputBlobDefinition>();
+    IntStream.range(0, MAX_BLOBS_PER_REQUEST + 1).forEach(i -> inputs.put("blob" + i, InputBlobDefinition.from("blob" + i, new byte[1])));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(handles).hasSize(MAX_BLOBS_PER_REQUEST + 1);
+    assertThat(handles.get("blob42").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blob42-id");
+  }
+
+  @Test
+  @DisplayName("should create metadata with one request per MAX_BLOBS_PER_REQUEST blobs")
+  void should_prepare_metadata_in_groups() {
+    // Given
+    var outputs = new HashMap<String, OutputBlobDefinition>();
+    IntStream.range(0, MAX_BLOBS_PER_REQUEST + 1).forEach(i -> outputs.put("out" + i, OutputBlobDefinition.from("out" + i)));
+
+    // When
+    var handles = blobService.prepareBlobs(outputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsMetaDataCalls).isEqualTo(2);
+    assertThat(handles).hasSize(MAX_BLOBS_PER_REQUEST + 1);
+    assertThat(handles.get("out1000").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("out1000-id");
+  }
+
+  @Test
+  @DisplayName("should send no request for empty maps")
+  void should_send_no_request_for_empty_maps() {
+    // When
+    blobService.createBlobs(Map.of());
+    blobService.prepareBlobs(Map.of());
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isZero();
+    assertThat(agentGrpcMock.createResultsMetaDataCalls).isZero();
   }
 }

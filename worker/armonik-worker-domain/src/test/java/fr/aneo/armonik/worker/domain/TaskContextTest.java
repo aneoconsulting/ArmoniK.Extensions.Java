@@ -23,6 +23,7 @@ import fr.aneo.armonik.worker.domain.internal.BlobService;
 import fr.aneo.armonik.worker.domain.internal.BlobWriter;
 import fr.aneo.armonik.worker.domain.internal.PayloadSerializer;
 import fr.aneo.armonik.worker.domain.internal.TaskService;
+import fr.aneo.armonik.worker.domain.internal.TaskSubmission;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -110,31 +111,30 @@ class TaskContextTest {
     var taskHandle = taskContext.submitTask(taskDef);
 
     // Then
-    assertThat(blobService.createBlobsRequest).hasSize(1);
-    assertThat(blobService.createBlobsRequest.get(0)).containsExactlyInAnyOrderEntriesOf(Map.of("inputDefinition", inputData1Definition));
-
-    assertThat(blobService.createBlobRequest).hasSize(1); // payload
-    assertThat(blobService.createBlobRequest.get(0)).isNotNull(); // payload
+    assertThat(blobService.createBlobsRequest).hasSize(2); // inputs, then payload
+    assertThat(blobService.createBlobsRequest.get(0)).containsExactlyInAnyOrderEntriesOf(Map.of("0/inputDefinition", inputData1Definition));
+    assertThat(blobService.createBlobsRequest.get(1)).containsOnlyKeys("0");
+    assertThat(blobService.createBlobRequest).isEmpty();
 
     assertThat(blobService.prepareBlobsRequest).hasSize(1);
     assertThat(blobService.prepareBlobsRequest.get(0)).hasSize(2);
-    assertThat(blobService.prepareBlobsRequest.get(0).keySet()).containsExactlyInAnyOrder("result", "resultDefinition");
-    assertThat(blobService.prepareBlobsRequest.get(0).get("resultDefinition")).isEqualTo(resultDefinition);
-    assertThat(blobService.prepareBlobsRequest.get(0).get("result")).isNotNull();
+    assertThat(blobService.prepareBlobsRequest.get(0).keySet()).containsExactlyInAnyOrder("0/result", "0/resultDefinition");
+    assertThat(blobService.prepareBlobsRequest.get(0).get("0/resultDefinition")).isEqualTo(resultDefinition);
+    assertThat(blobService.prepareBlobsRequest.get(0).get("0/result")).isNotNull();
 
     assertThat(taskService.submissions).hasSize(1);
-    assertThat(taskService.submissions.get(0).inputIds).containsExactlyInAnyOrderElementsOf(List.of(
+    assertThat(taskService.submissions.get(0).inputIds()).containsExactlyInAnyOrderElementsOf(List.of(
       blobService.createBlobIdsResponse.get(0).get(0),
       BlobId.from("existing-id"),
       BlobId.from("input1-id"))
     );
-    assertThat(taskService.submissions.get(0).outputIds).containsExactlyInAnyOrderElementsOf(List.of(
+    assertThat(taskService.submissions.get(0).outputIds()).containsExactlyInAnyOrderElementsOf(List.of(
       blobService.prepareBlobIdsResponse.get(0).get(0),
       blobService.prepareBlobIdsResponse.get(0).get(1),
       BlobId.from("output1-id")
 
     ));
-    assertThat(taskService.submissions.get(0).payloadId).isEqualTo(blobService.createBlobIdResponse.get(0));
+    assertThat(taskService.submissions.get(0).payloadId()).isEqualTo(blobService.createBlobIdsResponse.get(1).get(0));
     assertThat(taskService.submissions.get(0).taskConfiguration()).isEqualTo(taskConfig);
 
     assertThat(taskHandle).isNotNull();
@@ -249,8 +249,90 @@ class TaskContextTest {
     // Then
     assertThat(blobService.createBlobRequest).filteredOn(definition -> definition == sharedBlobDef).hasSize(1);
     assertThat(taskService.submissions).hasSize(2);
-    assertThat(taskService.submissions.get(0).inputIds).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
-    assertThat(taskService.submissions.get(1).inputIds).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
+    assertThat(taskService.submissions.get(0).inputIds()).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
+    assertThat(taskService.submissions.get(1).inputIds()).contains(sharedHandle.deferredBlobInfo().toCompletableFuture().join().id());
+  }
+
+  @Test
+  @DisplayName("should submit several tasks with one call per phase")
+  void should_submit_several_tasks_with_one_call_per_phase() {
+    // Given
+    var config1 = new TaskConfiguration(1, 1, "p1", Duration.ofMinutes(1), Map.of());
+    var config2 = new TaskConfiguration(2, 2, "p2", Duration.ofMinutes(2), Map.of());
+    var data1 = InputBlobDefinition.from("data", new byte[10]);
+    var data2 = InputBlobDefinition.from("data", new byte[20]);
+    var task1 = new TaskDefinition().withConfiguration(config1).withInput("data", data1).withOutput("result");
+    var task2 = new TaskDefinition().withConfiguration(config2).withInput("data", data2).withOutput("result");
+
+    // When
+    var handles = taskContext.submitTasks(List.of(task1, task2));
+    taskContext.awaitCompletion();
+
+    // Then
+    assertThat(blobService.createBlobsRequest).hasSize(2);
+    assertThat(blobService.createBlobsRequest.get(0)).containsExactlyInAnyOrderEntriesOf(Map.of("0/data", data1, "1/data", data2));
+    assertThat(blobService.createBlobsRequest.get(1)).containsOnlyKeys("0", "1");
+    assertThat(blobService.prepareBlobsRequest).hasSize(1);
+    assertThat(blobService.prepareBlobsRequest.get(0)).containsOnlyKeys("0/result", "1/result");
+    assertThat(taskService.batchSizes).containsExactly(2);
+
+    assertThat(taskService.submissions.get(0).inputIds()).containsExactly(BlobId.from("0/data-id"));
+    assertThat(taskService.submissions.get(0).outputIds()).containsExactly(BlobId.from("0/result-id"));
+    assertThat(taskService.submissions.get(0).payloadId()).isEqualTo(BlobId.from("0-id"));
+    assertThat(taskService.submissions.get(0).taskConfiguration()).isEqualTo(config1);
+    assertThat(taskService.submissions.get(1).inputIds()).containsExactly(BlobId.from("1/data-id"));
+    assertThat(taskService.submissions.get(1).outputIds()).containsExactly(BlobId.from("1/result-id"));
+    assertThat(taskService.submissions.get(1).payloadId()).isEqualTo(BlobId.from("1-id"));
+    assertThat(taskService.submissions.get(1).taskConfiguration()).isEqualTo(config2);
+
+    assertThat(handles).hasSize(2);
+    assertThat(handles.get(0).deferredTaskInfo().toCompletableFuture().join().id()).isEqualTo(TaskId.from("task-1"));
+    assertThat(handles.get(1).deferredTaskInfo().toCompletableFuture().join().id()).isEqualTo(TaskId.from("task-2"));
+    assertThat(handles.get(0).taskConfiguration()).isEqualTo(config1);
+    assertThat(handles.get(1).inputs()).containsOnlyKeys("data");
+  }
+
+  @Test
+  @DisplayName("should make no call when submitting an empty list")
+  void should_make_no_call_when_submitting_empty_list() {
+    // When
+    var handles = taskContext.submitTasks(List.of());
+
+    // Then
+    assertThat(handles).isEmpty();
+    assertThat(blobService.createBlobsRequest).isEmpty();
+    assertThat(blobService.prepareBlobsRequest).isEmpty();
+    assertThat(taskService.submissions).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should reject a list containing null")
+  void should_reject_list_containing_null() {
+    var definitions = new ArrayList<TaskDefinition>();
+    definitions.add(new TaskDefinition().withInput("data", blobHandle("data-id")).withOutput("result"));
+    definitions.add(null);
+
+    assertThatThrownBy(() -> taskContext.submitTasks(definitions)).isInstanceOf(NullPointerException.class);
+    assertThat(blobService.createBlobsRequest).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should fail every task of the call when one input blob fails")
+  void should_fail_every_task_when_one_input_blob_fails() {
+    // Given
+    var delayedBlobInfo = new CompletableFuture<BlobInfo>();
+    blobService.delayedBlobInfo = delayedBlobInfo;
+    var failing = new TaskDefinition().withInput("slowBlob", InputBlobDefinition.from("slowBlob", new byte[10])).withOutput("result");
+    var healthy = new TaskDefinition().withInput("data", InputBlobDefinition.from("data", new byte[10])).withOutput("result");
+    var handles = taskContext.submitTasks(List.of(failing, healthy));
+
+    // When
+    delayedBlobInfo.completeExceptionally(new RuntimeException("Boom"));
+
+    // Then
+    assertThat(handles).allSatisfy(handle -> assertThat(handle.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally());
+    assertThat(taskService.submissions).isEmpty();
+    assertThatThrownBy(() -> taskContext.awaitCompletion()).isInstanceOf(ArmoniKException.class);
   }
 
   @Test
@@ -377,7 +459,7 @@ class TaskContextTest {
                                                    .collect(toMap(
                                                      Map.Entry::getKey,
                                                      entry -> {
-                                                       if (delayedBlobInfo != null && entry.getKey().equals("slowBlob")) {
+                                                       if (delayedBlobInfo != null && entry.getValue().name().equals("slowBlob")) {
                                                          return new BlobHandle(entry.getKey(), delayedBlobInfo);
                                                        } else {
                                                          return blobHandle(entry.getKey() + "-id");
@@ -420,20 +502,20 @@ class TaskContextTest {
 
   static class TaskServiceMock implements TaskService {
     List<TaskSubmission> submissions = new ArrayList<>();
+    List<Integer> batchSizes = new ArrayList<>();
 
     CompletableFuture<TaskInfo> delayedTaskInfo;
 
     @Override
     public CompletionStage<TaskInfo> submitTask(Collection<BlobId> inputIds, Collection<BlobId> outputIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
       submissions.add(new TaskSubmission(inputIds, outputIds, payloadId, taskConfiguration));
-      return delayedTaskInfo != null ? delayedTaskInfo : completedFuture(new TaskInfo(TaskId.from("task-id")));
+      return delayedTaskInfo != null ? delayedTaskInfo : completedFuture(new TaskInfo(TaskId.from("task-" + submissions.size())));
+    }
+
+    @Override
+    public List<CompletionStage<TaskInfo>> submitTasks(List<TaskSubmission> submissions) {
+      batchSizes.add(submissions.size());
+      return TaskService.super.submitTasks(submissions);
     }
   }
-
-  record TaskSubmission(Collection<BlobId> inputIds,
-                        Collection<BlobId> outputIds,
-                        BlobId payloadId,
-                        TaskConfiguration taskConfiguration) {
-  }
 }
-

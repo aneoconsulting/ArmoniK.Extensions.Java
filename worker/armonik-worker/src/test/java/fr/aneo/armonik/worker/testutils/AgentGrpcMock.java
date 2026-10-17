@@ -39,6 +39,9 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   public BlobMetadata blobMetadata;
   public NotifyBlobs notifyBlobs;
   public SubmittedTasks submittedTasks;
+  public int submitTasksCalls;
+  public int createResultsCalls;
+  public int createResultsMetaDataCalls;
 
   private CompletableFuture<CreateResultsResponse> delayedCreateResults;
   private CompletableFuture<SubmitTasksResponse> delayedSubmitTasks;
@@ -49,6 +52,9 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
     blobMetadata = null;
     notifyBlobs = null;
     submittedTasks = null;
+    submitTasksCalls = 0;
+    createResultsCalls = 0;
+    createResultsMetaDataCalls = 0;
     delayedCreateResults = null;
     delayedSubmitTasks = null;
   }
@@ -130,6 +136,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   }
 
   private void captureSubmitTasksRequest(SubmitTasksRequest request) {
+    submitTasksCalls++;
     if (submittedTasks == null) {
       submittedTasks = new SubmittedTasks(
         request.getSessionId(),
@@ -161,6 +168,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   }
 
   private void captureBlobMetadataRequest(CreateResultsMetaDataRequest request) {
+    createResultsMetaDataCalls++;
     if (blobMetadata == null) {
       blobMetadata = new BlobMetadata(request.getSessionId(), request.getCommunicationToken(), new ArrayList<>());
     }
@@ -172,6 +180,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   }
 
   private void captureCreateResultsRequest(CreateResultsRequest request) {
+    createResultsCalls++;
     if (uploadedBlobs == null) {
       uploadedBlobs = new UploadedBlobs(request.getSessionId(), request.getCommunicationToken(), new HashMap<>());
     }

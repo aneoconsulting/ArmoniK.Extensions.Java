@@ -39,6 +39,8 @@ import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
 import static fr.aneo.armonik.client.WorkerLibrary.*;
 import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.MetadataRequest;
+import static io.grpc.Status.UNAVAILABLE;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -239,6 +241,49 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     assertThat(outputTaskListener.blobs).hasSize(1);
     assertThat(outputTaskListener.blobErrors).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should report outputs as failed and stop waiting when the task submission fails")
+  void should_report_outputs_as_failed_when_submission_fails() {
+    // Given
+    taskGrpcMock.submissionError = UNAVAILABLE.withDescription("Control plane is shutting down").asRuntimeException();
+    var taskDefinition = new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                             .withOutput("output1")
+                                             .withOutput("output2");
+
+    // When
+    var task = sessionHandle.submitTask(taskDefinition);
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(outputTaskListener.blobs).isEmpty();
+    assertThat(outputTaskListener.blobErrors)
+      .extracting(blobError -> blobError.blobInfo().id())
+      .containsExactlyInAnyOrder(idFrom(task.outputs().get("output1")), idFrom(task.outputs().get("output2")));
+    assertThat(outputTaskListener.blobErrors)
+      .allSatisfy(blobError -> assertThat(blobError.cause()).hasMessageContaining("Control plane is shutting down"));
+  }
+
+  @Test
+  @DisplayName("should stop waiting when the output metadata creation fails")
+  void should_stop_waiting_when_metadata_creation_fails() {
+    // Given
+    resultsGrpcMock.metadataError = UNAVAILABLE.asRuntimeException();
+    var taskDefinition = new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                             .withOutput("result");
+
+    // When
+    var task = sessionHandle.submitTask(taskDefinition);
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(task.outputs().get("result").deferredBlobInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+    assertThat(outputTaskListener.blobs).isEmpty();
+    assertThat(outputTaskListener.blobErrors).isEmpty();
   }
 
   @Test

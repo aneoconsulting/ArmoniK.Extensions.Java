@@ -30,12 +30,17 @@ public class TasksGrpcMock extends TasksGrpc.TasksImplBase {
 
   public SubmitTasksRequest submittedTasksRequest;
   public final List<SubmitTasksRequest> submitTasksRequests = new CopyOnWriteArrayList<>();
+  public volatile RuntimeException submissionError;
 
   @Override
   public void submitTasks(SubmitTasksRequest request, StreamObserver<SubmitTasksResponse> responseObserver) {
     SubmitTasksResponse.Builder builder = SubmitTasksResponse.newBuilder();
     submittedTasksRequest = request;
     submitTasksRequests.add(request);
+    if (submissionError != null) {
+      responseObserver.onError(submissionError);
+      return;
+    }
     IntStream.range(0, request.getTaskCreationsCount()).forEach(index ->
       builder.addTaskInfos(TaskInfo.newBuilder()
                                    .setTaskId("task-" + request.getTaskCreations(index).getPayloadId())

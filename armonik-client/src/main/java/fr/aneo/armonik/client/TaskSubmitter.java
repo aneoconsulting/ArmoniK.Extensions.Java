@@ -22,6 +22,7 @@ import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
+import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
@@ -32,9 +33,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.function.Function;
-import java.util.function.IntFunction;
 import java.util.stream.Collector;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -51,6 +55,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.Objects.requireNonNullElse;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.stream.Collectors.toMap;
 
 /**
@@ -96,8 +101,15 @@ final class TaskSubmitter {
   private final SessionId sessionId;
   private final TaskConfiguration defaultTaskConfiguration;
   private final ChannelPool channelPool;
+  private final TaskSubmissionBatching batching;
+  private final ScheduledExecutorService scheduler;
   private final Gson gson = new Gson();
+  private final BlobCompletionListener outputListener;
   private BlobCompletionCoordinator blobCompletionCoordinator;
+
+  private final Object lock = new Object();
+  private final List<PendingTask> buffer = new ArrayList<>();
+  private ScheduledFuture<?> timer;
 
   /**
    * Creates a new task submitter for the specified session context.
@@ -125,10 +137,34 @@ final class TaskSubmitter {
                 TaskConfiguration taskConfiguration,
                 BlobCompletionListener outputListener,
                 ChannelPool channelPool) {
+    this(sessionId, taskConfiguration, outputListener, channelPool, TaskSubmissionBatching.DEFAULT, Schedulers.shared());
+  }
+
+  /**
+   * Creates a new task submitter with explicit submission batching settings and scheduler.
+   *
+   * @param sessionId         the identifier of the session context for task submission
+   * @param taskConfiguration the default task configuration of the session; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events; may be {@code null}
+   * @param channelPool       the gRPC channel pool for cluster communication
+   * @param batching          how submitted tasks are grouped into batched calls
+   * @param scheduler         the scheduler running the batching window timer
+   * @throws NullPointerException if {@code sessionId}, {@code channelPool}, {@code batching} or
+   *                              {@code scheduler} is {@code null}
+   */
+  TaskSubmitter(SessionId sessionId,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ScheduledExecutorService scheduler) {
 
     this.sessionId = requireNonNull(sessionId);
     this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
     this.channelPool = requireNonNull(channelPool);
+    this.batching = requireNonNull(batching, "batching must not be null");
+    this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
+    this.outputListener = outputListener;
     if (outputListener != null) {
       this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, outputListener);
     }
@@ -163,16 +199,19 @@ final class TaskSubmitter {
   TaskHandle submit(TaskDefinition taskDefinition) {
     requireNonNull(taskDefinition, "taskDefinition must not be null");
 
-    return submitAll(List.of(taskDefinition)).get(0);
+    var pendingTask = prepare(taskDefinition);
+    enqueue(List.of(pendingTask));
+    return pendingTask.taskHandle();
   }
 
   /**
-   * Submits several tasks with shared gRPC calls.
+   * Submits several tasks and sends them without waiting for the batching window.
    * <p>
-   * The steps are the same as {@link #submit(TaskDefinition)}, but the blob metadata of all tasks
-   * is created with one {@code CreateResultsMetaData} call per {@value #MAX_BLOBS_PER_REQUEST} blobs,
-   * and the tasks are submitted with one {@code SubmitTasks} call per {@value #MAX_TASKS_PER_REQUEST}
-   * tasks. Input and payload data are still uploaded with one stream per blob.
+   * The tasks join the submission buffer, together with any task already buffered by
+   * {@link #submit(TaskDefinition)}, and the buffer is then sent. The blob metadata is created
+   * with one {@code CreateResultsMetaData} call per {@value #MAX_BLOBS_PER_REQUEST} blobs, and the
+   * tasks are submitted with one {@code SubmitTasks} call per {@value #MAX_TASKS_PER_REQUEST} tasks.
+   * Input and payload data are still uploaded with one stream per blob.
    * <p>
    * Tasks submitted in the same {@code SubmitTasks} call succeed or fail together.
    *
@@ -185,53 +224,24 @@ final class TaskSubmitter {
     taskDefinitions.forEach(definition -> requireNonNull(definition, "taskDefinitions must not contain null"));
     if (taskDefinitions.isEmpty()) return List.of();
 
-    var allocations = allocateBlobHandles(taskDefinitions);
-    var deferredTaskCreations = new ArrayList<CompletionStage<TaskCreation>>(taskDefinitions.size());
-    var allInputHandles = new ArrayList<Map<String, BlobHandle>>(taskDefinitions.size());
+    var pendingTasks = taskDefinitions.stream().map(this::prepare).toList();
+    enqueue(pendingTasks);
+    flush();
+    return pendingTasks.stream().map(PendingTask::taskHandle).toList();
+  }
 
-    for (int i = 0; i < taskDefinitions.size(); i++) {
-      var taskDefinition = taskDefinitions.get(i);
-      var allocation = allocations.get(i);
-
-      uploadInputs(allocation, taskDefinition.inputDefinitions());
-      var allInputHandlesByName = Stream.concat(
-                                          allocation.inputHandlesByName().entrySet().stream(),
-                                          taskDefinition.inputHandles().entrySet().stream())
-                                        .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
-      uploadPayload(allInputHandlesByName, allocation);
-
-      if (blobCompletionCoordinator != null) {
-        blobCompletionCoordinator.enqueue(allocation.outputHandlesByName().values().stream().toList());
-      }
-
-      var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
-      var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
-      var payloadIdStage = allocation.payloadHandle.deferredBlobInfo().thenApply(BlobInfo::id);
-
-      deferredTaskCreations.add(payloadIdStage.thenApply(TaskSubmissionData::new)
-                                              .thenCombine(inputIdsStage, TaskSubmissionData::withInputIds)
-                                              .thenCombine(outputIdsStage, TaskSubmissionData::withOutputIds)
-                                              .thenCombine(taskDefinition.workerLibrary().asDeferredTaskOptions(), TaskSubmissionData::withWorkerLibraryOptions)
-                                              .thenApply(submission -> submission.withSessionTaskConfig(defaultTaskConfiguration))
-                                              .thenApply(submission -> submission.withTaskConfig(taskDefinition.configuration()))
-                                              .thenApply(TaskSubmissionData::toTaskCreation));
-      allInputHandles.add(allInputHandlesByName);
+  /**
+   * Sends all buffered tasks now.
+   *
+   * @return a stage that completes when the cluster has acknowledged or rejected every task that
+   * was buffered at the time of the call; it never completes exceptionally
+   */
+  CompletionStage<Void> flush() {
+    List<PendingTask> batch;
+    synchronized (lock) {
+      batch = drain(buffer.size());
     }
-
-    var deferredTaskInfos = submitTaskCreations(deferredTaskCreations);
-
-    var taskHandles = new ArrayList<TaskHandle>(taskDefinitions.size());
-    for (int i = 0; i < taskDefinitions.size(); i++) {
-      var taskDefinition = taskDefinitions.get(i);
-      taskHandles.add(new TaskHandle(
-        sessionId,
-        taskDefinition.configuration() != null ? taskDefinition.configuration() : defaultTaskConfiguration,
-        deferredTaskInfos.get(i),
-        allInputHandles.get(i),
-        allocations.get(i).outputHandlesByName()
-      ));
-    }
-    return taskHandles;
+    return send(batch);
   }
 
   /**
@@ -259,46 +269,173 @@ final class TaskSubmitter {
   }
 
   /**
-   * Allocates the payload, input and output blobs of all tasks, with one
-   * {@code CreateResultsMetaData} call per {@value #MAX_BLOBS_PER_REQUEST} blobs.
-   * The cluster responds with the assigned blob IDs, wrapped in {@link BlobHandle} instances.
-   *
-   * @param taskDefinitions the task definitions containing input and output specifications
-   * @return one allocation per definition, in the same order
-   * @see BlobHandlesAllocation
+   * Builds the handles of a task and chains its uploads and its task creation on blob infos that
+   * are completed later, when the task is sent with {@link #send(List)}.
    */
-  private List<BlobHandlesAllocation> allocateBlobHandles(List<TaskDefinition> taskDefinitions) {
-    var allDefinitions = new ArrayList<BlobDefinition>();
-    for (var taskDefinition : taskDefinitions) {
-      allDefinitions.add(InputBlobDefinition.from(new byte[0]).withName("payload"));
-      allDefinitions.addAll(taskDefinition.inputDefinitions().values());
-      allDefinitions.addAll(taskDefinition.outputDefinitions().values());
+  private PendingTask prepare(TaskDefinition taskDefinition) {
+    var payloadDefinition = InputBlobDefinition.from(new byte[0]).withName("payload");
+    var inputDefinitions = new ArrayList<>(taskDefinition.inputDefinitions().entrySet());
+    var outputDefinitions = new ArrayList<>(taskDefinition.outputDefinitions().entrySet());
+
+    var blobDefinitions = new ArrayList<BlobDefinition>(1 + inputDefinitions.size() + outputDefinitions.size());
+    blobDefinitions.add(payloadDefinition);
+    inputDefinitions.forEach(entry -> blobDefinitions.add(entry.getValue()));
+    outputDefinitions.forEach(entry -> blobDefinitions.add(entry.getValue()));
+
+    var blobInfos = blobDefinitions.stream().map(definition -> new CompletableFuture<BlobInfo>()).toList();
+    var blobHandles = blobInfos.stream().map(blobInfo -> new BlobHandle(sessionId, blobInfo, channelPool)).toList();
+    var outputStart = 1 + inputDefinitions.size();
+    var allocation = new BlobHandlesAllocation(
+      blobHandles.get(0),
+      zip(inputDefinitions, blobHandles.subList(1, outputStart)),
+      zip(outputDefinitions, blobHandles.subList(outputStart, blobHandles.size())));
+
+    uploadInputs(allocation, taskDefinition.inputDefinitions());
+    var allInputHandlesByName = Stream.concat(
+                                        allocation.inputHandlesByName().entrySet().stream(),
+                                        taskDefinition.inputHandles().entrySet().stream())
+                                      .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
+    uploadPayload(allInputHandlesByName, allocation);
+
+    var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
+    var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
+    var payloadIdStage = allocation.payloadHandle().deferredBlobInfo().thenApply(BlobInfo::id);
+    var deferredTaskCreation = payloadIdStage.thenApply(TaskSubmissionData::new)
+                                             .thenCombine(inputIdsStage, TaskSubmissionData::withInputIds)
+                                             .thenCombine(outputIdsStage, TaskSubmissionData::withOutputIds)
+                                             .thenCombine(taskDefinition.workerLibrary().asDeferredTaskOptions(), TaskSubmissionData::withWorkerLibraryOptions)
+                                             .thenApply(submission -> submission.withSessionTaskConfig(defaultTaskConfiguration))
+                                             .thenApply(submission -> submission.withTaskConfig(taskDefinition.configuration()))
+                                             .thenApply(TaskSubmissionData::toTaskCreation);
+
+    var taskInfo = new CompletableFuture<TaskInfo>();
+    var taskHandle = new TaskHandle(
+      sessionId,
+      taskDefinition.configuration() != null ? taskDefinition.configuration() : defaultTaskConfiguration,
+      taskInfo,
+      allInputHandlesByName,
+      allocation.outputHandlesByName()
+    );
+    watchOutputsOnceSubmitted(taskInfo, allocation.outputHandlesByName().values());
+    return new PendingTask(blobDefinitions, blobInfos, deferredTaskCreation, taskInfo, taskHandle);
+  }
+
+  /**
+   * Watches the outputs of a task once the cluster has accepted the task. If the submission fails,
+   * no task will ever produce the outputs, so they are reported to the listener as failed instead
+   * of being watched. Until then, the coordinator counts them as in flight, so
+   * {@link #waitUntilFinished()} waits for the submission.
+   */
+  private void watchOutputsOnceSubmitted(CompletionStage<TaskInfo> taskInfo, Collection<BlobHandle> outputHandles) {
+    if (blobCompletionCoordinator == null || outputHandles.isEmpty()) return;
+
+    var outputs = List.copyOf(outputHandles);
+    blobCompletionCoordinator.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
+      if (ex != null) return reportFailedOutputs(outputs, ex instanceof CompletionException ? ex.getCause() : ex);
+      blobCompletionCoordinator.enqueue(outputs);
+      return completedFuture(null);
+    }));
+  }
+
+  /**
+   * Calls {@link BlobCompletionListener#onError} for each output that was created. An output whose
+   * metadata creation failed has no id to report, and its {@link BlobHandle#deferredBlobInfo()}
+   * already carries the failure.
+   */
+  private CompletionStage<Void> reportFailedOutputs(List<BlobHandle> outputs, Throwable cause) {
+    return CompletableFuture.allOf(outputs.stream()
+                                          .map(output -> output.deferredBlobInfo()
+                                                               .thenAccept(blobInfo -> notifyFailedOutput(blobInfo, cause))
+                                                               .exceptionally(ex -> null)
+                                                               .toCompletableFuture())
+                                          .toArray(CompletableFuture[]::new));
+  }
+
+  private void notifyFailedOutput(BlobInfo blobInfo, Throwable cause) {
+    try {
+      outputListener.onError(new BlobCompletionListener.BlobError(blobInfo, cause));
+    } catch (Throwable throwable) {
+      logger.error("Listener threw exception. Session id:{}, blob id:{}", sessionId.asString(), blobInfo.id().asString(), throwable);
+    }
+  }
+
+  /**
+   * Adds tasks to the buffer, sends every full batch, and arms the window timer if tasks remain.
+   */
+  private void enqueue(List<PendingTask> pendingTasks) {
+    var batches = new ArrayList<List<PendingTask>>();
+    synchronized (lock) {
+      buffer.addAll(pendingTasks);
+      while (buffer.size() >= batching.batchSize()) {
+        batches.add(drain(batching.batchSize()));
+      }
+      if (!buffer.isEmpty()) {
+        if (batching.window().isZero()) {
+          batches.add(drain(buffer.size()));
+        } else if (timer == null) {
+          timer = scheduler.schedule(this::flush, batching.window().toNanos(), NANOSECONDS);
+        }
+      }
+    }
+    batches.forEach(this::send);
+  }
+
+  /**
+   * Removes the first {@code count} buffered tasks, and cancels the timer when the buffer becomes empty.
+   * Must be called while holding {@link #lock}.
+   */
+  private List<PendingTask> drain(int count) {
+    var batch = new ArrayList<>(buffer.subList(0, count));
+    buffer.subList(0, count).clear();
+    if (buffer.isEmpty() && timer != null) {
+      timer.cancel(false);
+      timer = null;
+    }
+    return batch;
+  }
+
+  /**
+   * Creates the blob metadata of a batch with one {@code CreateResultsMetaData} call per
+   * {@value #MAX_BLOBS_PER_REQUEST} blobs, then submits its tasks with one {@code SubmitTasks}
+   * call per {@value #MAX_TASKS_PER_REQUEST} tasks.
+   *
+   * @return a stage that completes, never exceptionally, when every task of the batch is acknowledged or failed
+   */
+  private CompletionStage<Void> send(List<PendingTask> batch) {
+    if (batch.isEmpty()) return completedFuture(null);
+    logger.debug("Sending {} buffered tasks. Session id:{}", batch.size(), sessionId.asString());
+
+    allocateBlobs(batch);
+    for (int start = 0; start < batch.size(); start += MAX_TASKS_PER_REQUEST) {
+      submitTaskCreations(batch.subList(start, Math.min(start + MAX_TASKS_PER_REQUEST, batch.size())));
     }
 
-    var blobHandles = new ArrayList<BlobHandle>(allDefinitions.size());
-    for (int start = 0; start < allDefinitions.size(); start += MAX_BLOBS_PER_REQUEST) {
-      var group = new ArrayList<>(allDefinitions.subList(start, Math.min(start + MAX_BLOBS_PER_REQUEST, allDefinitions.size())));
-      var resultRaws = channelPool.executeAsync(createMetadata(group))
-                                  .thenApply(CreateResultsMetaDataResponse::getResultsList);
-      IntStream.range(0, group.size()).mapToObj(toBlobHandle(sessionId, resultRaws)).forEach(blobHandles::add);
-    }
+    return CompletableFuture.allOf(batch.stream()
+                                        .map(pendingTask -> pendingTask.taskInfo().handle((info, ex) -> null))
+                                        .toArray(CompletableFuture[]::new));
+  }
 
-    var allocations = new ArrayList<BlobHandlesAllocation>(taskDefinitions.size());
-    var offset = 0;
-    for (var taskDefinition : taskDefinitions) {
-      var inputDefinitions = new ArrayList<>(taskDefinition.inputDefinitions().entrySet());
-      var outputDefinitions = new ArrayList<>(taskDefinition.outputDefinitions().entrySet());
-      var inputStart = offset + 1;
-      var outputStart = inputStart + inputDefinitions.size();
-      var end = outputStart + outputDefinitions.size();
+  private void allocateBlobs(List<PendingTask> batch) {
+    var definitions = new ArrayList<BlobDefinition>();
+    var blobInfos = new ArrayList<CompletableFuture<BlobInfo>>();
+    batch.forEach(pendingTask -> {
+      definitions.addAll(pendingTask.blobDefinitions());
+      blobInfos.addAll(pendingTask.blobInfos());
+    });
 
-      allocations.add(new BlobHandlesAllocation(
-        blobHandles.get(offset),
-        zip(inputDefinitions, blobHandles.subList(inputStart, outputStart)),
-        zip(outputDefinitions, blobHandles.subList(outputStart, end))));
-      offset = end;
+    for (int start = 0; start < definitions.size(); start += MAX_BLOBS_PER_REQUEST) {
+      var end = Math.min(start + MAX_BLOBS_PER_REQUEST, definitions.size());
+      var groupDefinitions = new ArrayList<>(definitions.subList(start, end));
+      var groupBlobInfos = blobInfos.subList(start, end);
+      channelPool.executeAsync(createMetadata(groupDefinitions))
+                 .thenApply(CreateResultsMetaDataResponse::getResultsList)
+                 .whenComplete((resultRaws, ex) -> {
+                   for (int i = 0; i < groupBlobInfos.size(); i++) {
+                     if (ex != null) groupBlobInfos.get(i).completeExceptionally(ex);
+                     else groupBlobInfos.get(i).complete(toBlobInfo(sessionId, resultRaws.get(i)));
+                   }
+                 });
     }
-    return allocations;
   }
 
   private Function<ManagedChannel, CompletionStage<CreateResultsMetaDataResponse>> createMetadata(List<BlobDefinition> allDefinitions) {
@@ -306,28 +443,24 @@ final class TaskSubmitter {
   }
 
   /**
-   * Submits the tasks with one {@code SubmitTasks} call per {@value #MAX_TASKS_PER_REQUEST} tasks.
-   * Each call waits for all task creations of its group. The cluster returns the task infos in
-   * request order, so the i-th returned stage belongs to the i-th task creation.
+   * Submits a group of tasks with one {@code SubmitTasks} call, once all their task creations are
+   * ready. The cluster returns the task infos in request order, so the i-th task info belongs to
+   * the i-th task of the group.
    */
-  private List<CompletionStage<TaskInfo>> submitTaskCreations(List<CompletionStage<TaskCreation>> deferredTaskCreations) {
-    var result = new ArrayList<CompletionStage<TaskInfo>>(deferredTaskCreations.size());
-    for (int start = 0; start < deferredTaskCreations.size(); start += MAX_TASKS_PER_REQUEST) {
-      var group = deferredTaskCreations.subList(start, Math.min(start + MAX_TASKS_PER_REQUEST, deferredTaskCreations.size()));
-      var groupSize = group.size();
-      var response = Futures.allOf(group)
-                            .thenApply(taskCreations -> TaskMapper.toSubmitTasksRequest(sessionId, defaultTaskConfiguration, taskCreations))
-                            .thenCompose(this::submitTasks)
-                            .whenComplete((r, ex) -> {
-                              if (ex != null)
-                                logger.error("Submission of {} tasks failed. Session id:{}", groupSize, sessionId.asString(), ex);
-                            });
-      for (int i = 0; i < groupSize; i++) {
-        var index = i;
-        result.add(response.thenApply(r -> new TaskInfo(TaskId.from(r.getTaskInfos(index).getTaskId()))));
-      }
-    }
-    return result;
+  private void submitTaskCreations(List<PendingTask> group) {
+    Futures.allOf(group.stream().map(PendingTask::deferredTaskCreation).toList())
+           .thenApply(taskCreations -> TaskMapper.toSubmitTasksRequest(sessionId, defaultTaskConfiguration, taskCreations))
+           .thenCompose(this::submitTasks)
+           .whenComplete((response, ex) -> {
+             if (ex != null) {
+               logger.error("Submission of {} tasks failed. Session id:{}", group.size(), sessionId.asString(), ex);
+               group.forEach(pendingTask -> pendingTask.taskInfo().completeExceptionally(ex));
+             } else {
+               for (int i = 0; i < group.size(); i++) {
+                 group.get(i).taskInfo().complete(new TaskInfo(TaskId.from(response.getTaskInfos(i).getTaskId())));
+               }
+             }
+           });
   }
 
   private CompletionStage<SubmitTasksResponse> submitTasks(SubmitTasksRequest request) {
@@ -380,14 +513,6 @@ final class TaskSubmitter {
                   .thenApply(blobInfos -> blobInfos.stream().map(BlobInfo::id).toList());
   }
 
-  private IntFunction<BlobHandle> toBlobHandle(SessionId sessionId, CompletionStage<List<ResultRaw>> resultRaws) {
-    return index -> new BlobHandle(
-      sessionId,
-      resultRaws.thenApply(raws -> toBlobInfo(sessionId, raws.get(index))),
-      channelPool
-    );
-  }
-
   private static BlobInfo toBlobInfo(SessionId sessionId, ResultRaw resultRaw) {
     var resultId = BlobId.from(resultRaw.getResultId());
     var name = resultRaw.getName();
@@ -425,6 +550,17 @@ final class TaskSubmitter {
    * @param outputHandlesByName map of output blob handles keyed by their logical output names
    * @see #allocateBlobHandles(TaskDefinition)
    */
+  /**
+   * A task waiting in the submission buffer: the definitions of its blobs and the blob infos to
+   * complete once their metadata is created, its deferred task creation, and its handle.
+   */
+  private record PendingTask(List<BlobDefinition> blobDefinitions,
+                             List<CompletableFuture<BlobInfo>> blobInfos,
+                             CompletionStage<TaskCreation> deferredTaskCreation,
+                             CompletableFuture<TaskInfo> taskInfo,
+                             TaskHandle taskHandle) {
+  }
+
   private record BlobHandlesAllocation(BlobHandle payloadHandle,
                                        Map<String, BlobHandle> inputHandlesByName,
                                        Map<String, BlobHandle> outputHandlesByName) {

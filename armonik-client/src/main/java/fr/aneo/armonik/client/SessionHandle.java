@@ -22,6 +22,7 @@ import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
+import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import io.grpc.ManagedChannel;
 
 import java.time.Instant;
@@ -79,9 +80,28 @@ public final class SessionHandle {
    * @see ArmoniKClient#getSession(SessionId, BlobCompletionListener)
    */
   SessionHandle(SessionInfo sessionInfo, BlobCompletionListener outputListener, ChannelPool channelPool) {
+    this(sessionInfo, outputListener, channelPool, TaskSubmissionBatching.DEFAULT);
+  }
+
+  /**
+   * Constructs a session handle whose task submissions are grouped according to {@code batching}.
+   *
+   * @param sessionInfo    immutable metadata describing the session, including the session ID
+   * @param outputListener optional listener notified when output blobs reach completion; may be {@code null}
+   * @param channelPool    the gRPC channel pool used for communication with the cluster
+   * @param batching       how submitted tasks are grouped into batched calls
+   * @throws NullPointerException if {@code sessionInfo}, {@code channelPool} or {@code batching} is {@code null}
+   * @see TaskSubmissionBatching
+   */
+  SessionHandle(SessionInfo sessionInfo, BlobCompletionListener outputListener, ChannelPool channelPool, TaskSubmissionBatching batching) {
+    this(sessionInfo, channelPool, new TaskSubmitter(requireNonNull(sessionInfo, "sessionInfo must not be null").id(),
+      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared()));
+  }
+
+  SessionHandle(SessionInfo sessionInfo, ChannelPool channelPool, TaskSubmitter taskSubmitter) {
     this.sessionInfo = requireNonNull(sessionInfo, "sessionInfo must not be null");
-    this.taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionInfo.taskConfiguration(), outputListener, channelPool);
     this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
+    this.taskSubmitter = requireNonNull(taskSubmitter, "taskSubmitter must not be null");
   }
 
   /**
@@ -109,6 +129,10 @@ public final class SessionHandle {
    * The returned {@link TaskHandle} provides access to task metadata and associated
    * input/output blobs. Task submission is asynchronous - the handle is returned
    * immediately while the actual submission continues in the background.
+   * <p>
+   * The task is buffered and sent together with other submitted tasks, according to the
+   * {@link TaskSubmissionBatching} of the client: when the buffer is full, or once the batching
+   * window has elapsed. {@link #flushSubmissions()} sends the buffer immediately.
    *
    * @param taskDefinition the definition specifying task inputs, expected outputs,
    *                       payload, and optional task-specific configuration
@@ -128,6 +152,9 @@ public final class SessionHandle {
    * Each definition is handled as in {@link #submitTask(TaskDefinition)}, but the blob metadata of
    * all tasks is created in batched calls, and the tasks are submitted with one call per 1000 tasks
    * instead of one call per task. Input data is still uploaded blob by blob.
+   * <p>
+   * The tasks are sent immediately, together with any task buffered by {@link #submitTask(TaskDefinition)},
+   * without waiting for the batching window.
    * <p>
    * Tasks submitted in the same call to the cluster succeed or fail together: if a call fails, the
    * {@link TaskHandle#deferredTaskInfo()} of every task in it completes exceptionally.
@@ -150,6 +177,19 @@ public final class SessionHandle {
   }
 
   /**
+   * Sends the tasks buffered by {@link #submitTask(TaskDefinition)} without waiting for the
+   * batching window.
+   *
+   * @return a stage that completes when the cluster has acknowledged or rejected each task that
+   * was buffered at the time of the call; it never completes exceptionally. Per-task failures are
+   * reported by {@link TaskHandle#deferredTaskInfo()}.
+   * @see TaskSubmissionBatching
+   */
+  public CompletionStage<Void> flushSubmissions() {
+    return taskSubmitter.flush();
+  }
+
+  /**
    * Blocks until all currently pending task outputs are completed and the configured
    * task output listener has been invoked for each of them.
    * <p>
@@ -160,6 +200,7 @@ public final class SessionHandle {
    *   <li>each output has reached a terminal state (completed or failed), and</li>
    *   <li>the task output listener has been applied for each terminal output.</li>
    * </ul>
+   * Buffered task submissions are sent first, so their outputs are included.
    * Outputs submitted or started after this method is called are not included in this wait.
    * If there are no pending outputs at call time, the method returns immediately.
    * <p>
@@ -170,6 +211,7 @@ public final class SessionHandle {
    * @see BlobCompletionListener
    */
   public void awaitOutputsProcessed() {
+    taskSubmitter.flush();
     taskSubmitter.waitUntilFinished().toCompletableFuture().join();
   }
 
@@ -303,6 +345,9 @@ public final class SessionHandle {
    * to indicate that no further work will be submitted for this session once all
    * expected tasks have been created.
    * <p>
+   * Tasks still buffered by {@link #submitTask(TaskDefinition)} are sent before the session is
+   * closed.
+   * <p>
    * Closing a session does not remove its data. To free up storage or completely
    * remove the session, combine this operation with {@link #purge()} and
    * {@link #delete()} as appropriate.
@@ -318,11 +363,11 @@ public final class SessionHandle {
    * @see SessionState
    */
   public CompletionStage<SessionState> close() {
-    return channelPool.executeAsync(channel -> {
+    return taskSubmitter.flush().thenCompose(flushed -> channelPool.executeAsync(channel -> {
       var sessionsFutureStub = SessionsGrpc.newFutureStub(channel);
       return Futures.toCompletionStage(sessionsFutureStub.closeSession(toCloseSessionRequest(sessionInfo.id())))
                     .thenApply(response -> toSessionState(response.getSession()));
-    });
+    }));
   }
 
   /**

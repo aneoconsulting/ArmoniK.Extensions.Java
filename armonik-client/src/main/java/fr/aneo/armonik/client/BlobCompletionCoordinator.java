@@ -169,6 +169,25 @@ final class BlobCompletionCoordinator {
   }
 
   /**
+   * Counts a stage as an in-flight operation until it completes, so that {@link #waitUntilIdle()}
+   * also waits for it.
+   * <p>
+   * This is used for blob handles that can only be watched after a later event, such as the
+   * submission of the task that produces them: the stage enqueues them, if needed, before it completes.
+   *
+   * @param stage the operation to wait for
+   * @throws NullPointerException if stage is null
+   */
+  void track(CompletionStage<Void> stage) {
+    requireNonNull(stage, "stage must not be null");
+    inFlightStages.add(stage);
+    stage.whenComplete((ignored, ex) -> {
+      inFlightStages.remove(stage);
+      maybeSignalIdle();
+    });
+  }
+
+  /**
    * Returns a completion stage that completes when all currently tracked operations finish.
    * <p>
    * This method provides a synchronization point for waiting until all blob completion

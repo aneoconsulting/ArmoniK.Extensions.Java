@@ -40,6 +40,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public List<UploadedDataInfo> uploadedDataInfos = new ArrayList<>();
   public List<MetadataRequest> metadataRequests = new ArrayList<>();
   public int metadataCalls;
+  public volatile RuntimeException metadataError;
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
@@ -59,6 +60,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.uploadedDataInfos = new ArrayList<>();
     this.metadataRequests = new ArrayList<>();
     this.metadataCalls = 0;
+    this.metadataError = null;
     this.pendingUploads.clear();
   }
 
@@ -66,6 +68,10 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
     var builder = CreateResultsMetaDataResponse.newBuilder();
     metadataCalls++;
+    if (metadataError != null) {
+      responseObserver.onError(metadataError);
+      return;
+    }
     metadataRequests.addAll(request.getResultsList()
                                    .stream()
                                    .map(metadata -> new MetadataRequest(request.getSessionId(), metadata.getName(), metadata.getManualDeletion()))

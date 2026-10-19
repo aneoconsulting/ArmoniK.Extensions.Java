@@ -21,6 +21,7 @@ import fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
@@ -31,8 +32,11 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -326,7 +330,7 @@ final class TaskSubmitter {
                                         allocation.inputHandlesByName().entrySet().stream(),
                                         taskDefinition.inputHandles().entrySet().stream())
                                       .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
-    uploadPayload(allInputHandlesByName, allocation);
+    var payloadUpload = uploadPayload(allInputHandlesByName, allocation);
 
     var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
     var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
@@ -347,8 +351,9 @@ final class TaskSubmitter {
       allInputHandlesByName,
       allocation.outputHandlesByName()
     );
+    allocation.outputHandlesByName().values().forEach(output -> output.readyWhen(taskInfo));
     watchOutputsOnceSubmitted(taskInfo, allocation.outputHandlesByName().values());
-    return new PendingTask(blobDefinitions, blobInfos, deferredTaskCreation, taskInfo, taskHandle);
+    return new PendingTask(blobDefinitions, blobInfos, deferredTaskCreation, payloadUpload, taskInfo, taskHandle);
   }
 
   /**
@@ -488,24 +493,104 @@ final class TaskSubmitter {
   }
 
   /**
-   * Submits a group of tasks with one {@code SubmitTasks} call, once all their task creations are
-   * ready. The cluster returns the task infos in request order, so the i-th task info belongs to
-   * the i-th task of the group.
+   * Submits a group of tasks with one {@code SubmitTasks} call, once every task of the group is
+   * ready to run or known never to run.
+   * <p>
+   * A task is ready once its payload is uploaded and each of its inputs is ready (see
+   * {@link BlobHandle#deferredReadiness()}): its uploads are done, and the tasks producing the
+   * other inputs were accepted. The cluster would accept a task with a missing input but never run
+   * it, so such a task fails here instead of being sent. Inputs produced by a task of the same
+   * group cannot be awaited, since both are sent in the same call: the consumer of a failed task of
+   * the group fails as well. The other tasks of the group are still sent.
+   * <p>
+   * The cluster returns the task infos in request order, so the i-th task info belongs to the i-th
+   * task sent.
    */
   private void submitTaskCreations(List<PendingTask> group) {
-    Futures.allOf(group.stream().map(PendingTask::deferredTaskCreation).toList())
-           .thenApply(taskCreations -> TaskMapper.toSubmitTasksRequest(sessionId, defaultTaskConfiguration, taskCreations))
-           .thenCompose(this::submitTasks)
-           .whenComplete((response, ex) -> {
-             if (ex != null) {
-               logger.error("Submission of {} tasks failed. Session id:{}", group.size(), sessionId.asString(), ex);
-               group.forEach(pendingTask -> pendingTask.taskInfo().completeExceptionally(ex));
-             } else {
-               for (int i = 0; i < group.size(); i++) {
-                 group.get(i).taskInfo().complete(new TaskInfo(TaskId.from(response.getTaskInfos(i).getTaskId())));
-               }
-             }
-           });
+    var producedInGroup = Collections.newSetFromMap(new IdentityHashMap<BlobHandle, Boolean>());
+    group.forEach(pendingTask -> producedInGroup.addAll(pendingTask.taskHandle().outputs().values()));
+
+    var readyCreations = group.stream().map(pendingTask -> readyTaskCreation(pendingTask, producedInGroup)).toList();
+    CompletableFuture.allOf(readyCreations.toArray(CompletableFuture[]::new))
+                     .handle((ignored, ex) -> null)
+                     .thenAccept(ignored -> submitReadyTasks(group, readyCreations));
+  }
+
+  /**
+   * Returns the task creation of a task once its payload is uploaded and its inputs that are not
+   * produced in its group are ready, or a failed stage naming the blob that will never be available.
+   */
+  private CompletableFuture<TaskCreation> readyTaskCreation(PendingTask pendingTask, Set<BlobHandle> producedInGroup) {
+    var readiness = new ArrayList<CompletableFuture<Void>>();
+    readiness.add(failingWith(pendingTask.payloadUpload(), "The payload of the task could not be uploaded"));
+    pendingTask.taskHandle().inputs().forEach((name, input) -> {
+      if (!producedInGroup.contains(input)) {
+        readiness.add(failingWith(input.deferredReadiness(), "Input '" + name + "' of the task will never be available"));
+      }
+    });
+    return CompletableFuture.allOf(readiness.toArray(CompletableFuture[]::new))
+                            .thenCompose(ignored -> pendingTask.deferredTaskCreation());
+  }
+
+  private static CompletableFuture<Void> failingWith(CompletionStage<Void> stage, String message) {
+    return stage.handle((ignored, ex) -> {
+      if (ex != null) throw new CompletionException(new ArmoniKException(message, unwrap(ex)));
+      return (Void) null;
+    }).toCompletableFuture();
+  }
+
+  /**
+   * Fails the tasks of the group that will never run, in request order so that a failure reaches
+   * the consumers of the failed task's outputs, and submits the others with one {@code SubmitTasks} call.
+   */
+  private void submitReadyTasks(List<PendingTask> group, List<CompletableFuture<TaskCreation>> readyCreations) {
+    var failedOutputs = Collections.newSetFromMap(new IdentityHashMap<BlobHandle, Boolean>());
+    var toSend = new ArrayList<PendingTask>();
+    var taskCreations = new ArrayList<TaskCreation>();
+    for (int i = 0; i < group.size(); i++) {
+      var pendingTask = group.get(i);
+      var cause = readyCreations.get(i).handle((creation, ex) -> ex == null ? null : unwrap(ex)).join();
+      if (cause == null) {
+        cause = pendingTask.taskHandle()
+                           .inputs()
+                           .entrySet()
+                           .stream()
+                           .filter(input -> failedOutputs.contains(input.getValue()))
+                           .findFirst()
+                           .map(input -> (Throwable) new ArmoniKException("Input '" + input.getKey() + "' of the task is an output of a task that was not submitted"))
+                           .orElse(null);
+      }
+      if (cause != null) {
+        logger.warn("Task not submitted: {}. Session id:{}", cause.getMessage(), sessionId.asString());
+        failedOutputs.addAll(pendingTask.taskHandle().outputs().values());
+        pendingTask.taskInfo().completeExceptionally(cause);
+      } else {
+        toSend.add(pendingTask);
+        taskCreations.add(readyCreations.get(i).join());
+      }
+    }
+    if (toSend.isEmpty()) return;
+
+    try {
+      submitTasks(TaskMapper.toSubmitTasksRequest(sessionId, defaultTaskConfiguration, taskCreations))
+        .whenComplete((response, ex) -> {
+          if (ex != null) {
+            logger.error("Submission of {} tasks failed. Session id:{}", toSend.size(), sessionId.asString(), ex);
+            toSend.forEach(pendingTask -> pendingTask.taskInfo().completeExceptionally(ex));
+          } else {
+            for (int i = 0; i < toSend.size(); i++) {
+              toSend.get(i).taskInfo().complete(new TaskInfo(TaskId.from(response.getTaskInfos(i).getTaskId())));
+            }
+          }
+        });
+    } catch (RuntimeException exception) {
+      logger.error("Submission of {} tasks failed. Session id:{}", toSend.size(), sessionId.asString(), exception);
+      toSend.forEach(pendingTask -> pendingTask.taskInfo().completeExceptionally(exception));
+    }
+  }
+
+  private static Throwable unwrap(Throwable throwable) {
+    return throwable instanceof CompletionException && throwable.getCause() != null ? throwable.getCause() : throwable;
   }
 
   private CompletionStage<SubmitTasksResponse> submitTasks(SubmitTasksRequest request) {
@@ -513,13 +598,13 @@ final class TaskSubmitter {
     return channelPool.executeAsync(channel -> Futures.toCompletionStage(TasksGrpc.newFutureStub(channel).submitTasks(request)));
   }
 
-  private void uploadPayload(Map<String, BlobHandle> allInputHandlesByName, BlobHandlesAllocation allocation) {
+  private CompletionStage<Void> uploadPayload(Map<String, BlobHandle> allInputHandlesByName, BlobHandlesAllocation allocation) {
     var inputIdByName = allInputHandlesByName.entrySet().stream().collect(ids());
     var outputIdByName = allocation.outputHandlesByName().entrySet().stream().collect(ids());
 
-    Futures.allOf(inputIdByName)
-           .thenCombine(Futures.allOf(outputIdByName), this::serializeToJson)
-           .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition.data()));
+    return Futures.allOf(inputIdByName)
+                  .thenCombine(Futures.allOf(outputIdByName), this::serializeToJson)
+                  .thenCompose(payloadDefinition -> allocation.payloadHandle().uploadData(payloadDefinition.data()));
   }
 
   private void uploadInputs(BlobHandlesAllocation allocation, Map<String, InputBlobDefinition> inputDefinitions) {
@@ -586,11 +671,13 @@ final class TaskSubmitter {
 
   /**
    * A task waiting in the submission buffer: the definitions of its blobs and the blob infos to
-   * complete once their metadata is created, its deferred task creation, and its handle.
+   * complete once their metadata is created, its deferred task creation, the upload of its
+   * payload, and its handle.
    */
   private record PendingTask(List<BlobDefinition> blobDefinitions,
                              List<CompletableFuture<BlobInfo>> blobInfos,
                              CompletionStage<TaskCreation> deferredTaskCreation,
+                             CompletionStage<Void> payloadUpload,
                              CompletableFuture<TaskInfo> taskInfo,
                              TaskHandle taskHandle) {
   }

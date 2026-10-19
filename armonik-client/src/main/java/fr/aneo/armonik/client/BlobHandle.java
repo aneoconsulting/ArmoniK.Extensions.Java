@@ -75,6 +75,7 @@ public final class BlobHandle {
   private final SessionId sessionId;
   private final CompletionStage<BlobInfo> deferredBlobInfo;
   private final ChannelPool channelPool;
+  private volatile CompletionStage<Void> deferredReadiness;
 
 
   /**
@@ -95,6 +96,7 @@ public final class BlobHandle {
     this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
     this.deferredBlobInfo = requireNonNull(deferredBlobInfo, "deferredBlobInfo must no be null");
     this.channelPool = requireNonNull(channelPool, "chanelPool must not be null");
+    this.deferredReadiness = deferredBlobInfo.thenApply(blobInfo -> null);
   }
 
   /**
@@ -129,6 +131,30 @@ public final class BlobHandle {
   }
 
   /**
+   * Returns a stage that completes once the data of this blob is available or will be produced,
+   * and fails if it never will.
+   * <p>
+   * For an uploaded blob, it follows the last upload started with {@link #uploadData(BlobData)}.
+   * For a task output, it follows the submission of the task that produces it. Otherwise, it
+   * follows the creation of the blob metadata.
+   *
+   * @return the readiness of this blob
+   */
+  CompletionStage<Void> deferredReadiness() {
+    return deferredReadiness;
+  }
+
+  /**
+   * Makes the readiness of this blob follow the given stage.
+   *
+   * @param stage the stage that completes once the data of this blob is available or will be produced
+   * @see #deferredReadiness()
+   */
+  void readyWhen(CompletionStage<?> stage) {
+    deferredReadiness = stage.thenApply(ignored -> null);
+  }
+
+  /**
    * Uploads data to this blob in the ArmoniK cluster.
    * <p>
    * This method transfers the data content to the ArmoniK cluster using chunked streaming
@@ -149,17 +175,19 @@ public final class BlobHandle {
   public CompletionStage<Void> uploadData(BlobData blobData) {
     requireNonNull(blobData, "blobData must not be null");
 
+    CompletionStage<Void> upload;
     if (!blobData.isRetryable()) {
       log.debug("BlobData is not retryable, attempting upload once. SessionId: {}", sessionId.asString());
-      return deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData));
+      upload = deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData));
+    } else {
+      log.debug("Starting retryable blob upload. SessionId: {}", sessionId.asString());
+      upload = RetryableStreamOperation.execute(
+        () -> deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData)),
+        channelPool.retryPolicy()
+      );
     }
-
-    log.debug("Starting retryable blob upload. SessionId: {}", sessionId.asString());
-
-    return RetryableStreamOperation.execute(
-      () -> deferredBlobInfo().thenCompose(info -> executeUpload(info, blobData)),
-      channelPool.retryPolicy()
-    );
+    readyWhen(upload);
+    return upload;
   }
 
   private CompletionStage<Void> executeUpload(BlobInfo blobInfo, BlobData blobData) {

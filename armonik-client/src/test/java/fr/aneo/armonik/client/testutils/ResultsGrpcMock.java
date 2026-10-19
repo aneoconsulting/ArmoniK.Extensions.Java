@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
@@ -41,6 +42,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public List<MetadataRequest> metadataRequests = new ArrayList<>();
   public int metadataCalls;
   public volatile RuntimeException metadataError;
+  public volatile byte[] failingUploadData;
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
@@ -61,6 +63,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.metadataRequests = new ArrayList<>();
     this.metadataCalls = 0;
     this.metadataError = null;
+    this.failingUploadData = null;
     this.pendingUploads.clear();
   }
 
@@ -144,6 +147,12 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
       @Override
       public void onCompleted() {
+        if (failingUploadData != null && Arrays.equals(failingUploadData, uploadedDataInfo.receivedData.toByteArray())) {
+          pendingUploads.remove(uploadCompletion);
+          responseObserver.onError(io.grpc.Status.INTERNAL.withDescription("Upload failed").asRuntimeException());
+          uploadCompletion.completeExceptionally(new IllegalStateException("Upload failed"));
+          return;
+        }
         responseObserver.onNext(UploadResultDataResponse.getDefaultInstance());
         responseObserver.onCompleted();
         uploadedDataInfos.add(uploadedDataInfo);

@@ -140,10 +140,11 @@ public final class SessionHandle {
    * submit its tasks with {@link #submitTasks(List)}, call {@link #flushSubmissions()} before
    * waiting, or use {@link TaskSubmissionBatching#DISABLED}.
    * <p>
-   * If the submission of a task fails, its outputs are reported to the session's
-   * {@link BlobCompletionListener#onError} and are not awaited by {@link #awaitOutputsProcessed()}.
-   * A task that uses an output of such a task as input is not detected: it is accepted but never
-   * runs, and {@link #awaitOutputsProcessed()} keeps waiting for its outputs.
+   * A task is sent once its input and payload uploads are done. A task that could never run is not
+   * sent, and its {@link TaskHandle#deferredTaskInfo()} fails: when an upload of its inputs or
+   * payload fails, or when an input is an output of a task that was not submitted. If a task is not
+   * submitted, for this reason or because the cluster rejected it, its outputs are reported to the
+   * session's {@link BlobCompletionListener#onError} and are not awaited by {@link #awaitOutputsProcessed()}.
    *
    * @param taskDefinition the definition specifying task inputs, expected outputs,
    *                       payload, and optional task-specific configuration

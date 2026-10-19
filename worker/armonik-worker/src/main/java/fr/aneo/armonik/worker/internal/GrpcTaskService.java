@@ -137,8 +137,9 @@ class GrpcTaskService implements TaskService {
   }
 
   /**
-   * Submits several tasks with one Agent {@code SubmitTasks} call per group of
-   * {@value #MAX_TASKS_PER_REQUEST} tasks.
+   * Submits several tasks with one Agent {@code SubmitTasks} call per group of at most
+   * {@value #MAX_TASKS_PER_REQUEST} tasks and {@value AgentRequests#MAX_REQUEST_SIZE} serialized bytes.
+   * A task too large to share a request is sent alone.
    * <p>
    * All submissions are validated before any call is made. The Agent returns the task infos
    * in request order, so the i-th returned stage belongs to the i-th submission. If a call fails,
@@ -155,13 +156,22 @@ class GrpcTaskService implements TaskService {
     requireNonNull(submissions, "submissions must not be null");
     submissions.forEach(GrpcTaskService::validate);
 
+    var taskCreations = submissions.stream().map(GrpcTaskService::toTaskCreation).toList();
+    var budget = AgentRequests.entryBudget(SubmitTasksRequest.newBuilder()
+                                                             .setSessionId(sessionId.asString())
+                                                             .setCommunicationToken(communicationToken)
+                                                             .build());
+    var groups = AgentRequests.groupInOrder(taskCreations,
+                                            taskCreation -> AgentRequests.entrySize(SubmitTasksRequest.TASK_CREATIONS_FIELD_NUMBER, taskCreation),
+                                            budget,
+                                            MAX_TASKS_PER_REQUEST);
+
     var result = new ArrayList<CompletionStage<TaskInfo>>(submissions.size());
-    for (int start = 0; start < submissions.size(); start += MAX_TASKS_PER_REQUEST) {
-      var group = submissions.subList(start, Math.min(start + MAX_TASKS_PER_REQUEST, submissions.size()));
+    for (var group : groups) {
       var request = SubmitTasksRequest.newBuilder()
                                       .setSessionId(sessionId.asString())
                                       .setCommunicationToken(communicationToken)
-                                      .addAllTaskCreations(group.stream().map(GrpcTaskService::toTaskCreation).toList())
+                                      .addAllTaskCreations(group)
                                       .build();
       logger.debug("Submitting {} tasks to the Agent", group.size());
       var responseStage = Futures.toCompletionStage(agentStub.submitTasks(request));

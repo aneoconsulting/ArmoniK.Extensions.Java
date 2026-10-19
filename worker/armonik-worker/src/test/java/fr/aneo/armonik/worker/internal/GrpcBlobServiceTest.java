@@ -35,7 +35,7 @@ import java.util.Map;
 import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_BLOBS_PER_REQUEST;
-import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_UPLOAD_SIZE;
+import static fr.aneo.armonik.worker.internal.AgentRequests.MAX_REQUEST_SIZE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class GrpcBlobServiceTest extends InProcessGrpcTestBase {
@@ -63,10 +63,10 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("should upload blob data when size is less or equal MAX_UPLOAD_SIZE")
-  void should_upload_blob_data_when_size_is_less_or_equal_4MB() {
+  @DisplayName("should upload blob data inline when it fits in one Agent request")
+  void should_upload_blob_data_when_it_fits_in_one_request() {
     // Given
-    byte[] data1 = new byte[MAX_UPLOAD_SIZE];
+    byte[] data1 = new byte[MAX_REQUEST_SIZE - 1024];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
     var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
@@ -78,13 +78,14 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
     assertThat(agentGrpcMock.uploadedBlobs.sessionId()).isEqualTo("sessionId");
     assertThat(agentGrpcMock.uploadedBlobs.communicationToken()).isEqualTo("communicationToken");
     assertThat(agentGrpcMock.uploadedBlobs.blobs()).containsExactly(Map.entry("blobName1", data1));
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
   }
 
   @Test
-  @DisplayName("should write blob data in a file when size is greater than MAX_UPLOAD_SIZE")
+  @DisplayName("should write blob data in a file when the request would exceed the Agent limit")
   void should_write_blob_data_in_a_file() {
-    // Given
-    byte[] data1 = new byte[MAX_UPLOAD_SIZE + 1];
+    // Given: the data alone is below the limit, but not with the request envelope
+    byte[] data1 = new byte[MAX_REQUEST_SIZE - 16];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
     var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
@@ -244,11 +245,11 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("should pack inline blobs by first-fit decreasing within MAX_UPLOAD_SIZE")
-  void should_pack_inline_blobs_within_max_upload_size() {
+  @DisplayName("should pack inline blobs by first-fit decreasing within the request budget")
+  void should_pack_inline_blobs_within_request_budget() {
     // Given: 0.6 + 0.3 fits, 0.6 + 0.6 does not
-    var large = MAX_UPLOAD_SIZE * 6 / 10;
-    var small = MAX_UPLOAD_SIZE * 3 / 10;
+    var large = MAX_REQUEST_SIZE * 6 / 10;
+    var small = MAX_REQUEST_SIZE * 3 / 10;
     Map<String, InputBlobDefinition> inputs = Map.of(
       "large1", InputBlobDefinition.from("large1", new byte[large]),
       "large2", InputBlobDefinition.from("large2", new byte[large]),
@@ -256,14 +257,46 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
       "small2", InputBlobDefinition.from("small2", new byte[small]));
 
     // When
-    var groups = GrpcBlobService.packBySize(inputs);
+    var groups = GrpcBlobService.packBySize(inputs, MAX_REQUEST_SIZE);
 
     // Then
     assertThat(groups).hasSize(2);
     assertThat(groups).allSatisfy(group -> {
       assertThat(group).hasSize(2);
-      assertThat(group.stream().mapToLong(entry -> entry.getValue().data().length).sum()).isLessThanOrEqualTo(MAX_UPLOAD_SIZE);
+      assertThat(group.stream().mapToLong(entry -> GrpcBlobService.inlineSize(entry.getValue())).sum()).isLessThanOrEqualTo(MAX_REQUEST_SIZE);
     });
+  }
+
+  @Test
+  @DisplayName("should split inline blobs whose data fits the limit but whose request does not")
+  void should_split_blobs_when_envelope_exceeds_limit() {
+    // Given: two blobs of exactly half the limit, which fit together by data size only
+    Map<String, InputBlobDefinition> inputs = Map.of(
+      "half1", InputBlobDefinition.from("half1", new byte[MAX_REQUEST_SIZE / 2]),
+      "half2", InputBlobDefinition.from("half2", new byte[MAX_REQUEST_SIZE / 2]));
+
+    // When
+    blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
+  }
+
+  @Test
+  @DisplayName("should keep every request within the Agent limit for many blobs near the boundary")
+  void should_keep_requests_within_limit_for_many_blobs() {
+    // Given: 1000 blobs whose data adds up to just below the limit, but not with the framing of each entry
+    var inputs = new HashMap<String, InputBlobDefinition>();
+    IntStream.range(0, 1000).forEach(i -> inputs.put("blob" + i, InputBlobDefinition.from("blob" + i, new byte[4190])));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
+    assertThat(handles).hasSize(1000);
   }
 
   @Test

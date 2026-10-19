@@ -50,8 +50,9 @@ import static java.util.stream.Collectors.toMap;
  *
  * <h2>Upload Strategies for Input Blobs (createBlobs)</h2>
  * <ul>
- *   <li><strong>Inline upload</strong>: For small blobs (≤ 4 MB), data is sent directly via RPC</li>
- *   <li><strong>File-based upload</strong>: For large blobs (> 4 MB) or streams, data is written to shared folder</li>
+ *   <li><strong>Inline upload</strong>: For in-memory blobs that fit in one Agent request
+ *       ({@value AgentRequests#MAX_REQUEST_SIZE} bytes, envelope included), data is sent directly via RPC</li>
+ *   <li><strong>File-based upload</strong>: For larger blobs or streams, data is written to shared folder</li>
  * </ul>
  *
  * <h2>Grouped Agent Calls</h2>
@@ -60,11 +61,11 @@ import static java.util.stream.Collectors.toMap;
  * as possible:
  * </p>
  * <ul>
- *   <li>Inline blobs are packed into {@code CreateResults} requests holding at most
- *       {@value #MAX_UPLOAD_SIZE} bytes of data and {@value #MAX_BLOBS_PER_REQUEST} blobs
+ *   <li>Inline blobs are packed into {@code CreateResults} requests of at most
+ *       {@value AgentRequests#MAX_REQUEST_SIZE} serialized bytes and {@value #MAX_BLOBS_PER_REQUEST} blobs
  *       (first-fit decreasing)</li>
- *   <li>Metadata is created with one {@code CreateResultsMetaData} request per
- *       {@value #MAX_BLOBS_PER_REQUEST} blobs</li>
+ *   <li>Metadata is created with {@code CreateResultsMetaData} requests of at most
+ *       {@value #MAX_BLOBS_PER_REQUEST} blobs and {@value AgentRequests#MAX_REQUEST_SIZE} serialized bytes</li>
  *   <li>An empty map sends no request</li>
  * </ul>
  *
@@ -91,8 +92,6 @@ import static java.util.stream.Collectors.toMap;
 final class GrpcBlobService implements BlobService {
   private static final Logger logger = LoggerFactory.getLogger(GrpcBlobService.class);
 
-  static final int MAX_UPLOAD_SIZE = 4 * 1024 * 1024;
-
   /**
    * Maximum number of blobs in one {@code CreateResults} or {@code CreateResultsMetaData} request: {@value}.
    */
@@ -102,6 +101,8 @@ final class GrpcBlobService implements BlobService {
   private final BlobFileWriter blobFileWriter;
   private final String communicationToken;
   private final SessionId sessionId;
+  private final int createResultsBudget;
+  private final int createMetadataBudget;
 
   /**
    * Creates a new blob service for managing blobs within a session.
@@ -117,6 +118,14 @@ final class GrpcBlobService implements BlobService {
     this.blobFileWriter = requireNonNull(blobFileWriter, "blobFileWriter cannot be null");
     this.communicationToken = requireNonNull(communicationToken, "communicationToken cannot be null");
     this.sessionId = requireNonNull(sessionId, "sessionId cannot be null");
+    this.createResultsBudget = AgentRequests.entryBudget(CreateResultsRequest.newBuilder()
+                                                                             .setCommunicationToken(communicationToken)
+                                                                             .setSessionId(sessionId.asString())
+                                                                             .build());
+    this.createMetadataBudget = AgentRequests.entryBudget(CreateResultsMetaDataRequest.newBuilder()
+                                                                                      .setCommunicationToken(communicationToken)
+                                                                                      .setSessionId(sessionId.asString())
+                                                                                      .build());
   }
 
   /**
@@ -125,7 +134,7 @@ final class GrpcBlobService implements BlobService {
    * This method automatically partitions blobs into two groups:
    * </p>
    * <ul>
-   *   <li>Small in-memory blobs (≤ 4 MB) are uploaded inline via {@code CreateResults}</li>
+   *   <li>In-memory blobs that fit in one Agent request are uploaded inline via {@code CreateResults}</li>
    *   <li>Large blobs or streams are written to the shared folder via {@code CreateResultsMetaData} + file write</li>
    * </ul>
    *
@@ -166,7 +175,7 @@ final class GrpcBlobService implements BlobService {
    * This method automatically determines the upload strategy based on blob characteristics:
    * </p>
    * <ul>
-   *   <li>Small in-memory blobs (≤ 4 MB) are uploaded inline via {@code CreateResults}</li>
+   *   <li>In-memory blobs that fit in one Agent request are uploaded inline via {@code CreateResults}</li>
    *   <li>Large blobs or streams are written to the shared folder via {@code CreateResultsMetaData} + file write</li>
    * </ul>
    *
@@ -221,13 +230,12 @@ final class GrpcBlobService implements BlobService {
     logger.debug("Preparing {} blob metadata", blobDefinitions.size());
     var entries = new ArrayList<>(blobDefinitions.entrySet());
     var result = new HashMap<String, BlobHandle>(entries.size());
-    for (int start = 0; start < entries.size(); start += MAX_BLOBS_PER_REQUEST) {
-      var group = entries.subList(start, Math.min(start + MAX_BLOBS_PER_REQUEST, entries.size()));
-      var metadata = group.stream()
-                          .map(entry -> CreateResultsMetaDataRequest.ResultCreate.newBuilder()
-                                                                                 .setName(entry.getValue().name())
-                                                                                 .build())
-                          .toList();
+    var groups = AgentRequests.groupInOrder(entries,
+                                            entry -> AgentRequests.entrySize(CreateResultsMetaDataRequest.RESULTS_FIELD_NUMBER, toMetadataCreate(entry.getValue())),
+                                            createMetadataBudget,
+                                            MAX_BLOBS_PER_REQUEST);
+    for (var group : groups) {
+      var metadata = group.stream().map(entry -> toMetadataCreate(entry.getValue())).toList();
       var request = CreateResultsMetaDataRequest.newBuilder()
                                                 .setCommunicationToken(communicationToken)
                                                 .setSessionId(sessionId.asString())
@@ -247,10 +255,10 @@ final class GrpcBlobService implements BlobService {
   }
 
   /**
-   * Checks if a blob can be uploaded inline (small in-memory blob).
+   * Checks if a blob can be uploaded inline: an in-memory blob that fits alone in a {@code CreateResults} request.
    */
   private boolean isUploadable(BlobDefinition definition) {
-    return definition instanceof InMemoryBlobDefinition blob && blob.data().length <= MAX_UPLOAD_SIZE;
+    return definition instanceof InMemoryBlobDefinition blob && inlineSize(blob) <= createResultsBudget;
   }
 
   /**
@@ -261,7 +269,7 @@ final class GrpcBlobService implements BlobService {
    */
   private Map<String, BlobHandle> uploadBlobs(Map<String, InputBlobDefinition> uploadableBlobs) {
     var result = new HashMap<String, BlobHandle>(uploadableBlobs.size());
-    for (var group : packBySize(uploadableBlobs)) {
+    for (var group : packBySize(uploadableBlobs, createResultsBudget)) {
       var request = CreateResultsRequest.newBuilder()
                                         .setCommunicationToken(communicationToken)
                                         .setSessionId(sessionId.asString())
@@ -280,23 +288,26 @@ final class GrpcBlobService implements BlobService {
   }
 
   /**
-   * Groups inline blobs into requests with first-fit decreasing: blobs are sorted by decreasing size,
-   * and each goes into the first group with room for it, or into a new group.
+   * Groups inline blobs into requests with first-fit decreasing: blobs are sorted by decreasing
+   * serialized size, and each goes into the first group with room for it, or into a new group.
+   *
+   * @param uploadableBlobs the in-memory blobs to group
+   * @param budget          the room for blobs in one request, from {@link AgentRequests#entryBudget}
    */
-  static List<List<Map.Entry<String, InMemoryBlobDefinition>>> packBySize(Map<String, InputBlobDefinition> uploadableBlobs) {
+  static List<List<Map.Entry<String, InMemoryBlobDefinition>>> packBySize(Map<String, InputBlobDefinition> uploadableBlobs, int budget) {
     var sorted = uploadableBlobs.entrySet()
                                 .stream()
                                 .map(entry -> Map.entry(entry.getKey(), (InMemoryBlobDefinition) entry.getValue()))
-                                .sorted(Comparator.comparingInt((Map.Entry<String, InMemoryBlobDefinition> entry) -> entry.getValue().data().length).reversed())
+                                .sorted(Comparator.comparingInt((Map.Entry<String, InMemoryBlobDefinition> entry) -> inlineSize(entry.getValue())).reversed())
                                 .toList();
 
     var groups = new ArrayList<List<Map.Entry<String, InMemoryBlobDefinition>>>();
     var groupSizes = new ArrayList<Long>();
     for (var entry : sorted) {
-      var size = entry.getValue().data().length;
+      var size = inlineSize(entry.getValue());
       int target = -1;
       for (int g = 0; g < groups.size(); g++) {
-        if (groups.get(g).size() < MAX_BLOBS_PER_REQUEST && groupSizes.get(g) + size <= MAX_UPLOAD_SIZE) {
+        if (groups.get(g).size() < MAX_BLOBS_PER_REQUEST && groupSizes.get(g) + size <= budget) {
           target = g;
           break;
         }
@@ -331,6 +342,19 @@ final class GrpcBlobService implements BlobService {
                                            return new BlobHandle(handle.name(), blobInfoAfterWrite);
                                          }
                                        ));
+  }
+
+  /**
+   * Returns the number of bytes a blob takes in a {@code CreateResults} request, framing included.
+   */
+  static int inlineSize(InMemoryBlobDefinition blob) {
+    return AgentRequests.entrySize(CreateResultsRequest.RESULTS_FIELD_NUMBER, toResultCreate(blob));
+  }
+
+  private static CreateResultsMetaDataRequest.ResultCreate toMetadataCreate(BlobDefinition definition) {
+    return CreateResultsMetaDataRequest.ResultCreate.newBuilder()
+                                                    .setName(definition.name())
+                                                    .build();
   }
 
   private static CreateResultsRequest.ResultCreate toResultCreate(InMemoryBlobDefinition blob) {

@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
@@ -42,6 +43,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   public int submitTasksCalls;
   public int createResultsCalls;
   public int createResultsMetaDataCalls;
+  public final List<Integer> requestSizes = new CopyOnWriteArrayList<>();
 
   private CompletableFuture<CreateResultsResponse> delayedCreateResults;
   private CompletableFuture<SubmitTasksResponse> delayedSubmitTasks;
@@ -55,6 +57,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
     submitTasksCalls = 0;
     createResultsCalls = 0;
     createResultsMetaDataCalls = 0;
+    requestSizes.clear();
     delayedCreateResults = null;
     delayedSubmitTasks = null;
   }
@@ -70,6 +73,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   @Override
   public void submitTasks(SubmitTasksRequest request, StreamObserver<SubmitTasksResponse> responseObserver) {
     captureSubmitTasksRequest(request);
+    requestSizes.add(request.getSerializedSize());
 
     var response = buildSubmitTasksResponse(request);
 
@@ -100,6 +104,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   @Override
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
     captureBlobMetadataRequest(request);
+    requestSizes.add(request.getSerializedSize());
 
     var metadata = request.getResultsList()
                           .stream()
@@ -113,6 +118,7 @@ public class AgentGrpcMock extends AgentGrpc.AgentImplBase {
   @Override
   public void createResults(CreateResultsRequest request, StreamObserver<CreateResultsResponse> responseObserver) {
     captureCreateResultsRequest(request);
+    requestSizes.add(request.getSerializedSize());
 
     var metadata = request.getResultsList()
                           .stream()

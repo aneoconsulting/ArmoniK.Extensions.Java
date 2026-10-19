@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,6 +155,38 @@ class GrpcTaskServiceTest extends InProcessGrpcTestBase {
     assertThat(stages).hasSize(GrpcTaskService.MAX_TASKS_PER_REQUEST + 1);
     assertThat(stages.get(GrpcTaskService.MAX_TASKS_PER_REQUEST).toCompletableFuture().join().id().asString()).isEqualTo("task-payload1000");
     assertThat(agentGrpcMock.submitTasksCalls).isEqualTo(2);
+  }
+
+  @Test
+  @DisplayName("should split submissions so that no request exceeds the Agent size limit")
+  void should_split_submissions_by_request_size() {
+    // Given: 1000 reduce tasks over 1500 inputs each, about 60 KB of ids per task
+    var inputIds = IntStream.range(0, 1500).mapToObj(i -> BlobId.from(UUID.randomUUID().toString())).toList();
+    var submissions = IntStream.range(0, 1000)
+                               .mapToObj(i -> new TaskSubmission(inputIds, List.of(BlobId.from("out" + i)), BlobId.from("payload" + i), null))
+                               .toList();
+
+    // When
+    var taskInfos = taskService.submitTasks(submissions).stream().map(stage -> stage.toCompletableFuture().join()).toList();
+
+    // Then
+    assertThat(agentGrpcMock.submitTasksCalls).isGreaterThan(1);
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(AgentRequests.MAX_REQUEST_SIZE));
+    assertThat(taskInfos.get(999).id().asString()).isEqualTo("task-payload999");
+  }
+
+  @Test
+  @DisplayName("should send a task larger than the request budget alone")
+  void should_send_oversized_task_alone() {
+    // Given: a task with about 5 MB of input ids, between two small tasks
+    var manyIds = IntStream.range(0, 130_000).mapToObj(i -> BlobId.from(UUID.randomUUID().toString())).toList();
+    var oversized = new TaskSubmission(manyIds, List.of(BlobId.from("out")), BlobId.from("payload-big"), null);
+
+    // When
+    taskService.submitTasks(List.of(submission(0), oversized, submission(1)));
+
+    // Then: the Agent reports the error for the oversized task only
+    assertThat(agentGrpcMock.submitTasksCalls).isEqualTo(3);
   }
 
   @Test

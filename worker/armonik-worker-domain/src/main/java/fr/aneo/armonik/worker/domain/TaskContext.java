@@ -411,6 +411,9 @@ public class TaskContext {
    * <p>
    * The definitions are submitted together: if a phase fails, for any definition, every task of
    * the call fails with the same exception, and {@link #awaitCompletion()} throws.
+   * Some of these tasks may already have been accepted by the Agent, for instance when the second
+   * {@code SubmitTasks} request fails after the first. They never run: the task then ends in error,
+   * and ArmoniK only submits the subtasks of a task that succeeds.
    * </p>
    *
    * <pre>{@code

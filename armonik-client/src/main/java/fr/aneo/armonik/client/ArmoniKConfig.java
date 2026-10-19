@@ -36,6 +36,7 @@ public final class ArmoniKConfig {
   private final String clientP12;
   private final String clientP12Password;
   private final RetryPolicy retryPolicy;
+  private final TaskSubmissionBatching taskSubmissionBatching;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -46,6 +47,7 @@ public final class ArmoniKConfig {
     this.clientP12 = builder.clientP12;
     this.clientP12Password = builder.clientP12Password;
     this.retryPolicy = builder.retryPolicy;
+    this.taskSubmissionBatching = builder.taskSubmissionBatching;
   }
 
   /**
@@ -129,6 +131,16 @@ public final class ArmoniKConfig {
    *
    * @return a new builder instance
    */
+  /**
+   * Returns how task submissions are grouped into batched calls.
+   *
+   * @return the task submission batching settings; {@link TaskSubmissionBatching#DEFAULT} unless configured
+   * @see Builder#withTaskSubmissionBatching(TaskSubmissionBatching)
+   */
+  public TaskSubmissionBatching taskSubmissionBatching() {
+    return taskSubmissionBatching;
+  }
+
   public static Builder builder() {
     return new Builder();
   }
@@ -141,6 +153,7 @@ public final class ArmoniKConfig {
    */
   public static final class Builder {
     private RetryPolicy retryPolicy = DEFAULT;
+    private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -260,6 +273,18 @@ public final class ArmoniKConfig {
      * @return a new {@link ArmoniKConfig} instance
      * @throws IllegalArgumentException if the configuration is invalid
      */
+    /**
+     * Sets how task submissions are grouped into batched calls.
+     *
+     * @param taskSubmissionBatching the batching settings; {@code null} restores {@link TaskSubmissionBatching#DEFAULT}
+     * @return this builder
+     * @see TaskSubmissionBatching
+     */
+    public Builder withTaskSubmissionBatching(TaskSubmissionBatching taskSubmissionBatching) {
+      this.taskSubmissionBatching = requireNonNullElse(taskSubmissionBatching, TaskSubmissionBatching.DEFAULT);
+      return this;
+    }
+
     public ArmoniKConfig build() {
       validate();
       return new ArmoniKConfig(this);

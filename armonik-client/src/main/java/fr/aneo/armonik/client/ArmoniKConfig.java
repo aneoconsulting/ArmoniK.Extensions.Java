@@ -127,11 +127,6 @@ public final class ArmoniKConfig {
   }
 
   /**
-   * Creates a new builder for constructing an {@link ArmoniKConfig}.
-   *
-   * @return a new builder instance
-   */
-  /**
    * Returns how task submissions are grouped into batched calls.
    *
    * @return the task submission batching settings; {@link TaskSubmissionBatching#DEFAULT} unless configured
@@ -141,6 +136,11 @@ public final class ArmoniKConfig {
     return taskSubmissionBatching;
   }
 
+  /**
+   * Creates a new builder for constructing an {@link ArmoniKConfig}.
+   *
+   * @return a new builder instance
+   */
   public static Builder builder() {
     return new Builder();
   }
@@ -266,14 +266,6 @@ public final class ArmoniKConfig {
     }
 
     /**
-     * Builds the immutable {@link ArmoniKConfig} instance.
-     * <p>
-     * Validates that the configuration is consistent and all required fields are set.
-     *
-     * @return a new {@link ArmoniKConfig} instance
-     * @throws IllegalArgumentException if the configuration is invalid
-     */
-    /**
      * Sets how task submissions are grouped into batched calls.
      *
      * @param taskSubmissionBatching the batching settings; {@code null} restores {@link TaskSubmissionBatching#DEFAULT}
@@ -285,6 +277,14 @@ public final class ArmoniKConfig {
       return this;
     }
 
+    /**
+     * Builds the immutable {@link ArmoniKConfig} instance.
+     * <p>
+     * Validates that the configuration is consistent and all required fields are set.
+     *
+     * @return a new {@link ArmoniKConfig} instance
+     * @throws IllegalArgumentException if the configuration is invalid
+     */
     public ArmoniKConfig build() {
       validate();
       return new ArmoniKConfig(this);

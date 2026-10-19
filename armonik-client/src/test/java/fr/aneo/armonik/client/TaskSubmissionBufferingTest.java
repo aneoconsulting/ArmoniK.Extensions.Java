@@ -24,8 +24,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 
 import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
@@ -130,6 +132,82 @@ class TaskSubmissionBufferingTest extends InProcessGrpcTestBase {
     // Then
     assertThat(tasksGrpcMock.submitTasksRequests).hasSize(1);
     assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(3);
+  }
+
+  @Test
+  @DisplayName("should send a list as one batch when batching is disabled")
+  void should_send_list_as_one_batch_when_batching_is_disabled() {
+    // Given
+    var session = sessionHandle(TaskSubmissionBatching.DISABLED);
+
+    // When
+    session.submitTasks(List.of(task(), task(), task())).forEach(handle -> handle.deferredTaskInfo().toCompletableFuture().join());
+
+    // Then
+    assertThat(resultsGrpcMock.metadataCalls).isEqualTo(1);
+    assertThat(tasksGrpcMock.submitTasksRequests).hasSize(1);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(3);
+  }
+
+  @Test
+  @DisplayName("should send a list larger than the batch size as one batch, with the buffered tasks")
+  void should_send_list_larger_than_batch_size_as_one_batch() {
+    // Given
+    var session = sessionHandle(new TaskSubmissionBatching(2, Duration.ofMillis(100)));
+    var buffered = session.submitTask(task());
+
+    // When
+    var listed = session.submitTasks(List.of(task(), task(), task(), task()));
+    buffered.deferredTaskInfo().toCompletableFuture().join();
+    listed.forEach(handle -> handle.deferredTaskInfo().toCompletableFuture().join());
+
+    // Then
+    assertThat(tasksGrpcMock.submitTasksRequests).hasSize(1);
+    assertThat(tasksGrpcMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(5);
+  }
+
+  @Test
+  @DisplayName("should hand the window flush over to the flush executor instead of running it on the scheduler")
+  void should_flush_on_flush_executor() {
+    // Given
+    var handedOver = new ArrayList<Runnable>();
+    var taskSubmitter = new TaskSubmitter(sessionInfo.id(), sessionInfo.taskConfiguration(), null, channelPool,
+                                          new TaskSubmissionBatching(10, Duration.ofMillis(100)), scheduler, handedOver::add);
+    var session = new SessionHandle(sessionInfo, channelPool, taskSubmitter);
+    var handle = session.submitTask(task());
+
+    // When
+    scheduler.tick(100, MILLISECONDS);
+
+    // Then: the scheduler only handed the flush over
+    assertThat(handedOver).hasSize(1);
+    assertThat(resultsGrpcMock.metadataCalls).isZero();
+
+    // When
+    handedOver.forEach(Runnable::run);
+
+    // Then
+    handle.deferredTaskInfo().toCompletableFuture().join();
+    assertThat(tasksGrpcMock.submitTasksRequests).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should fail buffered tasks instead of leaving them pending when the channel pool is closed")
+  void should_fail_buffered_tasks_when_channel_pool_is_closed() {
+    // Given
+    var session = sessionHandle(new TaskSubmissionBatching(10, Duration.ofMillis(100)));
+    var handle = session.submitTask(task());
+    channelPool.close();
+
+    // When
+    session.flushSubmissions().toCompletableFuture().join();
+
+    // Then
+    assertThat(handle.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(Duration.ofSeconds(5))
+      .withThrowableOfType(ExecutionException.class)
+      .withRootCauseInstanceOf(IllegalStateException.class);
+    assertThat(handle.outputs().get("result").deferredBlobInfo().toCompletableFuture()).isCompletedExceptionally();
   }
 
   @Test

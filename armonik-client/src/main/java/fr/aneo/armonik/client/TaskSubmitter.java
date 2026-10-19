@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Function;
@@ -50,6 +51,7 @@ import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksRequest.T
 import static fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.SubmitTasksResponse;
 import static fr.aneo.armonik.client.TaskConfiguration.defaultConfiguration;
 import static fr.aneo.armonik.client.WorkerLibrary.LIBRARY_BLOB_ID;
+import static fr.aneo.armonik.client.internal.concurrent.ExecutorProvider.defaultExecutor;
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -103,6 +105,7 @@ final class TaskSubmitter {
   private final ChannelPool channelPool;
   private final TaskSubmissionBatching batching;
   private final ScheduledExecutorService scheduler;
+  private final Executor flushExecutor;
   private final Gson gson = new Gson();
   private final BlobCompletionListener outputListener;
   private BlobCompletionCoordinator blobCompletionCoordinator;
@@ -158,12 +161,36 @@ final class TaskSubmitter {
                 ChannelPool channelPool,
                 TaskSubmissionBatching batching,
                 ScheduledExecutorService scheduler) {
+    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, defaultExecutor());
+  }
+
+  /**
+   * Creates a new task submitter with explicit batching settings, scheduler and flush executor.
+   *
+   * @param sessionId         the identifier of the session context for task submission
+   * @param taskConfiguration the default task configuration of the session; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events; may be {@code null}
+   * @param channelPool       the gRPC channel pool for cluster communication
+   * @param batching          how submitted tasks are grouped into batched calls
+   * @param scheduler         the scheduler running the batching window timer
+   * @param flushExecutor     the executor sending the buffer when the batching window elapses
+   * @throws NullPointerException if any parameter other than {@code taskConfiguration} and
+   *                              {@code outputListener} is {@code null}
+   */
+  TaskSubmitter(SessionId sessionId,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ScheduledExecutorService scheduler,
+                Executor flushExecutor) {
 
     this.sessionId = requireNonNull(sessionId);
     this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
     this.channelPool = requireNonNull(channelPool);
     this.batching = requireNonNull(batching, "batching must not be null");
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
+    this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.outputListener = outputListener;
     if (outputListener != null) {
       this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, outputListener);
@@ -207,8 +234,8 @@ final class TaskSubmitter {
   /**
    * Submits several tasks and sends them without waiting for the batching window.
    * <p>
-   * The tasks join the submission buffer, together with any task already buffered by
-   * {@link #submit(TaskDefinition)}, and the buffer is then sent. The blob metadata is created
+   * The tasks are sent as one batch, together with any task already buffered by
+   * {@link #submit(TaskDefinition)}, whatever the configured batch size. The blob metadata is created
    * with one {@code CreateResultsMetaData} call per {@value #MAX_BLOBS_PER_REQUEST} blobs, and the
    * tasks are submitted with one {@code SubmitTasks} call per {@value #MAX_TASKS_PER_REQUEST} tasks.
    * Input and payload data are still uploaded with one stream per blob.
@@ -225,8 +252,12 @@ final class TaskSubmitter {
     if (taskDefinitions.isEmpty()) return List.of();
 
     var pendingTasks = taskDefinitions.stream().map(this::prepare).toList();
-    enqueue(pendingTasks);
-    flush();
+    var batch = new ArrayList<PendingTask>();
+    synchronized (lock) {
+      batch.addAll(drain(buffer.size()));
+    }
+    batch.addAll(pendingTasks);
+    send(batch);
     return pendingTasks.stream().map(PendingTask::taskHandle).toList();
   }
 
@@ -361,6 +392,9 @@ final class TaskSubmitter {
 
   /**
    * Adds tasks to the buffer, sends every full batch, and arms the window timer if tasks remain.
+   * <p>
+   * The timer runs on the scheduler shared by every session, so it only hands the flush over to
+   * the client executor: sending can block while waiting for a channel.
    */
   private void enqueue(List<PendingTask> pendingTasks) {
     var batches = new ArrayList<List<PendingTask>>();
@@ -373,7 +407,7 @@ final class TaskSubmitter {
         if (batching.window().isZero()) {
           batches.add(drain(buffer.size()));
         } else if (timer == null) {
-          timer = scheduler.schedule(this::flush, batching.window().toNanos(), NANOSECONDS);
+          timer = scheduler.schedule(() -> flushExecutor.execute(this::flush), batching.window().toNanos(), NANOSECONDS);
         }
       }
     }
@@ -398,6 +432,9 @@ final class TaskSubmitter {
    * Creates the blob metadata of a batch with one {@code CreateResultsMetaData} call per
    * {@value #MAX_BLOBS_PER_REQUEST} blobs, then submits its tasks with one {@code SubmitTasks}
    * call per {@value #MAX_TASKS_PER_REQUEST} tasks.
+   * <p>
+   * If starting a call throws, for instance because the channel pool is closed, every task and
+   * blob of the batch fails with the exception instead of staying pending.
    *
    * @return a stage that completes, never exceptionally, when every task of the batch is acknowledged or failed
    */
@@ -405,9 +442,17 @@ final class TaskSubmitter {
     if (batch.isEmpty()) return completedFuture(null);
     logger.debug("Sending {} buffered tasks. Session id:{}", batch.size(), sessionId.asString());
 
-    allocateBlobs(batch);
-    for (int start = 0; start < batch.size(); start += MAX_TASKS_PER_REQUEST) {
-      submitTaskCreations(batch.subList(start, Math.min(start + MAX_TASKS_PER_REQUEST, batch.size())));
+    try {
+      allocateBlobs(batch);
+      for (int start = 0; start < batch.size(); start += MAX_TASKS_PER_REQUEST) {
+        submitTaskCreations(batch.subList(start, Math.min(start + MAX_TASKS_PER_REQUEST, batch.size())));
+      }
+    } catch (RuntimeException exception) {
+      logger.error("Sending {} tasks failed. Session id:{}", batch.size(), sessionId.asString(), exception);
+      batch.forEach(pendingTask -> {
+        pendingTask.blobInfos().forEach(blobInfo -> blobInfo.completeExceptionally(exception));
+        pendingTask.taskInfo().completeExceptionally(exception);
+      });
     }
 
     return CompletableFuture.allOf(batch.stream()
@@ -540,17 +585,6 @@ final class TaskSubmitter {
   }
 
   /**
-   * Internal record representing the allocated blob handles for a task submission.
-   * <p>
-   * This record groups all blob handles allocated during task submission, providing
-   * organized access to payload, input, and output blob handles by their logical names.
-   *
-   * @param payloadHandle       the blob handle for the task's JSON payload containing input/output mappings
-   * @param inputHandlesByName  map of input blob handles keyed by their logical input names
-   * @param outputHandlesByName map of output blob handles keyed by their logical output names
-   * @see #allocateBlobHandles(TaskDefinition)
-   */
-  /**
    * A task waiting in the submission buffer: the definitions of its blobs and the blob infos to
    * complete once their metadata is created, its deferred task creation, and its handle.
    */
@@ -561,6 +595,17 @@ final class TaskSubmitter {
                              TaskHandle taskHandle) {
   }
 
+  /**
+   * Internal record representing the allocated blob handles for a task submission.
+   * <p>
+   * This record groups all blob handles allocated during task submission, providing
+   * organized access to payload, input, and output blob handles by their logical names.
+   *
+   * @param payloadHandle       the blob handle for the task's JSON payload containing input/output mappings
+   * @param inputHandlesByName  map of input blob handles keyed by their logical input names
+   * @param outputHandlesByName map of output blob handles keyed by their logical output names
+   * @see #prepare(TaskDefinition)
+   */
   private record BlobHandlesAllocation(BlobHandle payloadHandle,
                                        Map<String, BlobHandle> inputHandlesByName,
                                        Map<String, BlobHandle> outputHandlesByName) {

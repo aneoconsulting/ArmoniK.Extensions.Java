@@ -133,6 +133,17 @@ public final class SessionHandle {
    * The task is buffered and sent together with other submitted tasks, according to the
    * {@link TaskSubmissionBatching} of the client: when the buffer is full, or once the batching
    * window has elapsed. {@link #flushSubmissions()} sends the buffer immediately.
+   * <p>
+   * The ids of the task and of its blobs are known only once the task is sent, so code that
+   * waits on {@link TaskHandle#deferredTaskInfo()} or {@link BlobHandle#deferredBlobInfo()}
+   * right after each call waits up to the batching window for every task. Such code should
+   * submit its tasks with {@link #submitTasks(List)}, call {@link #flushSubmissions()} before
+   * waiting, or use {@link TaskSubmissionBatching#DISABLED}.
+   * <p>
+   * If the submission of a task fails, its outputs are reported to the session's
+   * {@link BlobCompletionListener#onError} and are not awaited by {@link #awaitOutputsProcessed()}.
+   * A task that uses an output of such a task as input is not detected: it is accepted but never
+   * runs, and {@link #awaitOutputsProcessed()} keeps waiting for its outputs.
    *
    * @param taskDefinition the definition specifying task inputs, expected outputs,
    *                       payload, and optional task-specific configuration

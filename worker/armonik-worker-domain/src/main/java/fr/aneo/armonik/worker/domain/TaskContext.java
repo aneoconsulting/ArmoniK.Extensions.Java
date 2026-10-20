@@ -22,6 +22,7 @@ import fr.aneo.armonik.worker.domain.internal.BlobService;
 import fr.aneo.armonik.worker.domain.internal.Payload;
 import fr.aneo.armonik.worker.domain.internal.PayloadSerializer;
 import fr.aneo.armonik.worker.domain.internal.TaskService;
+import fr.aneo.armonik.worker.domain.internal.TaskSubmission;
 import fr.aneo.armonik.worker.domain.internal.concurrent.Futures;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +46,8 @@ import static java.util.stream.Collectors.toMap;
  * <ul>
  *   <li><strong>Task inputs</strong>: Read-only access to input data via {@link #getInput(String)}</li>
  *   <li><strong>Task outputs</strong>: Write access to expected outputs via {@link #getOutput(String)}</li>
- *   <li><strong>Subtask submission</strong>: Create and submit child tasks via {@link #submitTask(TaskDefinition)}</li>
+ *   <li><strong>Subtask submission</strong>: Create and submit child tasks via {@link #submitTask(TaskDefinition)},
+ *       or several at once via {@link #submitTasks(List)}</li>
  *   <li><strong>Shared blob creation</strong>: Create blobs for reuse across subtasks via {@link #createBlob(InputBlobDefinition)}</li>
  * </ul>
  *
@@ -386,15 +388,73 @@ public class TaskContext {
   public TaskHandle submitTask(TaskDefinition taskDefinition) {
     requireNonNull(taskDefinition, "taskDefinition cannot be null");
 
-    var configuration = effectiveConfiguration(taskDefinition);
-    var allInputHandles = prepareInputHandles(taskDefinition);
-    var allOutputHandles = prepareOutputHandles(taskDefinition);
+    return submitTasks(List.of(taskDefinition)).get(0);
+  }
 
-    var deferredTaskInfo = getIdsFrom(allInputHandles).thenCombine(getIdsFrom(allOutputHandles), createPayload())
-                                                      .thenCompose(payload -> createPayloadHandle(payload).thenCompose(submitTask(configuration, payload)));
-    trackTaskCompletion(deferredTaskInfo);
+  /**
+   * Submits several subtasks with as few Agent calls as possible.
+   * <p>
+   * Each definition is processed as in {@link #submitTask(TaskDefinition)}, but the Agent calls
+   * are shared by all definitions:
+   * </p>
+   * <ol>
+   *   <li>One {@code createBlobs} call creates the input blobs of every definition</li>
+   *   <li>One {@code prepareBlobs} call creates the output blob metadata of every definition</li>
+   *   <li>Once all blob IDs are known, one {@code createBlobs} call creates every payload</li>
+   *   <li>One {@code submitTasks} call submits every task</li>
+   * </ol>
+   * <p>
+   * The underlying services split each call into Agent requests of bounded size.
+   * </p>
+   *
+   * <h4>Failure</h4>
+   * <p>
+   * The definitions are submitted together: if a phase fails, for any definition, every task of
+   * the call fails with the same exception, and {@link #awaitCompletion()} throws.
+   * Some of these tasks may already have been accepted by the Agent, for instance when the second
+   * {@code SubmitTasks} request fails after the first. They never run: the task then ends in error,
+   * and ArmoniK only submits the subtasks of a task that succeeds.
+   * </p>
+   *
+   * <pre>{@code
+   * var definitions = chunks.stream()
+   *                         .map(chunk -> new TaskDefinition().withInput("chunk", InputBlobDefinition.from("chunk", chunk))
+   *                                                           .withOutput("result"))
+   *                         .toList();
+   * var handles = taskContext.submitTasks(definitions);
+   * }</pre>
+   *
+   * @param taskDefinitions the definitions of the tasks to submit; must not be {@code null}
+   *                        nor contain {@code null}
+   * @return one handle per definition, in the order of {@code taskDefinitions}; never {@code null}
+   * @throws NullPointerException if {@code taskDefinitions} is {@code null} or contains {@code null}
+   * @see #submitTask(TaskDefinition)
+   */
+  public List<TaskHandle> submitTasks(List<TaskDefinition> taskDefinitions) {
+    requireNonNull(taskDefinitions, "taskDefinitions cannot be null");
+    taskDefinitions.forEach(definition -> requireNonNull(definition, "taskDefinitions cannot contain null"));
+    if (taskDefinitions.isEmpty()) return List.of();
 
-    return new TaskHandle(sessionId, configuration, deferredTaskInfo, allInputHandles, allOutputHandles);
+    logger.debug("Submitting {} tasks", taskDefinitions.size());
+    var configurations = taskDefinitions.stream().map(this::effectiveConfiguration).toList();
+    var allInputHandles = prepareInputHandles(taskDefinitions);
+    var allOutputHandles = prepareOutputHandles(taskDefinitions);
+
+    var deferredPayloads = new ArrayList<CompletionStage<Payload>>(taskDefinitions.size());
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      deferredPayloads.add(getIdsFrom(allInputHandles.get(i)).thenCombine(getIdsFrom(allOutputHandles.get(i)), createPayload()));
+    }
+    var deferredTaskInfos = Futures.allOf(deferredPayloads)
+                                   .thenCompose(payloads -> createPayloadBlobs(payloads).thenCompose(submitTasks(payloads, configurations)));
+
+    var taskHandles = new ArrayList<TaskHandle>(taskDefinitions.size());
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      var index = i;
+      var deferredTaskInfo = deferredTaskInfos.thenApply(taskInfos -> taskInfos.get(index));
+      trackTaskCompletion(deferredTaskInfo);
+      taskHandles.add(new TaskHandle(sessionId, configurations.get(i), deferredTaskInfo, allInputHandles.get(i), allOutputHandles.get(i)));
+    }
+    return taskHandles;
   }
 
   /**
@@ -412,7 +472,7 @@ public class TaskContext {
    * </p>
    * <ul>
    *   <li>Blob data uploads (from {@link #createBlob(InputBlobDefinition)})</li>
-   *   <li>Task submissions (from {@link #submitTask(TaskDefinition)})</li>
+   *   <li>Task submissions (from {@link #submitTask(TaskDefinition)} and {@link #submitTasks(List)})</li>
    *   <li>Any deferred blob metadata creation</li>
    * </ul>
    *
@@ -470,35 +530,79 @@ public class TaskContext {
     };
   }
 
-  private Map<String, BlobHandle> prepareInputHandles(TaskDefinition taskDefinition) {
-    var createdInputHandles = blobService.createBlobs(taskDefinition.inputDefinitions());
-    trackBlobCompletions(createdInputHandles.values());
+  private List<Map<String, BlobHandle>> prepareInputHandles(List<TaskDefinition> taskDefinitions) {
+    var createdInputHandles = createPerTask(taskDefinitions, TaskDefinition::inputDefinitions, blobService::createBlobs);
 
-    return merge(
-      createdInputHandles,
-      taskDefinition.inputHandles(),
-      taskDefinition.taskInputHandles()
-    );
+    var result = new ArrayList<Map<String, BlobHandle>>(taskDefinitions.size());
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      var taskDefinition = taskDefinitions.get(i);
+      result.add(merge(createdInputHandles.get(i), taskDefinition.inputHandles(), taskDefinition.taskInputHandles()));
+    }
+    return result;
   }
 
-  private Map<String, BlobHandle> prepareOutputHandles(TaskDefinition taskDefinition) {
-    var createdOutputBlobHandles = blobService.prepareBlobs(taskDefinition.outputDefinitions());
-    trackBlobCompletions(createdOutputBlobHandles.values());
+  private List<Map<String, BlobHandle>> prepareOutputHandles(List<TaskDefinition> taskDefinitions) {
+    var createdOutputHandles = createPerTask(taskDefinitions, TaskDefinition::outputDefinitions, blobService::prepareBlobs);
 
-    return merge(
-      createdOutputBlobHandles,
-      taskDefinition.taskOutputHandles()
-    );
+    var result = new ArrayList<Map<String, BlobHandle>>(taskDefinitions.size());
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      result.add(merge(createdOutputHandles.get(i), taskDefinitions.get(i).taskOutputHandles()));
+    }
+    return result;
   }
 
-  private CompletionStage<BlobInfo> createPayloadHandle(Payload payload) {
-    return blobService.createBlob(InputBlobDefinition.from("payload", payloadSerializer.serialize(payload))).deferredBlobInfo();
+  /**
+   * Creates the blobs of all definitions with a single call to {@code create}, and splits the
+   * returned handles back per definition.
+   * <p>
+   * Blob names are only unique within a definition, so the call uses the keys
+   * {@code "<definition index>/<name>"}. No call is made if no definition has a blob.
+   * </p>
+   */
+  private <D> List<Map<String, BlobHandle>> createPerTask(List<TaskDefinition> taskDefinitions,
+                                                          Function<TaskDefinition, Map<String, D>> definitionsOf,
+                                                          Function<Map<String, D>, Map<String, BlobHandle>> create) {
+    var keyedDefinitions = new LinkedHashMap<String, D>();
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      var prefix = i + "/";
+      definitionsOf.apply(taskDefinitions.get(i)).forEach((name, definition) -> keyedDefinitions.put(prefix + name, definition));
+    }
+    var createdHandles = keyedDefinitions.isEmpty() ? Map.<String, BlobHandle>of() : create.apply(keyedDefinitions);
+    trackBlobCompletions(createdHandles.values());
+
+    var result = new ArrayList<Map<String, BlobHandle>>(taskDefinitions.size());
+    for (int i = 0; i < taskDefinitions.size(); i++) {
+      var prefix = i + "/";
+      var handles = new HashMap<String, BlobHandle>();
+      definitionsOf.apply(taskDefinitions.get(i)).keySet().forEach(name -> handles.put(name, createdHandles.get(prefix + name)));
+      result.add(handles);
+    }
+    return result;
   }
 
-  private Function<BlobInfo, CompletionStage<TaskInfo>> submitTask(TaskConfiguration configuration, Payload payload) {
-    return payloadInfo -> {
-      logger.debug("Submitting task to Agent with payload id: {}", payloadInfo.id());
-      return taskService.submitTask(payload.inputsMapping().values(), payload.outputsMapping().values(), payloadInfo.id(), configuration);
+  private CompletionStage<List<BlobInfo>> createPayloadBlobs(List<Payload> payloads) {
+    var payloadDefinitions = new LinkedHashMap<String, InputBlobDefinition>();
+    for (int i = 0; i < payloads.size(); i++) {
+      payloadDefinitions.put(String.valueOf(i), InputBlobDefinition.from("payload", payloadSerializer.serialize(payloads.get(i))));
+    }
+    var payloadHandles = blobService.createBlobs(payloadDefinitions);
+
+    var deferredPayloadInfos = new ArrayList<CompletionStage<BlobInfo>>(payloads.size());
+    for (int i = 0; i < payloads.size(); i++) {
+      deferredPayloadInfos.add(payloadHandles.get(String.valueOf(i)).deferredBlobInfo());
+    }
+    return Futures.allOf(deferredPayloadInfos);
+  }
+
+  private Function<List<BlobInfo>, CompletionStage<List<TaskInfo>>> submitTasks(List<Payload> payloads, List<TaskConfiguration> configurations) {
+    return payloadInfos -> {
+      var submissions = new ArrayList<TaskSubmission>(payloads.size());
+      for (int i = 0; i < payloads.size(); i++) {
+        var payload = payloads.get(i);
+        submissions.add(new TaskSubmission(payload.inputsMapping().values(), payload.outputsMapping().values(), payloadInfos.get(i).id(), configurations.get(i)));
+      }
+      logger.debug("Submitting {} tasks to Agent", submissions.size());
+      return Futures.allOf(taskService.submitTasks(submissions));
     };
   }
 

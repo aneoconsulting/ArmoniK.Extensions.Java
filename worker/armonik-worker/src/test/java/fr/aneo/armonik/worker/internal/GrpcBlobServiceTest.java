@@ -29,11 +29,13 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
 
-import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_UPLOAD_SIZE;
+import static fr.aneo.armonik.worker.internal.GrpcBlobService.MAX_BLOBS_PER_REQUEST;
+import static fr.aneo.armonik.worker.internal.AgentRequests.MAX_REQUEST_SIZE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class GrpcBlobServiceTest extends InProcessGrpcTestBase {
@@ -61,10 +63,10 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("should upload blob data when size is less or equal MAX_UPLOAD_SIZE")
-  void should_upload_blob_data_when_size_is_less_or_equal_4MB() {
+  @DisplayName("should upload blob data inline when it fits in one Agent request")
+  void should_upload_blob_data_when_it_fits_in_one_request() {
     // Given
-    byte[] data1 = new byte[MAX_UPLOAD_SIZE];
+    byte[] data1 = new byte[MAX_REQUEST_SIZE - 1024];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
     var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
@@ -76,13 +78,14 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
     assertThat(agentGrpcMock.uploadedBlobs.sessionId()).isEqualTo("sessionId");
     assertThat(agentGrpcMock.uploadedBlobs.communicationToken()).isEqualTo("communicationToken");
     assertThat(agentGrpcMock.uploadedBlobs.blobs()).containsExactly(Map.entry("blobName1", data1));
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
   }
 
   @Test
-  @DisplayName("should write blob data in a file when size is greater than MAX_UPLOAD_SIZE")
+  @DisplayName("should write blob data in a file when the request would exceed the Agent limit")
   void should_write_blob_data_in_a_file() {
-    // Given
-    byte[] data1 = new byte[MAX_UPLOAD_SIZE + 1];
+    // Given: the data alone is below the limit, but not with the request envelope
+    byte[] data1 = new byte[MAX_REQUEST_SIZE - 16];
     IntStream.range(0, data1.length).forEach(i -> data1[i] = (byte) (i % 251));
 
     var inputs = Map.of("input1", InputBlobDefinition.from("blobName1", data1));
@@ -218,5 +221,125 @@ class GrpcBlobServiceTest extends InProcessGrpcTestBase {
 
     assertThat(tempDir.resolve(inputBlobInfo.id().asString())).doesNotExist();
     assertThat(tempDir.resolve(outputBlobInfo.id().asString())).doesNotExist();
+  }
+
+  @Test
+  @DisplayName("should upload several small blobs in one CreateResults request")
+  void should_upload_small_blobs_in_one_request() {
+    // Given
+    var inputs = Map.of(
+      "a", InputBlobDefinition.from("blobA", new byte[1024]),
+      "b", InputBlobDefinition.from("blobB", new byte[2048]),
+      "c", InputBlobDefinition.from("blobC", new byte[10]));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(1);
+    assertThat(agentGrpcMock.uploadedBlobs.blobs()).containsOnlyKeys("blobA", "blobB", "blobC");
+    assertThat(handles).containsOnlyKeys("a", "b", "c");
+    assertThat(handles.get("a").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobA-id");
+    assertThat(handles.get("b").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobB-id");
+    assertThat(handles.get("c").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blobC-id");
+  }
+
+  @Test
+  @DisplayName("should pack inline blobs by first-fit decreasing within the request budget")
+  void should_pack_inline_blobs_within_request_budget() {
+    // Given: 0.6 + 0.3 fits, 0.6 + 0.6 does not
+    var large = MAX_REQUEST_SIZE * 6 / 10;
+    var small = MAX_REQUEST_SIZE * 3 / 10;
+    Map<String, InputBlobDefinition> inputs = Map.of(
+      "large1", InputBlobDefinition.from("large1", new byte[large]),
+      "large2", InputBlobDefinition.from("large2", new byte[large]),
+      "small1", InputBlobDefinition.from("small1", new byte[small]),
+      "small2", InputBlobDefinition.from("small2", new byte[small]));
+
+    // When
+    var groups = GrpcBlobService.packBySize(inputs, MAX_REQUEST_SIZE);
+
+    // Then
+    assertThat(groups).hasSize(2);
+    assertThat(groups).allSatisfy(group -> {
+      assertThat(group).hasSize(2);
+      assertThat(group.stream().mapToLong(entry -> GrpcBlobService.inlineSize(entry.getValue())).sum()).isLessThanOrEqualTo(MAX_REQUEST_SIZE);
+    });
+  }
+
+  @Test
+  @DisplayName("should split inline blobs whose data fits the limit but whose request does not")
+  void should_split_blobs_when_envelope_exceeds_limit() {
+    // Given: two blobs of exactly half the limit, which fit together by data size only
+    Map<String, InputBlobDefinition> inputs = Map.of(
+      "half1", InputBlobDefinition.from("half1", new byte[MAX_REQUEST_SIZE / 2]),
+      "half2", InputBlobDefinition.from("half2", new byte[MAX_REQUEST_SIZE / 2]));
+
+    // When
+    blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
+  }
+
+  @Test
+  @DisplayName("should keep every request within the Agent limit for many blobs near the boundary")
+  void should_keep_requests_within_limit_for_many_blobs() {
+    // Given: 1000 blobs whose data adds up to just below the limit, but not with the framing of each entry
+    var inputs = new HashMap<String, InputBlobDefinition>();
+    IntStream.range(0, 1000).forEach(i -> inputs.put("blob" + i, InputBlobDefinition.from("blob" + i, new byte[4190])));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(agentGrpcMock.requestSizes).allSatisfy(size -> assertThat(size).isLessThanOrEqualTo(MAX_REQUEST_SIZE));
+    assertThat(handles).hasSize(1000);
+  }
+
+  @Test
+  @DisplayName("should not put more than MAX_BLOBS_PER_REQUEST blobs in one request")
+  void should_limit_blob_count_per_request() {
+    // Given
+    var inputs = new HashMap<String, InputBlobDefinition>();
+    IntStream.range(0, MAX_BLOBS_PER_REQUEST + 1).forEach(i -> inputs.put("blob" + i, InputBlobDefinition.from("blob" + i, new byte[1])));
+
+    // When
+    var handles = blobService.createBlobs(inputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isEqualTo(2);
+    assertThat(handles).hasSize(MAX_BLOBS_PER_REQUEST + 1);
+    assertThat(handles.get("blob42").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("blob42-id");
+  }
+
+  @Test
+  @DisplayName("should create metadata with one request per MAX_BLOBS_PER_REQUEST blobs")
+  void should_prepare_metadata_in_groups() {
+    // Given
+    var outputs = new HashMap<String, OutputBlobDefinition>();
+    IntStream.range(0, MAX_BLOBS_PER_REQUEST + 1).forEach(i -> outputs.put("out" + i, OutputBlobDefinition.from("out" + i)));
+
+    // When
+    var handles = blobService.prepareBlobs(outputs);
+
+    // Then
+    assertThat(agentGrpcMock.createResultsMetaDataCalls).isEqualTo(2);
+    assertThat(handles).hasSize(MAX_BLOBS_PER_REQUEST + 1);
+    assertThat(handles.get("out1000").deferredBlobInfo().toCompletableFuture().join().id().asString()).isEqualTo("out1000-id");
+  }
+
+  @Test
+  @DisplayName("should send no request for empty maps")
+  void should_send_no_request_for_empty_maps() {
+    // When
+    blobService.createBlobs(Map.of());
+    blobService.prepareBlobs(Map.of());
+
+    // Then
+    assertThat(agentGrpcMock.createResultsCalls).isZero();
+    assertThat(agentGrpcMock.createResultsMetaDataCalls).isZero();
   }
 }

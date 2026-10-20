@@ -20,10 +20,15 @@ import fr.aneo.armonik.api.grpc.v1.agent.AgentCommon.SubmitTasksRequest.TaskCrea
 import fr.aneo.armonik.worker.domain.*;
 import fr.aneo.armonik.worker.domain.internal.Payload;
 import fr.aneo.armonik.worker.domain.internal.TaskService;
+import fr.aneo.armonik.worker.domain.internal.TaskSubmission;
 import fr.aneo.armonik.worker.internal.concurrent.Futures;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 
 import static fr.aneo.armonik.api.grpc.v1.Objects.TaskOptions;
@@ -55,8 +60,8 @@ import static java.util.Objects.requireNonNull;
  *
  * <h2>Asynchronous Submission</h2>
  * <p>
- * Task submission is asynchronous. The {@link #submitTask} method returns a {@link CompletionStage}
- * that completes when the Agent acknowledges the task submission. The actual task execution may
+ * Task submission is asynchronous. {@link #submitTask} and {@link #submitTasks} return
+ * {@link CompletionStage}s that complete when the Agent acknowledges the task submission. The actual task execution may
  * occur later, once all data dependencies are satisfied.
  * </p>
  *
@@ -71,6 +76,12 @@ import static java.util.Objects.requireNonNull;
  * @see TaskContext
  */
 class GrpcTaskService implements TaskService {
+  private static final Logger logger = LoggerFactory.getLogger(GrpcTaskService.class);
+
+  /**
+   * Maximum number of tasks sent in one {@code SubmitTasks} call: {@value}.
+   */
+  static final int MAX_TASKS_PER_REQUEST = 1000;
 
   private final AgentFutureStub agentStub;
   private final SessionId sessionId;
@@ -122,22 +133,60 @@ class GrpcTaskService implements TaskService {
    */
   @Override
   public CompletionStage<TaskInfo> submitTask(Collection<BlobId> inputIds, Collection<BlobId> outputIds, BlobId payloadId, TaskConfiguration taskConfiguration) {
-    requireNonNull(inputIds, "inputIds must not be null");
-    requireNonNull(outputIds, "outputIds must not be null");
-    requireNonNull(payloadId, "payloadId must not be null");
+    return submitTasks(List.of(new TaskSubmission(inputIds, outputIds, payloadId, taskConfiguration))).get(0);
+  }
 
-    if (inputIds.isEmpty() || outputIds.isEmpty())
+  /**
+   * Submits several tasks with one Agent {@code SubmitTasks} call per group of at most
+   * {@value #MAX_TASKS_PER_REQUEST} tasks and {@value AgentRequests#MAX_REQUEST_SIZE} serialized bytes.
+   * A task too large to share a request is sent alone.
+   * <p>
+   * All submissions are validated before any call is made. The Agent returns the task infos
+   * in request order, so the i-th returned stage belongs to the i-th submission. If a call fails,
+   * every stage of its group fails with the same exception.
+   * </p>
+   *
+   * @param submissions the tasks to submit; must not be {@code null}
+   * @return one completion stage per submission, in the order of {@code submissions}
+   * @throws NullPointerException     if {@code submissions} is {@code null}
+   * @throws IllegalArgumentException if a submission has no input or no output
+   */
+  @Override
+  public List<CompletionStage<TaskInfo>> submitTasks(List<TaskSubmission> submissions) {
+    requireNonNull(submissions, "submissions must not be null");
+    submissions.forEach(GrpcTaskService::validate);
+
+    var taskCreations = submissions.stream().map(GrpcTaskService::toTaskCreation).toList();
+    var budget = AgentRequests.entryBudget(SubmitTasksRequest.newBuilder()
+                                                             .setSessionId(sessionId.asString())
+                                                             .setCommunicationToken(communicationToken)
+                                                             .build());
+    var groups = AgentRequests.groupInOrder(taskCreations,
+                                            taskCreation -> AgentRequests.entrySize(SubmitTasksRequest.TASK_CREATIONS_FIELD_NUMBER, taskCreation),
+                                            budget,
+                                            MAX_TASKS_PER_REQUEST);
+
+    var result = new ArrayList<CompletionStage<TaskInfo>>(submissions.size());
+    for (var group : groups) {
+      var request = SubmitTasksRequest.newBuilder()
+                                      .setSessionId(sessionId.asString())
+                                      .setCommunicationToken(communicationToken)
+                                      .addAllTaskCreations(group)
+                                      .build();
+      logger.debug("Submitting {} tasks to the Agent", group.size());
+      var responseStage = Futures.toCompletionStage(agentStub.submitTasks(request));
+      for (int i = 0; i < group.size(); i++) {
+        var index = i;
+        result.add(responseStage.thenApply(response -> new TaskInfo(TaskId.from(response.getTaskInfos(index).getTaskId()))));
+      }
+    }
+    return result;
+  }
+
+  private static void validate(TaskSubmission submission) {
+    requireNonNull(submission, "submission must not be null");
+    if (submission.inputIds().isEmpty() || submission.outputIds().isEmpty())
       throw new IllegalArgumentException("inputIds and outputIds must not be empty");
-
-    var responseStage = Futures.toCompletionStage(
-      agentStub.submitTasks(SubmitTasksRequest.newBuilder()
-                                              .setSessionId(sessionId.asString())
-                                              .setCommunicationToken(communicationToken)
-                                              .addTaskCreations(toTaskCreation(inputIds, outputIds, payloadId, taskConfiguration))
-                                              .build())
-    );
-
-    return responseStage.thenApply(response -> new TaskInfo(TaskId.from(response.getTaskInfos(0).getTaskId())));
   }
 
   /**
@@ -153,16 +202,14 @@ class GrpcTaskService implements TaskService {
    *   <li>Task options (from the provided task configuration)</li>
    * </ul>
    *
-   * @param inputBlobIds      collection of input blob IDs; must not be {@code null}
-   * @param outputBlobIds     collection of output blob IDs; must not be {@code null}
-   * @param payloadId         payload blob ID; must not be {@code null}
-   * @param taskConfiguration task configuration; may be {@code null}
+   * @param submission the task to convert; its configuration may be {@code null}
    * @return a task creation message ready for submission; never {@code null}
    */
-  private static TaskCreation toTaskCreation(Collection<BlobId> inputBlobIds,
-                                             Collection<BlobId> outputBlobIds,
-                                             BlobId payloadId,
-                                             TaskConfiguration taskConfiguration) {
+  private static TaskCreation toTaskCreation(TaskSubmission submission) {
+    var inputBlobIds = submission.inputIds();
+    var outputBlobIds = submission.outputIds();
+    var payloadId = submission.payloadId();
+    var taskConfiguration = submission.taskConfiguration();
     var dataDependencies = new LinkedHashSet<String>();
     inputBlobIds.forEach(id -> dataDependencies.add(id.asString()));
     if (taskConfiguration != null && taskConfiguration.options().containsKey(LIBRARY_BLOB_ID)) {

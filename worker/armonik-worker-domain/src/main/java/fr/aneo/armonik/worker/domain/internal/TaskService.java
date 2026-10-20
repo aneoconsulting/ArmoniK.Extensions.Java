@@ -21,6 +21,7 @@ import fr.aneo.armonik.worker.domain.TaskContext;
 import fr.aneo.armonik.worker.domain.TaskInfo;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 /**
  * Service responsible for submitting tasks to ArmoniK.
@@ -80,4 +81,27 @@ public interface TaskService {
    * @throws IllegalArgumentException if {@code inputIds} or {@code outputIds} is empty
    */
   CompletionStage<TaskInfo> submitTask(Collection<BlobId> inputIds, Collection<BlobId> outputIds, BlobId payloadId, TaskConfiguration taskConfiguration);
+
+  /**
+   * Submits several tasks for execution to ArmoniK.
+   * <p>
+   * Implementations should send the tasks in as few Agent calls as possible. The default
+   * implementation calls {@link #submitTask(Collection, Collection, BlobId, TaskConfiguration)}
+   * once per task.
+   * </p>
+   * <p>
+   * The same validation rules as {@code submitTask} apply to each submission. The returned list
+   * has one stage per submission, in the same order.
+   * </p>
+   *
+   * @param submissions the tasks to submit; must not be {@code null}
+   * @return one completion stage per submission, in the order of {@code submissions}; never {@code null}
+   * @throws NullPointerException     if {@code submissions} is {@code null}
+   * @throws IllegalArgumentException if a submission has no input or no output
+   */
+  default List<CompletionStage<TaskInfo>> submitTasks(List<TaskSubmission> submissions) {
+    return submissions.stream()
+                      .map(s -> submitTask(s.inputIds(), s.outputIds(), s.payloadId(), s.taskConfiguration()))
+                      .toList();
+  }
 }

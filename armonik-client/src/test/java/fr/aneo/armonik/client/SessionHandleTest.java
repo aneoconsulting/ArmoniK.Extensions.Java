@@ -386,6 +386,30 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should wait for outputs without downloading them when the session has no listener")
+  void should_wait_for_outputs_without_listener() throws Exception {
+    // Given
+    var session = new SessionHandle(sessionInfo, null, channelPool);
+    var task = session.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                      .withOutput("result"));
+    var awaitDone = new CountDownLatch(1);
+
+    // When
+    var awaitFuture = runAsync(() -> {
+      session.awaitOutputsProcessed();
+      awaitDone.countDown();
+    });
+
+    // Then: it waits until the output completes
+    assertThat(awaitDone.await(300, MILLISECONDS)).isFalse();
+    eventsGrpcMock.emitStatusUpdate(idFrom(task.outputs().get("result")), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.complete();
+    assertThat(awaitDone.await(5, SECONDS)).isTrue();
+    awaitFuture.get(1, SECONDS);
+    assertThat(resultsGrpcMock.downloadCalls).hasValue(0);
+  }
+
+  @Test
   @DisplayName("should create a blob handle")
   void should_create_a_blob_handle() throws InterruptedException, TimeoutException {
     // Given

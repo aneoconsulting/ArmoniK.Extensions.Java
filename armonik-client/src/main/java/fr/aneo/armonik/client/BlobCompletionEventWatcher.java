@@ -56,6 +56,7 @@ final class BlobCompletionEventWatcher {
   private static final Logger logger = LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
 
   private final BlobCompletionListener listener;
+  private final boolean downloadData;
   private final SessionId sessionId;
   private final ChannelPool channelPool;
 
@@ -71,9 +72,23 @@ final class BlobCompletionEventWatcher {
    * @throws NullPointerException if channelPool is null
    */
   BlobCompletionEventWatcher(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener listener) {
+    this(sessionId, channelPool, listener, true);
+  }
+
+  /**
+   * Creates a watcher that downloads the data of completed blobs only when asked to.
+   *
+   * @param sessionId    the identifier of the session this watcher serves
+   * @param channelPool  the gRPC channel pool for cluster communication
+   * @param listener     the listener to receive completion events
+   * @param downloadData whether the data of a completed blob is downloaded and passed to the listener
+   * @throws NullPointerException if any reference parameter is null
+   */
+  BlobCompletionEventWatcher(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener listener, boolean downloadData) {
     this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
     this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
     this.listener = requireNonNull(listener, "listener must not be null");
+    this.downloadData = downloadData;
   }
 
   /**
@@ -140,7 +155,7 @@ final class BlobCompletionEventWatcher {
 
     EventsGrpc.newStub(channel).getEvents(
       createEventSubscriptionRequest(sessionId, handlesById.keySet()),
-      new BlobCompletionEventObserver(sessionId, handlesById, streamCompletion, listener, ticket::setLeftoverHandles)
+      new BlobCompletionEventObserver(sessionId, handlesById, streamCompletion, listener, downloadData, ticket::setLeftoverHandles)
     );
     return streamCompletion;
   }

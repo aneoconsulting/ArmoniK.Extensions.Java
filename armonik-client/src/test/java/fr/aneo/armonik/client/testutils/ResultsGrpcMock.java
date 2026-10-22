@@ -30,6 +30,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.protobuf.ByteString.copyFrom;
 import static fr.aneo.armonik.client.TestDataFactory.blobId;
@@ -43,6 +44,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public int metadataCalls;
   public volatile RuntimeException metadataError;
   public volatile byte[] failingUploadData;
+  public final AtomicInteger downloadCalls = new AtomicInteger();
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
@@ -64,6 +66,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.metadataCalls = 0;
     this.metadataError = null;
     this.failingUploadData = null;
+    this.downloadCalls.set(0);
     this.pendingUploads.clear();
   }
 
@@ -97,6 +100,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
   @Override
   public void downloadResultData(DownloadResultDataRequest request, StreamObserver<DownloadResultDataResponse> responseObserver) {
+    downloadCalls.incrementAndGet();
     var id = blobId(request.getResultId());
     if (downloadFailedId != null && downloadFailedId.equals(blobId(request.getResultId()))) {
       responseObserver.onError(new RuntimeException("Failed to download result"));

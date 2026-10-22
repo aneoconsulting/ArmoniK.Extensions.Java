@@ -213,6 +213,9 @@ public final class SessionHandle {
    *   <li>the task output listener has been applied for each terminal output.</li>
    * </ul>
    * Buffered task submissions are sent first, so their outputs are included.
+   * <p>
+   * Without a listener, the method still waits for every output to reach a terminal state, but
+   * their data is not downloaded; use {@link BlobHandle#downloadData()} to fetch an output.
    * Outputs submitted or started after this method is called are not included in this wait.
    * If there are no pending outputs at call time, the method returns immediately.
    * <p>

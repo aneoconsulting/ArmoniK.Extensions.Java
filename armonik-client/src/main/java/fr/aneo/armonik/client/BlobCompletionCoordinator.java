@@ -86,9 +86,23 @@ final class BlobCompletionCoordinator {
    * @see BlobCompletionEventWatcher
    */
   BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener outputListener) {
+    this(sessionId, channelPool, outputListener, true);
+  }
+
+  /**
+   * Creates a new blob completion coordinator that downloads the data of completed blobs only when asked to.
+   *
+   * @param sessionId      the identifier of the session this coordinator serves
+   * @param channelPool    the gRPC channel pool for cluster communication
+   * @param outputListener the listener notified of completed and failed blobs
+   * @param downloadData   whether the data of a completed blob is downloaded and passed to the listener;
+   *                       when {@code false}, a completed blob only counts as processed
+   * @throws NullPointerException if any reference parameter is null
+   */
+  BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener outputListener, boolean downloadData) {
     this(
       sessionId,
-      new BlobCompletionEventWatcher(sessionId, channelPool, outputListener),
+      new BlobCompletionEventWatcher(sessionId, channelPool, outputListener, downloadData),
       BatchingPolicy.DEFAULT,
       Schedulers.shared()
     );

@@ -111,8 +111,22 @@ final class TaskSubmitter {
   private final ScheduledExecutorService scheduler;
   private final Executor flushExecutor;
   private final Gson gson = new Gson();
+  /**
+   * Listener used when the session has none, so that outputs are watched without null checks.
+   * Their data is then not downloaded.
+   */
+  private static final BlobCompletionListener NO_LISTENER = new BlobCompletionListener() {
+    @Override
+    public void onSuccess(Blob blob) {
+    }
+
+    @Override
+    public void onError(BlobError blobError) {
+    }
+  };
+
   private final BlobCompletionListener outputListener;
-  private BlobCompletionCoordinator blobCompletionCoordinator;
+  private final BlobCompletionCoordinator blobCompletionCoordinator;
 
   private final Object lock = new Object();
   private final List<PendingTask> buffer = new ArrayList<>();
@@ -123,8 +137,9 @@ final class TaskSubmitter {
    * <p>
    * This constructor is used internally by {@link SessionHandle} when a session is opened
    * or retrieved via {@link ArmoniKClient}. It configures the default task settings for the
-   * session and, if an {@link BlobCompletionListener} is provided, initializes output blob
-   * completion coordination using the default batching strategy.
+   * session and initializes output blob completion coordination using the default batching
+   * strategy. Without a listener, outputs are still watched, so that {@link #waitUntilFinished()}
+   * waits for them, but their data is not downloaded.
    * <p>
    * When {@code taskConfiguration} is {@code null}, the global
    * {@link TaskConfiguration#defaultConfiguration() default configuration} is applied.
@@ -132,7 +147,8 @@ final class TaskSubmitter {
    * @param sessionId         the identifier of the session context for task submission
    * @param taskConfiguration the default task configuration to apply for submissions in this session;
    *                          may be {@code null} to use the global default
-   * @param outputListener    optional listener for output blob completion events; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
    * @param channelPool       the gRPC channel pool for cluster communication
    * @throws NullPointerException if {@code sessionId} or {@code channelPool} is {@code null}
    * @see SessionHandle
@@ -152,7 +168,8 @@ final class TaskSubmitter {
    *
    * @param sessionId         the identifier of the session context for task submission
    * @param taskConfiguration the default task configuration of the session; may be {@code null}
-   * @param outputListener    optional listener for output blob completion events; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
    * @param channelPool       the gRPC channel pool for cluster communication
    * @param batching          how submitted tasks are grouped into batched calls
    * @param scheduler         the scheduler running the batching window timer
@@ -173,7 +190,8 @@ final class TaskSubmitter {
    *
    * @param sessionId         the identifier of the session context for task submission
    * @param taskConfiguration the default task configuration of the session; may be {@code null}
-   * @param outputListener    optional listener for output blob completion events; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
    * @param channelPool       the gRPC channel pool for cluster communication
    * @param batching          how submitted tasks are grouped into batched calls
    * @param scheduler         the scheduler running the batching window timer
@@ -195,10 +213,8 @@ final class TaskSubmitter {
     this.batching = requireNonNull(batching, "batching must not be null");
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
-    this.outputListener = outputListener;
-    if (outputListener != null) {
-      this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, outputListener);
-    }
+    this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
+    this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, this.outputListener, outputListener != null);
   }
 
   /**
@@ -286,21 +302,13 @@ final class TaskSubmitter {
    * mechanism, allowing callers to wait for all pending output processing to complete. This is
    * useful for ensuring that all task outputs have been processed before proceeding with
    * dependent operations.
-   * <p>
-   * If no blob completion coordinator is configured (i.e., any output listener in the session),
-   * this method may return a null completion stage.
    *
-   * @return a completion stage that completes when all current output operations finish,
-   * or null if no output coordination is configured
+   * @return a completion stage that completes when all current output operations finish
    * @see BlobCompletionCoordinator#waitUntilIdle()
    * @see SessionHandle#awaitOutputsProcessed()
    */
   CompletionStage<Void> waitUntilFinished() {
-    if (blobCompletionCoordinator != null) {
-      return blobCompletionCoordinator.waitUntilIdle();
-    } else  {
-      return completedFuture(null);
-    }
+    return blobCompletionCoordinator.waitUntilIdle();
   }
 
   /**
@@ -363,7 +371,7 @@ final class TaskSubmitter {
    * {@link #waitUntilFinished()} waits for the submission.
    */
   private void watchOutputsOnceSubmitted(CompletionStage<TaskInfo> taskInfo, Collection<BlobHandle> outputHandles) {
-    if (blobCompletionCoordinator == null || outputHandles.isEmpty()) return;
+    if (outputHandles.isEmpty()) return;
 
     var outputs = List.copyOf(outputHandles);
     blobCompletionCoordinator.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {

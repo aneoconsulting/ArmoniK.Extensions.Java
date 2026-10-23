@@ -58,6 +58,7 @@ import static java.util.Objects.requireNonNull;
  */
 public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
+  private final TaskSubmissionBatching taskSubmissionBatching;
   final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
 
@@ -81,10 +82,16 @@ public class ArmoniKClient implements AutoCloseable {
       armoniKConfig.retryPolicy(),
       () -> createChannel(armoniKConfig)
     );
+    this.taskSubmissionBatching = armoniKConfig.taskSubmissionBatching();
   }
 
   ArmoniKClient(ChannelPool channelPool) {
+    this(channelPool, TaskSubmissionBatching.DEFAULT);
+  }
+
+  ArmoniKClient(ChannelPool channelPool, TaskSubmissionBatching taskSubmissionBatching) {
     this.channelPool = channelPool;
+    this.taskSubmissionBatching = taskSubmissionBatching;
   }
 
 
@@ -111,7 +118,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     var sessionInfo = createSession(sessionDefinition);
-    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching);
   }
 
   /**
@@ -152,7 +159,7 @@ public class ArmoniKClient implements AutoCloseable {
         toTaskConfiguration(sessionResponse.getSession().getOptions())
       );
 
-      return new SessionHandle(sessionInfo, outputListener, channelPool);
+      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching);
     } catch (Exception e) {
       throw new ArmoniKException(e.getMessage(), e);
     }

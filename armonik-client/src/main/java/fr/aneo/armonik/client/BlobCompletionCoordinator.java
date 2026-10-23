@@ -86,9 +86,23 @@ final class BlobCompletionCoordinator {
    * @see BlobCompletionEventWatcher
    */
   BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener outputListener) {
+    this(sessionId, channelPool, outputListener, true);
+  }
+
+  /**
+   * Creates a new blob completion coordinator that downloads the data of completed blobs only when asked to.
+   *
+   * @param sessionId      the identifier of the session this coordinator serves
+   * @param channelPool    the gRPC channel pool for cluster communication
+   * @param outputListener the listener notified of completed and failed blobs
+   * @param downloadData   whether the data of a completed blob is downloaded and passed to the listener;
+   *                       when {@code false}, a completed blob only counts as processed
+   * @throws NullPointerException if any reference parameter is null
+   */
+  BlobCompletionCoordinator(SessionId sessionId, ChannelPool channelPool, BlobCompletionListener outputListener, boolean downloadData) {
     this(
       sessionId,
-      new BlobCompletionEventWatcher(sessionId, channelPool, outputListener),
+      new BlobCompletionEventWatcher(sessionId, channelPool, outputListener, downloadData),
       BatchingPolicy.DEFAULT,
       Schedulers.shared()
     );
@@ -166,6 +180,25 @@ final class BlobCompletionCoordinator {
         flush();
       }
     }
+  }
+
+  /**
+   * Counts a stage as an in-flight operation until it completes, so that {@link #waitUntilIdle()}
+   * also waits for it.
+   * <p>
+   * This is used for blob handles that can only be watched after a later event, such as the
+   * submission of the task that produces them: the stage enqueues them, if needed, before it completes.
+   *
+   * @param stage the operation to wait for
+   * @throws NullPointerException if stage is null
+   */
+  void track(CompletionStage<Void> stage) {
+    requireNonNull(stage, "stage must not be null");
+    inFlightStages.add(stage);
+    stage.whenComplete((ignored, ex) -> {
+      inFlightStages.remove(stage);
+      maybeSignalIdle();
+    });
   }
 
   /**

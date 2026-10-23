@@ -65,6 +65,7 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   private final AtomicInteger remaining;
   private final CompletableFuture<Void> completion;
   private final BlobCompletionListener listener;
+  private final boolean downloadData;
   private final Consumer<List<BlobHandle>> leftoverSink;
 
   /**
@@ -88,6 +89,27 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
                                      CompletableFuture<Void> completion,
                                      BlobCompletionListener listener,
                                      Consumer<List<BlobHandle>> leftoverSink) {
+    this(sessionId, pending, completion, listener, true, leftoverSink);
+  }
+
+  /**
+   * Creates an observer that downloads the data of completed blobs only when asked to.
+   *
+   * @param sessionId    the session whose events are observed
+   * @param pending      the blobs to wait for, by id
+   * @param completion   completed once every pending blob is processed
+   * @param listener     the listener notified of completed and failed blobs
+   * @param downloadData whether the data of a completed blob is downloaded and passed to the listener;
+   *                     when {@code false}, a completed blob only counts as processed
+   * @param leftoverSink receives the blobs still pending when the stream ends
+   */
+  public BlobCompletionEventObserver(SessionId sessionId,
+                                     Map<BlobId, BlobHandle> pending,
+                                     CompletableFuture<Void> completion,
+                                     BlobCompletionListener listener,
+                                     boolean downloadData,
+                                     Consumer<List<BlobHandle>> leftoverSink) {
+    this.downloadData = downloadData;
     this.sessionId = sessionId;
     this.pending = pending.entrySet().stream().collect(Collectors.toConcurrentMap(entry -> entry.getKey().asString(), Map.Entry::getValue));
     this.remaining = new AtomicInteger(pending.size());
@@ -191,6 +213,14 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   }
 
   private void handleCompleted(BlobHandle blobHandle) {
+    if (!downloadData) {
+      // Nobody reads the data: count the blob as processed without downloading it.
+      if (remaining.decrementAndGet() == 0 && !completion.isDone()) {
+        safePublishLeftovers(new ArrayList<>(pending.values()));
+        completion.complete(null);
+      }
+      return;
+    }
     blobHandle.deferredBlobInfo().thenCompose(blobInfo ->
                 blobHandle.downloadData().whenComplete((bytes, err) -> {
                   try {

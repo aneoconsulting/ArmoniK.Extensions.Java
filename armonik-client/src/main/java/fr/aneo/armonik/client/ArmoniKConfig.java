@@ -36,6 +36,7 @@ public final class ArmoniKConfig {
   private final String clientP12;
   private final String clientP12Password;
   private final RetryPolicy retryPolicy;
+  private final TaskSubmissionBatching taskSubmissionBatching;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -46,6 +47,7 @@ public final class ArmoniKConfig {
     this.clientP12 = builder.clientP12;
     this.clientP12Password = builder.clientP12Password;
     this.retryPolicy = builder.retryPolicy;
+    this.taskSubmissionBatching = builder.taskSubmissionBatching;
   }
 
   /**
@@ -125,6 +127,16 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns how task submissions are grouped into batched calls.
+   *
+   * @return the task submission batching settings; {@link TaskSubmissionBatching#DEFAULT} unless configured
+   * @see Builder#withTaskSubmissionBatching(TaskSubmissionBatching)
+   */
+  public TaskSubmissionBatching taskSubmissionBatching() {
+    return taskSubmissionBatching;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -141,6 +153,7 @@ public final class ArmoniKConfig {
    */
   public static final class Builder {
     private RetryPolicy retryPolicy = DEFAULT;
+    private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -249,6 +262,18 @@ public final class ArmoniKConfig {
      */
     public Builder withRetryPolicy(RetryPolicy retryPolicy) {
       this.retryPolicy = requireNonNullElse(retryPolicy, RetryPolicy.DEFAULT);
+      return this;
+    }
+
+    /**
+     * Sets how task submissions are grouped into batched calls.
+     *
+     * @param taskSubmissionBatching the batching settings; {@code null} restores {@link TaskSubmissionBatching#DEFAULT}
+     * @return this builder
+     * @see TaskSubmissionBatching
+     */
+    public Builder withTaskSubmissionBatching(TaskSubmissionBatching taskSubmissionBatching) {
+      this.taskSubmissionBatching = requireNonNullElse(taskSubmissionBatching, TaskSubmissionBatching.DEFAULT);
       return this;
     }
 

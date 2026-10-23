@@ -40,11 +40,11 @@ public final class TaskMapper {
     return builder.build();
   }
 
-  public static SubmitTasksRequest toSubmitTasksRequest(SessionId sessionId, TaskConfiguration taskConfig, TaskCreation taskCreation) {
+  public static SubmitTasksRequest toSubmitTasksRequest(SessionId sessionId, TaskConfiguration taskConfig, List<TaskCreation> taskCreations) {
     return SubmitTasksRequest.newBuilder()
                              .setSessionId(sessionId.asString())
                              .setTaskOptions(toTaskOptions(taskConfig))
-                             .addTaskCreations(taskCreation)
+                             .addAllTaskCreations(taskCreations)
                              .build();
   }
 

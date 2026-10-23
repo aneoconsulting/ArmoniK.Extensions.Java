@@ -26,9 +26,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.protobuf.ByteString.copyFrom;
 import static fr.aneo.armonik.client.TestDataFactory.blobId;
@@ -39,6 +41,10 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   private byte[] downloadContent;
   public List<UploadedDataInfo> uploadedDataInfos = new ArrayList<>();
   public List<MetadataRequest> metadataRequests = new ArrayList<>();
+  public int metadataCalls;
+  public volatile RuntimeException metadataError;
+  public volatile byte[] failingUploadData;
+  public final AtomicInteger downloadCalls = new AtomicInteger();
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
 
 
@@ -57,12 +63,21 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.downloadContent = null;
     this.uploadedDataInfos = new ArrayList<>();
     this.metadataRequests = new ArrayList<>();
+    this.metadataCalls = 0;
+    this.metadataError = null;
+    this.failingUploadData = null;
+    this.downloadCalls.set(0);
     this.pendingUploads.clear();
   }
 
   @Override
   public void createResultsMetaData(CreateResultsMetaDataRequest request, StreamObserver<CreateResultsMetaDataResponse> responseObserver) {
     var builder = CreateResultsMetaDataResponse.newBuilder();
+    metadataCalls++;
+    if (metadataError != null) {
+      responseObserver.onError(metadataError);
+      return;
+    }
     metadataRequests.addAll(request.getResultsList()
                                    .stream()
                                    .map(metadata -> new MetadataRequest(request.getSessionId(), metadata.getName(), metadata.getManualDeletion()))
@@ -85,6 +100,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
   @Override
   public void downloadResultData(DownloadResultDataRequest request, StreamObserver<DownloadResultDataResponse> responseObserver) {
+    downloadCalls.incrementAndGet();
     var id = blobId(request.getResultId());
     if (downloadFailedId != null && downloadFailedId.equals(blobId(request.getResultId()))) {
       responseObserver.onError(new RuntimeException("Failed to download result"));
@@ -135,6 +151,12 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
       @Override
       public void onCompleted() {
+        if (failingUploadData != null && Arrays.equals(failingUploadData, uploadedDataInfo.receivedData.toByteArray())) {
+          pendingUploads.remove(uploadCompletion);
+          responseObserver.onError(io.grpc.Status.INTERNAL.withDescription("Upload failed").asRuntimeException());
+          uploadCompletion.completeExceptionally(new IllegalStateException("Upload failed"));
+          return;
+        }
         responseObserver.onNext(UploadResultDataResponse.getDefaultInstance());
         responseObserver.onCompleted();
         uploadedDataInfos.add(uploadedDataInfo);

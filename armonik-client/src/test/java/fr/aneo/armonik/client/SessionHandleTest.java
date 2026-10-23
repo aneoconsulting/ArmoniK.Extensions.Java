@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
@@ -38,6 +39,8 @@ import static fr.aneo.armonik.client.TestDataFactory.blobHandle;
 import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
 import static fr.aneo.armonik.client.WorkerLibrary.*;
 import static fr.aneo.armonik.client.testutils.ResultsGrpcMock.MetadataRequest;
+import static io.grpc.Status.UNAVAILABLE;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static java.util.concurrent.CompletableFuture.runAsync;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -92,6 +95,71 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     validateSubmittedTask(taskHandle, workerLibrary);
     validateSubmittedTaskOptions();
     validateTaskOutputListener(outputTaskListener);
+  }
+
+  @Test
+  @DisplayName("should submit several tasks with one metadata call and one submission call")
+  void should_submit_several_tasks_with_shared_calls() {
+    // Given
+    var definitions = IntStream.range(0, 3)
+                               .mapToObj(i -> new TaskDefinition().withInput("data", InputBlobDefinition.from(("data" + i).getBytes()))
+                                                                  .withOutput("result"))
+                               .toList();
+
+    // When
+    var handles = sessionHandle.submitTasks(definitions);
+    var taskInfos = handles.stream().map(handle -> handle.deferredTaskInfo().toCompletableFuture().join()).toList();
+
+    // Then
+    assertThat(resultsGrpcMock.metadataCalls).isEqualTo(1);
+    assertThat(resultsGrpcMock.metadataRequests).hasSize(9);
+    assertThat(taskGrpcMock.submitTasksRequests).hasSize(1);
+
+    var taskCreations = taskGrpcMock.submittedTasksRequest.getTaskCreationsList();
+    assertThat(taskCreations).hasSize(3);
+    for (int i = 0; i < 3; i++) {
+      assertThat(taskCreations.get(i).getExpectedOutputKeysList()).containsExactly(idFrom(handles.get(i).outputs().get("result")).asString());
+      assertThat(taskCreations.get(i).getDataDependenciesList()).containsExactly(idFrom(handles.get(i).inputs().get("data")).asString());
+      assertThat(taskInfos.get(i).id().asString()).isEqualTo("task-" + taskCreations.get(i).getPayloadId());
+    }
+  }
+
+  @Test
+  @DisplayName("should split large submissions into calls of at most 1000 tasks and 1000 blobs")
+  void should_split_large_submissions() {
+    // Given: 1001 tasks with a payload and one output each, so 2002 blobs
+    var definitions = IntStream.range(0, TaskSubmitter.MAX_TASKS_PER_REQUEST + 1)
+                               .mapToObj(i -> new TaskDefinition().withInput("data", blobHandle("sessionId", "data-id"))
+                                                                  .withOutput("result"))
+                               .toList();
+
+    // When
+    var handles = sessionHandle.submitTasks(definitions);
+    handles.forEach(handle -> handle.deferredTaskInfo().toCompletableFuture().join());
+
+    // Then
+    assertThat(resultsGrpcMock.metadataCalls).isEqualTo(3);
+    assertThat(taskGrpcMock.submitTasksRequests).extracting(request -> request.getTaskCreationsCount())
+                                                .containsExactlyInAnyOrder(1000, 1);
+  }
+
+  @Test
+  @DisplayName("should make no call when submitting an empty list")
+  void should_make_no_call_for_empty_list() {
+    assertThat(sessionHandle.submitTasks(List.of())).isEmpty();
+    assertThat(resultsGrpcMock.metadataCalls).isZero();
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should reject a list containing null")
+  void should_reject_list_containing_null() {
+    var definitions = new ArrayList<TaskDefinition>();
+    definitions.add(new TaskDefinition().withOutput("result"));
+    definitions.add(null);
+
+    assertThatThrownBy(() -> sessionHandle.submitTasks(definitions)).isInstanceOf(NullPointerException.class);
+    assertThat(resultsGrpcMock.metadataCalls).isZero();
   }
 
   @Test
@@ -173,6 +241,172 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     assertThat(outputTaskListener.blobs).hasSize(1);
     assertThat(outputTaskListener.blobErrors).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should report outputs as failed and stop waiting when the task submission fails")
+  void should_report_outputs_as_failed_when_submission_fails() {
+    // Given
+    taskGrpcMock.submissionError = UNAVAILABLE.withDescription("Control plane is shutting down").asRuntimeException();
+    var taskDefinition = new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                             .withOutput("output1")
+                                             .withOutput("output2");
+
+    // When
+    var task = sessionHandle.submitTask(taskDefinition);
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(outputTaskListener.blobs).isEmpty();
+    assertThat(outputTaskListener.blobErrors)
+      .extracting(blobError -> blobError.blobInfo().id())
+      .containsExactlyInAnyOrder(idFrom(task.outputs().get("output1")), idFrom(task.outputs().get("output2")));
+    assertThat(outputTaskListener.blobErrors)
+      .allSatisfy(blobError -> assertThat(blobError.cause()).hasMessageContaining("Control plane is shutting down"));
+  }
+
+  @Test
+  @DisplayName("should stop waiting when the output metadata creation fails")
+  void should_stop_waiting_when_metadata_creation_fails() {
+    // Given
+    resultsGrpcMock.metadataError = UNAVAILABLE.asRuntimeException();
+    var taskDefinition = new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                             .withOutput("result");
+
+    // When
+    var task = sessionHandle.submitTask(taskDefinition);
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(task.outputs().get("result").deferredBlobInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+    assertThat(outputTaskListener.blobs).isEmpty();
+    assertThat(outputTaskListener.blobErrors).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should not submit a task whose input upload fails, and report its outputs as failed")
+  void should_not_submit_task_whose_input_upload_fails() {
+    // Given
+    resultsGrpcMock.failingUploadData = "bad".getBytes();
+    var taskDefinition = new TaskDefinition().withInput("input", InputBlobDefinition.from("bad".getBytes()))
+                                             .withOutput("result");
+
+    // When
+    var task = sessionHandle.submitTask(taskDefinition);
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(Duration.ZERO)
+      .withThrowableThat()
+      .withMessageContaining("Input 'input' of the task will never be available");
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+    assertThat(outputTaskListener.blobErrors).extracting(blobError -> blobError.blobInfo().id())
+                                             .containsExactly(idFrom(task.outputs().get("result")));
+  }
+
+  @Test
+  @DisplayName("should not submit a task that depends on a task of the same batch whose input upload fails")
+  void should_not_submit_consumer_of_failed_task_in_same_batch() throws Exception {
+    // Given
+    resultsGrpcMock.failingUploadData = "bad".getBytes();
+    var producer = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("bad".getBytes()))
+                                                                .withOutput("result"));
+    var consumer = sessionHandle.submitTask(new TaskDefinition().withInput("input", producer.outputs().get("result"))
+                                                                .withOutput("result"));
+    var independent = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("good".getBytes()))
+                                                                   .withOutput("result"));
+
+    // When
+    var awaitFuture = runAsync(() -> sessionHandle.awaitOutputsProcessed());
+    independent.deferredTaskInfo().toCompletableFuture().get(5, SECONDS);
+    eventsGrpcMock.emitStatusUpdate(idFrom(independent.outputs().get("result")), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.complete();
+    awaitFuture.get(5, SECONDS);
+
+    // Then: the three tasks were in one batch, and only the independent one was sent
+    assertThat(taskGrpcMock.submitTasksRequests).hasSize(1);
+    assertThat(taskGrpcMock.submittedTasksRequest.getTaskCreationsCount()).isEqualTo(1);
+    assertThat(producer.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    assertThat(consumer.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(Duration.ZERO)
+      .withThrowableThat()
+      .withMessageContaining("Input 'input' of the task is an output of a task that was not submitted");
+    assertThat(outputTaskListener.blobErrors).extracting(blobError -> blobError.blobInfo().id())
+                                             .containsExactlyInAnyOrder(idFrom(producer.outputs().get("result")),
+                                                                        idFrom(consumer.outputs().get("result")));
+    assertThat(outputTaskListener.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should not submit a task that depends on an output of an earlier task whose submission failed")
+  void should_not_submit_consumer_of_task_whose_submission_failed() {
+    // Given
+    taskGrpcMock.submissionError = UNAVAILABLE.asRuntimeException();
+    var producer = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                                .withOutput("result"));
+    sessionHandle.flushSubmissions().toCompletableFuture().join();
+    assertThat(producer.deferredTaskInfo().toCompletableFuture()).isCompletedExceptionally();
+    taskGrpcMock.submissionError = null;
+
+    // When
+    var consumer = sessionHandle.submitTask(new TaskDefinition().withInput("input", producer.outputs().get("result"))
+                                                                .withOutput("result"));
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then: only the producer's request reached the cluster
+    assertThat(taskGrpcMock.submitTasksRequests).hasSize(1);
+    assertThat(consumer.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(Duration.ZERO)
+      .withThrowableThat()
+      .withMessageContaining("Input 'input' of the task will never be available");
+    assertThat(outputTaskListener.blobErrors).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("should not submit a task that uses a session blob whose upload fails")
+  void should_not_submit_task_using_failed_session_blob() {
+    // Given
+    resultsGrpcMock.failingUploadData = "shared".getBytes();
+    var shared = sessionHandle.createBlob(InputBlobDefinition.from("shared".getBytes()));
+
+    // When
+    var task = sessionHandle.submitTask(new TaskDefinition().withInput("shared", shared).withOutput("result"));
+    assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed());
+
+    // Then
+    assertThat(task.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(Duration.ZERO)
+      .withThrowableThat()
+      .withMessageContaining("Input 'shared' of the task will never be available");
+    assertThat(taskGrpcMock.submitTasksRequests).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should wait for outputs without downloading them when the session has no listener")
+  void should_wait_for_outputs_without_listener() throws Exception {
+    // Given
+    var session = new SessionHandle(sessionInfo, null, channelPool);
+    var task = session.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                      .withOutput("result"));
+    var awaitDone = new CountDownLatch(1);
+
+    // When
+    var awaitFuture = runAsync(() -> {
+      session.awaitOutputsProcessed();
+      awaitDone.countDown();
+    });
+
+    // Then: it waits until the output completes
+    assertThat(awaitDone.await(300, MILLISECONDS)).isFalse();
+    eventsGrpcMock.emitStatusUpdate(idFrom(task.outputs().get("result")), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.complete();
+    assertThat(awaitDone.await(5, SECONDS)).isTrue();
+    awaitFuture.get(1, SECONDS);
+    assertThat(resultsGrpcMock.downloadCalls).hasValue(0);
   }
 
   @Test

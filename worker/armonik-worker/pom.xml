@@ -45,7 +45,7 @@
   </scm>
 
   <properties>
-    <armonik-worker-api.version>3.28.0</armonik-worker-api.version>
+    <armonik-worker-api.version>3.29.4</armonik-worker-api.version>
     <gson.version>2.13.2</gson.version>
     <logback.version>1.5.20</logback.version>
     <logstash-logback-encoder.version>8.1</logstash-logback-encoder.version>

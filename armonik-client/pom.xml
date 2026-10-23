@@ -43,7 +43,7 @@
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <armonik-client-api.version>3.28.0</armonik-client-api.version>
+    <armonik-client-api.version>3.29.4</armonik-client-api.version>
     <slf4j.version>2.0.17</slf4j.version>
     <gson.version>2.13.2</gson.version>
     <assertj-core.version>3.27.6</assertj-core.version>

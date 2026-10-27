@@ -146,11 +146,6 @@
 
                     <!-- Merge Apache license files -->
                     <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
-
-                    <!-- Append logback.xml (or use XmlAppendingTransformer for proper XML merge) -->
-                    <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
-                      <resource>logback.xml</resource>
-                    </transformer>
                   </transformers>
 
                   <filters>
@@ -174,7 +169,41 @@
                         <exclude>META-INF/MANIFEST.MF</exclude>
                       </excludes>
                     </filter>
+                    <filter>
+                      <!-- Keep only the worker's own logback.xml -->
+                      <artifact>fr.aneo:armonik-worker-api</artifact>
+                      <excludes>
+                        <exclude>logback.xml</exclude>
+                      </excludes>
+                    </filter>
                   </filters>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!-- Fail the build if the shaded logback.xml is not well-formed XML -->
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <version>3.1.0</version>
+            <executions>
+              <execution>
+                <id>check-shaded-logback</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target>
+                    <property name="logback.check.dir" value="${project.build.directory}/shaded-logback-check"/>
+                    <delete dir="${logback.check.dir}"/>
+                    <unzip src="${project.build.directory}/armonik-worker-${project.version}-docker.jar" dest="${logback.check.dir}">
+                      <patternset>
+                        <include name="logback.xml"/>
+                      </patternset>
+                    </unzip>
+                    <xmlvalidate file="${logback.check.dir}/logback.xml" lenient="true"/>
+                  </target>
                 </configuration>
               </execution>
             </executions>

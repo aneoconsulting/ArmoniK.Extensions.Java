@@ -127,10 +127,11 @@ public class TaskProcessingService extends WorkerImplBase {
    *
    * <h4>Exception Handling</h4>
    * <p>
-   * If the {@code taskProcessor} throws any exception:
+   * If the {@code taskProcessor} throws any exception or {@link LinkageError}:
    * </p>
    * <ul>
-   *   <li>The exception is caught and its message is extracted</li>
+   *   <li>The exception is caught and its message is extracted; for a {@link NoClassDefFoundError},
+   *       the message names the missing class and points to the library packaging</li>
    *   <li>If the message is {@code null}, {@code exception.toString()} is used instead</li>
    *   <li>A {@link TaskOutcome.Error} is created with the exception message</li>
    *   <li>The error is sent to the Agent as a normal response (not a gRPC error)</li>
@@ -177,11 +178,9 @@ public class TaskProcessingService extends WorkerImplBase {
 
       responseObserver.onNext(reply);
 
-    } catch (Exception exception) {
+    } catch (Exception | LinkageError exception) {
       long duration = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-      String errorMessage = exception.getMessage() != null
-        ? exception.getMessage()
-        : exception.toString();
+      String errorMessage = errorMessage(exception);
 
       logger.error("Task processing failed after {}ms with exception: {}", duration, errorMessage, exception);
       responseObserver.onNext(ProcessReply.newBuilder()
@@ -283,6 +282,21 @@ public class TaskProcessingService extends WorkerImplBase {
       logger.error("Failed to load dynamic processor: {}", exception.getMessage(), exception);
       throw exception;
     }
+  }
+
+  /**
+   * Builds the error message reported to the Agent.
+   * <p>
+   * A {@link NoClassDefFoundError} usually means that a library JAR does not bundle one of its
+   * dependencies, for instance {@code kotlin-stdlib} for a library written in Kotlin.
+   * </p>
+   */
+  private static String errorMessage(Throwable throwable) {
+    if (throwable instanceof NoClassDefFoundError) {
+      return "Class not found at runtime: " + throwable.getMessage() +
+        ". A worker library JAR must bundle all its dependencies (for Kotlin, kotlin-stdlib).";
+    }
+    return throwable.getMessage() != null ? throwable.getMessage() : throwable.toString();
   }
 
   private void logProcessingResult(TaskOutcome outcome, long duration) {

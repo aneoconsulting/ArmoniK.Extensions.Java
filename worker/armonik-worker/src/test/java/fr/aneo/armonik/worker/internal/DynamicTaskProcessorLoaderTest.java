@@ -95,6 +95,23 @@ class DynamicTaskProcessorLoaderTest {
   }
 
   @Test
+  @DisplayName("should use the INSTANCE field of a class compiled from a Kotlin object")
+  void should_load_kotlin_object_singleton() throws Exception {
+    // Given
+    var library = libraryFor(createKotlinObjectLibrary(), "SingletonProcessor");
+
+    try (var loader = new DynamicTaskProcessorLoader()) {
+      // When
+      var first = loader.load(library, tempDir);
+      var second = loader.load(library, tempDir);
+
+      // Then
+      assertThat(first.processTask(null)).isEqualTo(TaskOutcome.SUCCESS);
+      assertThat(second).isSameAs(first);
+    }
+  }
+
+  @Test
   @DisplayName("should reuse cached library and create a new TaskProcessor instance per load")
   void should_reuse_cached_library() throws Exception {
     // Given
@@ -273,6 +290,28 @@ import fr.aneo.armonik.worker.domain.TaskProcessor;
     """;
 
     return compileAndPackage("NoDefaultConstructorProcessor", sourceCode);
+  }
+
+  private Path createKotlinObjectLibrary() throws Exception {
+    // Same shape as the bytecode of a Kotlin `object SingletonProcessor : TaskProcessor`
+    String sourceCode = """
+    import fr.aneo.armonik.worker.domain.TaskProcessor;
+    import fr.aneo.armonik.worker.domain.TaskContext;
+    import fr.aneo.armonik.worker.domain.TaskOutcome;
+
+    public final class SingletonProcessor implements TaskProcessor {
+      public static final SingletonProcessor INSTANCE = new SingletonProcessor();
+
+      private SingletonProcessor() {}
+
+      @Override
+      public TaskOutcome processTask(TaskContext context) {
+        return TaskOutcome.SUCCESS;
+      }
+    }
+    """;
+
+    return compileAndPackage("SingletonProcessor", sourceCode);
   }
 
 

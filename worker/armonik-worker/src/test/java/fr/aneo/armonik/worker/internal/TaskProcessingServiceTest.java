@@ -137,6 +137,32 @@ class TaskProcessingServiceTest {
   }
 
   @SuppressWarnings("unchecked")
+  @DisplayName("Should map a missing class thrown by the TaskProcessor to an Error output naming the class, then complete the stream")
+  @Test
+  void should_map_missing_class_to_error_then_complete() {
+    // given
+    when(taskProcessor.processTask(any())).thenThrow(new NoClassDefFoundError("kotlin/jvm/internal/Intrinsics"));
+    taskProcessingService = new TaskProcessingService(agentStub, taskProcessor, (a, r) -> taskContext);
+    var observer = (StreamObserver<ProcessReply>) mock(StreamObserver.class);
+    var request = ProcessRequest.newBuilder().build();
+
+    // when
+    taskProcessingService.process(request, observer);
+
+    // then
+    var replyCaptor = ArgumentCaptor.forClass(ProcessReply.class);
+    var inOrder = inOrder(observer);
+    inOrder.verify(observer).onNext(replyCaptor.capture());
+    inOrder.verify(observer).onCompleted();
+    inOrder.verifyNoMoreInteractions();
+
+    var reply = replyCaptor.getValue();
+    assertThat(reply.getOutput().hasError()).isTrue();
+    assertThat(reply.getOutput().getError().getDetails()).contains("kotlin/jvm/internal/Intrinsics")
+                                                         .contains("bundle all its dependencies");
+  }
+
+  @SuppressWarnings("unchecked")
   @DisplayName("Should report SERVING when idle (no task in progress)")
   @Test
   void should_report_serving_when_idle() {

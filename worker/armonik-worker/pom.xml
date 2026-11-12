@@ -222,7 +222,7 @@
             </executions>
             <configuration>
               <from>
-                <image>gcr.io/distroless/java17-debian12</image>
+                <image>gcr.io/distroless/java17-debian13</image>
                 <platforms>
                   <platform>
                     <architecture>amd64</architecture>

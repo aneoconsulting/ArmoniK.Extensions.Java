@@ -58,7 +58,7 @@
     <jackson.version>2.18.11</jackson.version>
 
     <!-- Test dependency versions -->
-    <assertj-core.version>3.27.6</assertj-core.version>
+    <assertj-core.version>3.27.7</assertj-core.version>
     <junit.version>5.14.1</junit.version>
     <mockito.version>5.20.0</mockito.version>
   </properties>

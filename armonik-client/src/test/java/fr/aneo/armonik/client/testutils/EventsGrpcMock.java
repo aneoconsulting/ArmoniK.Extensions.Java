@@ -21,10 +21,12 @@ import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse.ResultStatusUpdate;
 import fr.aneo.armonik.api.grpc.v1.events.EventsGrpc;
 import fr.aneo.armonik.client.BlobId;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
 
@@ -33,6 +35,7 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
   private final List<EventSubscriptionResponse> backlog = new CopyOnWriteArrayList<>();
   private volatile boolean completed = false;
   private volatile Throwable terminalError = null;
+  private final AtomicInteger cancelledStreams = new AtomicInteger();
 
   @Override
   public void getEvents(EventSubscriptionRequest request,
@@ -58,8 +61,28 @@ public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
       }
       return;
     }
+    if (responseObserver instanceof ServerCallStreamObserver<EventSubscriptionResponse> serverObserver) {
+      serverObserver.setOnCancelHandler(() -> {
+        observers.remove(responseObserver);
+        cancelledStreams.incrementAndGet();
+      });
+    }
     observers.add(responseObserver);
     snapshot.forEach(responseObserver::onNext);
+  }
+
+  /**
+   * Number of subscriptions still open on the server side, that is neither completed by the mock nor cancelled by the client.
+   */
+  public int openStreams() {
+    return observers.size();
+  }
+
+  /**
+   * Number of subscriptions the client cancelled.
+   */
+  public int cancelledStreams() {
+    return cancelledStreams.get();
   }
 
   /**

@@ -266,6 +266,74 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   }
 
 
+  @Test
+  @DisplayName("should cancel the event stream once every watched blob is completed")
+  void should_cancel_event_stream_once_all_blobs_are_completed() throws Exception {
+    // Given
+    var listenerMock = new BlobCompletionListenerMock();
+    resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello".getBytes(UTF_8));
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
+
+    // When: the server never ends the subscription on its own, as the ArmoniK Events API does
+    var ticket = watcher.watch(List.of(blobHandle));
+    awaitOpenStreams(1);
+    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
+    ticket.completion().toCompletableFuture().get(2, SECONDS);
+
+    // Then
+    awaitOpenStreams(0);
+    assertThat(eventsGrpcMock.cancelledStreams()).isEqualTo(1);
+    assertThat(listenerMock.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should cancel the event stream once every watched blob is completed or aborted, without downloading")
+  void should_cancel_event_stream_without_download_once_all_blobs_are_terminal() throws Exception {
+    // Given
+    var blobInfoB = blobInfo("BlobB");
+    var blobHandleB = new BlobHandle(sessionId, completedFuture(blobInfoB), channelPool);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, new BlobCompletionListenerMock(), false);
+
+    // When
+    var ticket = watcher.watch(List.of(blobHandle, blobHandleB));
+    awaitOpenStreams(1);
+    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
+    eventsGrpcMock.emitStatusUpdate(blobInfoB.id(), RESULT_STATUS_ABORTED);
+    ticket.completion().toCompletableFuture().get(2, SECONDS);
+
+    // Then
+    awaitOpenStreams(0);
+    assertThat(eventsGrpcMock.cancelledStreams()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("should keep the event stream open while a watched blob is still pending")
+  void should_keep_event_stream_open_while_a_blob_is_pending() throws Exception {
+    // Given
+    var blobInfoB = blobInfo("BlobB");
+    var blobHandleB = new BlobHandle(sessionId, completedFuture(blobInfoB), channelPool);
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, new BlobCompletionListenerMock(), false);
+
+    // When
+    var ticket = watcher.watch(List.of(blobHandle, blobHandleB));
+    awaitOpenStreams(1);
+    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
+    Thread.sleep(200);
+
+    // Then
+    assertThat(ticket.completion().toCompletableFuture()).isNotDone();
+    assertThat(eventsGrpcMock.openStreams()).isEqualTo(1);
+    assertThat(eventsGrpcMock.cancelledStreams()).isZero();
+  }
+
+  private void awaitOpenStreams(int expected) throws InterruptedException {
+    var deadline = System.nanoTime() + SECONDS.toNanos(2);
+    while (eventsGrpcMock.openStreams() != expected && System.nanoTime() < deadline) {
+      Thread.sleep(10);
+    }
+    assertThat(eventsGrpcMock.openStreams()).as("open event streams on the server").isEqualTo(expected);
+  }
+
   @Override
   protected List<BindableService> services() {
     return List.of(eventsGrpcMock, resultsGrpcMock);

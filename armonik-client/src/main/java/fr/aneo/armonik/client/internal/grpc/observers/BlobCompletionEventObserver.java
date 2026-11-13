@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client.internal.grpc.observers;
 
+import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionRequest;
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse;
 import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
 import fr.aneo.armonik.client.BlobCompletionListener;
@@ -22,6 +23,8 @@ import fr.aneo.armonik.client.BlobHandle;
 import fr.aneo.armonik.client.BlobId;
 import fr.aneo.armonik.client.SessionId;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import io.grpc.stub.ClientCallStreamObserver;
+import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +34,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -52,11 +57,16 @@ import static fr.aneo.armonik.client.BlobCompletionListener.BlobError;
  * by notifying about failures, and tracks completion progress.
  * <p>
  * This class is thread-safe and handles listener exceptions gracefully to prevent stream disruption.
+ * <p>
+ * The Events API never ends a subscription on its own: the call stays open on the client connection
+ * and keeps a result watcher on the control plane until the client cancels it. The observer therefore
+ * cancels its call as soon as every watched blob has received its terminal event, and in any case once
+ * the completion future is done.
  *
  * @see BlobCompletionListener
  * @see StreamObserver
  */
-public final class BlobCompletionEventObserver implements StreamObserver<EventSubscriptionResponse> {
+public final class BlobCompletionEventObserver implements ClientResponseObserver<EventSubscriptionRequest, EventSubscriptionResponse> {
 
   private static final Logger log = LoggerFactory.getLogger(BlobCompletionEventObserver.class);
 
@@ -67,6 +77,8 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
   private final BlobCompletionListener listener;
   private final boolean downloadData;
   private final Consumer<List<BlobHandle>> leftoverSink;
+  private final AtomicReference<ClientCallStreamObserver<EventSubscriptionRequest>> call = new AtomicReference<>();
+  private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
   /**
    * Creates a new blob completion event observer for the specified session and blob handles.
@@ -116,6 +128,15 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
     this.completion = completion;
     this.listener = listener;
     this.leftoverSink = leftoverSink;
+    this.completion.whenComplete((ignored, error) -> cancelCall());
+  }
+
+  @Override
+  public void beforeStart(ClientCallStreamObserver<EventSubscriptionRequest> requestStream) {
+    call.set(requestStream);
+    if (completion.isDone() || cancelled.get()) {
+      cancelCall();
+    }
   }
 
   @Override
@@ -127,6 +148,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
       case UPDATE_NOT_SET -> { /* ignore */ }
     }
 
+    if (pending.isEmpty()) {
+      cancelCall();
+    }
+
     if (remaining.get() == 0 && !completion.isDone()) {
       safePublishLeftovers(List.of());
       completion.complete(null);
@@ -135,6 +160,10 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
 
   @Override
   public void onError(Throwable throwable) {
+    if (cancelled.get() && isCancelledError(throwable)) {
+      log.debug("Event stream cancelled by the client once all watched blobs were observed. SessionId: {}", sessionId.asString());
+      return;
+    }
     final int pendingCount = pending.size();
     if (pendingCount == 0 || isUnavailableError(throwable)) {
       log.debug("Event stream closed (connection unavailable). SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount);
@@ -248,6 +277,23 @@ public final class BlobCompletionEventObserver implements StreamObserver<EventSu
                 }
                 return null;
               });
+  }
+
+  /**
+   * Cancels the event subscription once it is no longer needed. Idempotent; a call that already ended is unaffected.
+   */
+  private void cancelCall() {
+    cancelled.set(true);
+    var requestStream = call.getAndSet(null);
+    if (requestStream != null) {
+      log.debug("Cancelling event stream, no watched blob is pending. SessionId: {}", sessionId.asString());
+      requestStream.cancel("All watched blobs observed", null);
+    }
+  }
+
+  private static boolean isCancelledError(Throwable throwable) {
+    return throwable instanceof io.grpc.StatusRuntimeException
+      && ((io.grpc.StatusRuntimeException) throwable).getStatus().getCode() == io.grpc.Status.Code.CANCELLED;
   }
 
   private boolean isUnavailableError(Throwable throwable) {

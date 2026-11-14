@@ -37,6 +37,12 @@ public final class ArmoniKConfig {
   private final String clientP12Password;
   private final RetryPolicy retryPolicy;
   private final TaskSubmissionBatching taskSubmissionBatching;
+  private final int channelPoolSize;
+
+  /**
+   * Default number of gRPC channels a client opens to the control plane.
+   */
+  public static final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -48,6 +54,19 @@ public final class ArmoniKConfig {
     this.clientP12Password = builder.clientP12Password;
     this.retryPolicy = builder.retryPolicy;
     this.taskSubmissionBatching = builder.taskSubmissionBatching;
+    this.channelPoolSize = builder.channelPoolSize;
+  }
+
+  /**
+   * Returns the maximum number of gRPC channels, that is HTTP/2 connections, the client opens.
+   * <p>
+   * Each channel carries one call at a time. Event streams, which stay open while outputs are
+   * awaited, may use at most half of them, so the other calls always have channels left.
+   *
+   * @return the channel pool size, at least 2
+   */
+  public int channelPoolSize() {
+    return channelPoolSize;
   }
 
   /**
@@ -154,6 +173,7 @@ public final class ArmoniKConfig {
   public static final class Builder {
     private RetryPolicy retryPolicy = DEFAULT;
     private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
+    private int channelPoolSize = DEFAULT_CHANNEL_POOL_SIZE;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -278,6 +298,20 @@ public final class ArmoniKConfig {
     }
 
     /**
+     * Sets the maximum number of gRPC channels the client opens to the control plane.
+     * <p>
+     * Each channel carries one call at a time; a call that finds every channel busy waits for one
+     * without blocking any thread. Event streams may use at most half of the channels.
+     *
+     * @param channelPoolSize the number of channels, at least 2; defaults to {@link #DEFAULT_CHANNEL_POOL_SIZE}
+     * @return this builder
+     */
+    public Builder withChannelPoolSize(int channelPoolSize) {
+      this.channelPoolSize = channelPoolSize;
+      return this;
+    }
+
+    /**
      * Builds the immutable {@link ArmoniKConfig} instance.
      * <p>
      * Validates that the configuration is consistent and all required fields are set.
@@ -293,6 +327,9 @@ public final class ArmoniKConfig {
     private void validate() {
       if (endpoint == null || endpoint.isBlank())
         throw new IllegalArgumentException("endpoint is required");
+
+      if (channelPoolSize < 2)
+        throw new IllegalArgumentException("channelPoolSize must be at least 2, got: " + channelPoolSize);
 
       if (clientCertPem != null && clientKeyPem == null)
         throw new IllegalArgumentException("clientKeyPem is required when clientCertPem is specified");

@@ -145,32 +145,30 @@ final class BlobCompletionEventWatcher {
   private CompletionStage<Void> startEventStream(Map<BlobId, BlobHandle> handlesById, WatchTicket ticket) {
     logger.debug("Starting event stream for session {} with {} blob handles", sessionId, handlesById.size());
 
-    return channelPool.executeAsync(channel ->
-      subscribeToEvents(channel, handlesById, ticket)
-    );
-  }
-
-  private CompletionStage<Void> subscribeToEvents(ManagedChannel channel, Map<BlobId, BlobHandle> handlesById, WatchTicket ticket) {
     var streamCompletion = new CompletableFuture<Void>();
-
-    EventsGrpc.newStub(channel).getEvents(
-      createEventSubscriptionRequest(sessionId, handlesById.keySet()),
-      new BlobCompletionEventObserver(sessionId, handlesById, streamCompletion, listener, downloadData, ticket::setLeftoverHandles)
-    );
+    channelPool.executeLongLivedAsync(channel -> subscribeToEvents(channel, handlesById, ticket, streamCompletion))
+               .whenComplete((ignored, error) -> {
+                 if (error != null) streamCompletion.completeExceptionally(error);
+               });
     return streamCompletion;
   }
 
   /**
-   * Internal ticket representing a blob watching operation.
+   * Subscribes to the events of the watched blobs.
    * <p>
-   * A watch ticket provides access to the completion status of a blob watching
-   * operation and tracks any leftover blob handles that weren't observed during
-   * the watch period. This is useful for implementing retry logic or cleanup operations.
-   * <p>
-   * The ticket follows a completion model where the main completion future indicates
-   * when the watching operation has finished (either successfully or due to stream
-   * closure), while the leftover future provides access to unobserved blob handles.
+   * The returned stage, which releases the channel, completes when the call ends, not when the
+   * downloads of the completed blobs end: those need channels of their own, and must not wait for
+   * the stream that triggered them.
    */
+  private CompletionStage<Void> subscribeToEvents(ManagedChannel channel,
+                                                  Map<BlobId, BlobHandle> handlesById,
+                                                  WatchTicket ticket,
+                                                  CompletableFuture<Void> streamCompletion) {
+    var observer = new BlobCompletionEventObserver(sessionId, handlesById, streamCompletion, listener, downloadData, ticket::setLeftoverHandles);
+    EventsGrpc.newStub(channel).getEvents(createEventSubscriptionRequest(sessionId, handlesById.keySet()), observer);
+    return observer.callTermination();
+  }
+
   static class WatchTicket {
     private final CompletableFuture<Void> completion;
     private final CompletableFuture<List<BlobHandle>> leftovers;

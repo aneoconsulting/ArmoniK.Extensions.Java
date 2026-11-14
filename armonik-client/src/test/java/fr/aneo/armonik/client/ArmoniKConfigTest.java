@@ -198,4 +198,26 @@ class ArmoniKConfigTest {
     assertThat(defaultConfig.taskSubmissionBatching()).isEqualTo(TaskSubmissionBatching.DEFAULT);
     assertThat(customConfig.taskSubmissionBatching()).isEqualTo(customBatching);
   }
+
+  @Test
+  @DisplayName("should default the channel pool size and accept a custom one")
+  void should_default_and_customize_channel_pool_size() {
+    // When
+    var defaultConfig = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443").build();
+    var customConfig = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443").withChannelPoolSize(8).build();
+
+    // Then
+    assertThat(defaultConfig.channelPoolSize()).isEqualTo(ArmoniKConfig.DEFAULT_CHANNEL_POOL_SIZE);
+    assertThat(customConfig.channelPoolSize()).isEqualTo(8);
+  }
+
+  @Test
+  @DisplayName("should reject a channel pool size below 2")
+  void should_reject_channel_pool_size_below_two() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443").withChannelPoolSize(1);
+
+    assertThatThrownBy(builder::build)
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("channelPoolSize");
+  }
 }

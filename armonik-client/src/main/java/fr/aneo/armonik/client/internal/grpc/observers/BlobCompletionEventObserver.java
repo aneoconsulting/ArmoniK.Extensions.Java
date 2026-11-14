@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -79,6 +80,7 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
   private final Consumer<List<BlobHandle>> leftoverSink;
   private final AtomicReference<ClientCallStreamObserver<EventSubscriptionRequest>> call = new AtomicReference<>();
   private final AtomicBoolean cancelled = new AtomicBoolean(false);
+  private final CompletableFuture<Void> callTermination = new CompletableFuture<>();
 
   /**
    * Creates a new blob completion event observer for the specified session and blob handles.
@@ -160,6 +162,7 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
 
   @Override
   public void onError(Throwable throwable) {
+    callTermination.complete(null);
     if (cancelled.get() && isCancelledError(throwable)) {
       log.debug("Event stream cancelled by the client once all watched blobs were observed. SessionId: {}", sessionId.asString());
       return;
@@ -184,6 +187,7 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
 
   @Override
   public void onCompleted() {
+    callTermination.complete(null);
     final int pendingCount = pending.size();
     safePublishLeftovers(new ArrayList<>(pending.values()));
 
@@ -277,6 +281,20 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
                 }
                 return null;
               });
+  }
+
+  /**
+   * Returns a stage that completes once the gRPC call has ended, whether the server closed it, it failed,
+   * or this observer cancelled it.
+   * <p>
+   * It may complete before the completion future, whose downloads can still be running: the channel
+   * carrying the call can be released at this point, so downloads never wait on the stream that
+   * triggered them.
+   *
+   * @return a stage completing when the event stream call has ended
+   */
+  public CompletionStage<Void> callTermination() {
+    return callTermination;
   }
 
   /**

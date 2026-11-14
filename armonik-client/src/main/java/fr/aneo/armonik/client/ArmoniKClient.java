@@ -59,7 +59,6 @@ import static java.util.Objects.requireNonNull;
 public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
   private final TaskSubmissionBatching taskSubmissionBatching;
-  final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
 
   /**
@@ -78,7 +77,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(armoniKConfig, "armoniKConfig must not be null");
 
     this.channelPool = ManagedChannelPool.create(
-      DEFAULT_CHANNEL_POOL_SIZE,
+      armoniKConfig.channelPoolSize(),
       armoniKConfig.retryPolicy(),
       () -> createChannel(armoniKConfig)
     );

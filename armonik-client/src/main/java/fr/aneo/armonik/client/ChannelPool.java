@@ -80,6 +80,8 @@ public interface ChannelPool extends AutoCloseable {
    * lifecycle is tied to the completion stage lifecycle, ensuring proper cleanup even
    * when async operations fail.
    * <p>
+   * When every channel is busy, the operation waits for one without blocking the calling thread.
+   * <p>
    * <strong>Example usage:</strong>
    * <pre>{@code
    * CompletionStage<String> sessionId = channelPool.executeAsync(channel -> {
@@ -95,6 +97,21 @@ public interface ChannelPool extends AutoCloseable {
    * @throws NullPointerException if operation is null
    */
   <T> CompletionStage<T> executeAsync(Function<ManagedChannel, CompletionStage<T>> operation);
+
+  /**
+   * Executes an asynchronous operation that may hold its channel for a long time, such as an event stream.
+   * <p>
+   * Behaves like {@link #executeAsync(Function)}, but implementations may cap how many channels such
+   * operations hold at once, so that they never take every channel and starve shorter calls.
+   *
+   * @param operation the asynchronous operation to execute with the acquired channel
+   * @param <T>       the type of result produced by the operation
+   * @return a completion stage that completes with the operation result
+   * @throws NullPointerException if operation is null
+   */
+  default <T> CompletionStage<T> executeLongLivedAsync(Function<ManagedChannel, CompletionStage<T>> operation) {
+    return executeAsync(operation);
+  }
 
   /**
    * Shuts down the channel pool and releases all resources.

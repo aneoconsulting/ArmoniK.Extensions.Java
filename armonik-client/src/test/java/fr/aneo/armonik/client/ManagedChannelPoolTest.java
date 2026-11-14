@@ -366,6 +366,77 @@ class ManagedChannelPoolTest {
     assertThat(pool.size()).isEqualTo(1);
   }
 
+  @Test
+  @DisplayName("execute async should not block the caller when the pool is exhausted")
+  @Timeout(5)
+  void execute_async_should_not_block_the_caller_when_pool_is_exhausted() throws Exception {
+    // Given
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    var holding = new CompletableFuture<String>();
+    pool.executeAsync(ch -> holding);
+
+    // When: the only channel is busy
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("second")).toCompletableFuture();
+
+    // Then: the call returned at once, and its operation runs once the channel is released
+    assertThat(waiting).isNotDone();
+    holding.complete("first");
+    assertThat(waiting.get(2, SECONDS)).isEqualTo("second");
+    assertThat(pool.size()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("long-lived operations should hold at most half of the channels")
+  @Timeout(5)
+  void long_lived_operations_should_hold_at_most_half_of_the_channels() throws Exception {
+    // Given
+    pool = ManagedChannelPool.create(4, this::createHealthyChannel);
+    var started = new AtomicInteger();
+    var streams = range(0, 4).mapToObj(i -> new CompletableFuture<Void>()).toList();
+
+    // When: four long-lived operations are requested on a pool of four channels
+    streams.forEach(stream -> pool.executeLongLivedAsync(ch -> {
+      started.incrementAndGet();
+      return stream;
+    }));
+
+    // Then: only two hold a channel, and a short call still gets one immediately
+    assertThat(started.get()).isEqualTo(2);
+    var shortCall = pool.executeAsync(ch -> CompletableFuture.completedFuture("short")).toCompletableFuture();
+    assertThat(shortCall.get(1, SECONDS)).isEqualTo("short");
+
+    // And when the first long-lived operations end, the others start
+    streams.get(0).complete(null);
+    streams.get(1).complete(null);
+    awaitCondition(() -> started.get() == 4);
+    streams.forEach(stream -> stream.complete(null));
+  }
+
+  @Test
+  @DisplayName("close should fail operations still waiting for a channel")
+  @Timeout(5)
+  void close_should_fail_operations_waiting_for_a_channel() {
+    // Given
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    pool.executeAsync(ch -> new CompletableFuture<>());
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("never")).toCompletableFuture();
+
+    // When
+    pool.close();
+
+    // Then
+    assertThatThrownBy(() -> waiting.get(2, SECONDS))
+      .hasCauseInstanceOf(IllegalStateException.class);
+  }
+
+  private static void awaitCondition(java.util.function.BooleanSupplier condition) throws InterruptedException {
+    var deadline = System.nanoTime() + SECONDS.toNanos(2);
+    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+      Thread.sleep(10);
+    }
+    assertThat(condition.getAsBoolean()).isTrue();
+  }
+
   private static Function<ManagedChannel, CompletionStage<Object>> executeOperation(CountDownLatch acquired, CompletableFuture<Object> operation1) {
     return channel -> {
       acquired.countDown();

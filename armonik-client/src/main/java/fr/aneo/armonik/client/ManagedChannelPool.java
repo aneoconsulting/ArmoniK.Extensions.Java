@@ -23,10 +23,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import static java.util.Objects.requireNonNull;
@@ -68,12 +70,20 @@ import static java.util.Objects.requireNonNull;
 public final class ManagedChannelPool implements ChannelPool {
   private static final Logger logger = LoggerFactory.getLogger(ManagedChannelPool.class);
   private static final Duration GRACEFUL_SHUTDOWN_TIMEOUT = Duration.ofSeconds(2);
+  /**
+   * How long a released channel may stay unused before the pool shuts it down. It matches the idle
+   * timeout of the client's channels, after which gRPC closes their connection anyway.
+   */
+  static final Duration DEFAULT_MAX_IDLE = Duration.ofMinutes(5);
 
   private final Supplier<ManagedChannel> channelFactory;
   private final int maxSize;
   private final boolean isUnbounded;
   private final AsyncLimiter channelPermits;
-  private final ConcurrentLinkedQueue<ManagedChannel> availableChannels;
+  private final ConcurrentLinkedDeque<ManagedChannel> availableChannels;
+  private final Map<ManagedChannel, Long> releasedAt = new ConcurrentHashMap<>();
+  private final long maxIdleNanos;
+  private final LongSupplier nanoTime;
   private final Set<ManagedChannel> allChannels;
   private final AtomicBoolean shutdown;
   private final RetryPolicy retryPolicy;
@@ -86,6 +96,14 @@ public final class ManagedChannelPool implements ChannelPool {
    * @throws IllegalArgumentException if maxSize is negative
    */
   private ManagedChannelPool(int maxSize, RetryPolicy retryPolicy, Supplier<ManagedChannel> channelFactory) {
+    this(maxSize, retryPolicy, channelFactory, DEFAULT_MAX_IDLE, System::nanoTime);
+  }
+
+  private ManagedChannelPool(int maxSize,
+                             RetryPolicy retryPolicy,
+                             Supplier<ManagedChannel> channelFactory,
+                             Duration maxIdle,
+                             LongSupplier nanoTime) {
     if (maxSize < 0) throw new IllegalArgumentException("maxSize must be non-negative, got: " + maxSize);
 
     this.channelFactory = requireNonNull(channelFactory, "channelFactory must not be null");
@@ -93,7 +111,9 @@ public final class ManagedChannelPool implements ChannelPool {
     this.maxSize = maxSize;
     this.isUnbounded = (maxSize == 0);
     this.channelPermits = new AsyncLimiter(isUnbounded ? Integer.MAX_VALUE : maxSize);
-    this.availableChannels = new ConcurrentLinkedQueue<>();
+    this.availableChannels = new ConcurrentLinkedDeque<>();
+    this.maxIdleNanos = requireNonNull(maxIdle, "maxIdle must not be null").toNanos();
+    this.nanoTime = requireNonNull(nanoTime, "nanoTime must not be null");
     this.allChannels = ConcurrentHashMap.newKeySet();
     this.shutdown = new AtomicBoolean(false);
   }
@@ -207,6 +227,7 @@ public final class ManagedChannelPool implements ChannelPool {
       }
 
       availableChannels.clear();
+      releasedAt.clear();
       allChannels.clear();
       logger.info("Channel pool shutdown complete");
     }
@@ -308,6 +329,19 @@ public final class ManagedChannelPool implements ChannelPool {
   }
 
   /**
+   * Creates a pool with an explicit idle eviction delay and time source, for tests.
+   *
+   * @param maxSize        maximum number of channels, 0 for unbounded
+   * @param channelFactory factory for creating new gRPC channels
+   * @param maxIdle        how long a released channel may stay unused before it is shut down
+   * @param nanoTime       time source, in nanoseconds
+   * @return a channel pool with the default retry policy
+   */
+  static ManagedChannelPool create(int maxSize, Supplier<ManagedChannel> channelFactory, Duration maxIdle, LongSupplier nanoTime) {
+    return new ManagedChannelPool(maxSize, RetryPolicy.DEFAULT, channelFactory, maxIdle, nanoTime);
+  }
+
+  /**
    * Takes a healthy channel for a caller that already holds a channel permit.
    * <p>
    * Unhealthy channels found on the way are discarded; when no healthy channel is available, a new one is created.
@@ -315,8 +349,10 @@ public final class ManagedChannelPool implements ChannelPool {
    * @return a healthy {@link ManagedChannel} ready for use
    */
   private ManagedChannel takeChannel() {
+    evictIdleChannels();
     ManagedChannel candidate;
-    while ((candidate = availableChannels.poll()) != null) {
+    while ((candidate = availableChannels.pollFirst()) != null) {
+      releasedAt.remove(candidate);
       if (isChannelHealthy(candidate)) {
         logger.trace("Reusing channel from pool. Pool size: {}", size());
         return candidate;
@@ -348,7 +384,10 @@ public final class ManagedChannelPool implements ChannelPool {
     if (!allChannels.contains(channel)) throw new IllegalArgumentException("Channel was not acquired from this pool");
 
     if (isChannelHealthy(channel)) {
-      availableChannels.offer(channel);
+      // Most recently used first: under a light load the same few channels serve every call,
+      // and the others stay unused until evictIdleChannels shuts them down.
+      releasedAt.put(channel, nanoTime.getAsLong());
+      availableChannels.offerFirst(channel);
       logger.trace("Channel returned to the pool");
     } else {
       logger.debug("Discarding unhealthy channel on release. Channel state: {}", channel.getState(false));
@@ -356,6 +395,26 @@ public final class ManagedChannelPool implements ChannelPool {
     }
   }
 
+  /**
+   * Shuts down the available channels unused for longer than the maximum idle time, so the pool
+   * shrinks back after a burst of calls. Released channels sit in the deque from most to least
+   * recently used, so the scan starts from the tail and stops at the first channel still in use recently.
+   */
+  private void evictIdleChannels() {
+    var now = nanoTime.getAsLong();
+    var iterator = availableChannels.descendingIterator();
+    while (iterator.hasNext()) {
+      var channel = iterator.next();
+      var released = releasedAt.get(channel);
+      if (released == null) continue;
+      if (now - released < maxIdleNanos) break;
+      if (availableChannels.removeLastOccurrence(channel)) {
+        releasedAt.remove(channel);
+        logger.debug("Shutting down channel unused for {}. Pool size: {}", Duration.ofNanos(now - released), size() - 1);
+        discard(channel);
+      }
+    }
+  }
 
   private ManagedChannel createChannel() {
     var channel = channelFactory.get();

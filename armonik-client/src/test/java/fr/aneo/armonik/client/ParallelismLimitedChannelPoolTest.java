@@ -164,6 +164,54 @@ class ParallelismLimitedChannelPoolTest {
     assertThatThrownBy(() -> pool.execute(channel -> "x")).isInstanceOf(IllegalStateException.class);
   }
 
+  @Test
+  @DisplayName("execute should return the value of its operation")
+  @Timeout(5)
+  void execute_should_return_the_value_of_its_operation() {
+    // Given
+    pool = new ParallelismLimitedChannelPool(ManagedChannelPool.createUnbounded(this::channel), 1);
+
+    // When
+    var result = pool.execute(channel -> "done");
+
+    // Then
+    assertThat(result).isEqualTo("done");
+  }
+
+  @Test
+  @DisplayName("an execute whose operation throws should return its permit")
+  @Timeout(5)
+  void execute_whose_operation_throws_should_return_its_permit() throws Exception {
+    // Given
+    pool = new ParallelismLimitedChannelPool(ManagedChannelPool.createUnbounded(this::channel), 1);
+
+    // When
+    assertThatThrownBy(() -> pool.execute(channel -> {
+      throw new RuntimeException("operation failed");
+    })).isInstanceOf(RuntimeException.class).hasMessage("operation failed");
+
+    // Then: the only permit is back
+    var next = pool.executeAsync(channel -> CompletableFuture.completedFuture("next")).toCompletableFuture();
+    assertThat(next.get(2, SECONDS)).isEqualTo("next");
+  }
+
+  @Test
+  @DisplayName("a call whose operation fails should return its permit")
+  @Timeout(5)
+  void call_whose_operation_fails_should_return_its_permit() throws Exception {
+    // Given
+    pool = new ParallelismLimitedChannelPool(ManagedChannelPool.createUnbounded(this::channel), 1);
+
+    // When
+    var failed = pool.executeAsync(channel -> CompletableFuture.<String>failedFuture(new RuntimeException("operation failed")))
+                     .toCompletableFuture();
+    assertThatThrownBy(() -> failed.get(2, SECONDS)).hasRootCauseMessage("operation failed");
+
+    // Then: the only permit is back
+    var next = pool.executeAsync(channel -> CompletableFuture.completedFuture("next")).toCompletableFuture();
+    assertThat(next.get(2, SECONDS)).isEqualTo("next");
+  }
+
   private ManagedChannel channel() {
     var channel = mock(ManagedChannel.class);
     when(channel.getState(false)).thenReturn(READY);

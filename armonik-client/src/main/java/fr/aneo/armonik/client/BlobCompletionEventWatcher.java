@@ -116,6 +116,11 @@ final class BlobCompletionEventWatcher {
   public WatchTicket watch(List<BlobHandle> blobHandles) {
     requireNonNull(blobHandles, "blobHandles must not be null");
 
+    if (blobHandles.isEmpty()) {
+      // No event would ever arrive: do not open a stream that nothing would end.
+      return new WatchTicket(CompletableFuture.completedFuture(null), List.of());
+    }
+
     var ticket = new WatchTicket();
 
     handlesById(blobHandles)

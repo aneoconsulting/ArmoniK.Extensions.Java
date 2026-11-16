@@ -23,6 +23,7 @@ import fr.aneo.armonik.client.BlobHandle;
 import fr.aneo.armonik.client.BlobId;
 import fr.aneo.armonik.client.SessionId;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
@@ -60,8 +61,7 @@ import static fr.aneo.armonik.client.BlobCompletionListener.BlobError;
  * <p>
  * The Events API never ends a subscription on its own: the call stays open on the client connection
  * and keeps a result watcher on the control plane until the client cancels it. The observer therefore
- * cancels its call as soon as every watched blob has received its terminal event, and in any case once
- * the completion future is done.
+ * cancels its call as soon as every watched blob has received its terminal event.
  *
  * @see BlobCompletionListener
  * @see StreamObserver
@@ -128,15 +128,11 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
     this.completion = completion;
     this.listener = listener;
     this.leftoverSink = leftoverSink;
-    this.completion.whenComplete((ignored, error) -> cancelCall());
   }
 
   @Override
   public void beforeStart(ClientCallStreamObserver<EventSubscriptionRequest> requestStream) {
     call.set(requestStream);
-    if (completion.isDone() || cancelled.get()) {
-      cancelCall();
-    }
   }
 
   @Override
@@ -160,12 +156,14 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
 
   @Override
   public void onError(Throwable throwable) {
-    if (cancelled.get() && isCancelledError(throwable)) {
+    // The call is cancelled only once no watched blob is pending: there are no leftovers to publish,
+    // and the download and abort chains already started complete the watch.
+    if (cancelled.get() && statusCode(throwable) == Status.Code.CANCELLED) {
       log.debug("Event stream cancelled by the client once all watched blobs were observed. SessionId: {}", sessionId.asString());
       return;
     }
     final int pendingCount = pending.size();
-    if (pendingCount == 0 || isUnavailableError(throwable)) {
+    if (pendingCount == 0 || statusCode(throwable) == Status.Code.UNAVAILABLE) {
       log.debug("Event stream closed (connection unavailable). SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount);
     } else {
       log.error("Event stream error, publishing leftovers for retry. SessionId: {} pendingCount: {}", sessionId.asString(), pendingCount, throwable);
@@ -291,13 +289,7 @@ public final class BlobCompletionEventObserver implements ClientResponseObserver
     }
   }
 
-  private static boolean isCancelledError(Throwable throwable) {
-    return throwable instanceof io.grpc.StatusRuntimeException
-      && ((io.grpc.StatusRuntimeException) throwable).getStatus().getCode() == io.grpc.Status.Code.CANCELLED;
-  }
-
-  private boolean isUnavailableError(Throwable throwable) {
-    return throwable instanceof io.grpc.StatusRuntimeException
-      && ((io.grpc.StatusRuntimeException) throwable).getStatus().getCode() == io.grpc.Status.Code.UNAVAILABLE;
+  private static Status.Code statusCode(Throwable throwable) {
+    return Status.fromThrowable(throwable).getCode();
   }
 }

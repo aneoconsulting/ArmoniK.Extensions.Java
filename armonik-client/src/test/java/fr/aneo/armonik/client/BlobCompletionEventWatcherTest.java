@@ -326,6 +326,22 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     assertThat(eventsGrpcMock.cancelledStreams()).isZero();
   }
 
+  @Test
+  @DisplayName("should complete a watch of no blob without opening an event stream")
+  void should_complete_empty_watch_without_stream() throws Exception {
+    // Given
+    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, new BlobCompletionListenerMock());
+
+    // When
+    var ticket = watcher.watch(List.of());
+
+    // Then
+    ticket.completion().toCompletableFuture().get(1, SECONDS);
+    assertThat(ticket.leftoversAfterCompletion().toCompletableFuture().get(1, SECONDS)).isEmpty();
+    Thread.sleep(100);
+    assertThat(eventsGrpcMock.openStreams()).isZero();
+  }
+
   private void awaitOpenStreams(int expected) throws InterruptedException {
     var deadline = System.nanoTime() + SECONDS.toNanos(2);
     while (eventsGrpcMock.openStreams() != expected && System.nanoTime() < deadline) {

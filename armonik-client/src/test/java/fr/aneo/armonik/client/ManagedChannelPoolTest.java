@@ -366,6 +366,158 @@ class ManagedChannelPoolTest {
     assertThat(pool.size()).isEqualTo(1);
   }
 
+  @Test
+  @DisplayName("execute async should not block the caller when the pool is exhausted")
+  @Timeout(5)
+  void execute_async_should_not_block_the_caller_when_pool_is_exhausted() throws Exception {
+    // Given
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    var holding = new CompletableFuture<String>();
+    pool.executeAsync(ch -> holding);
+
+    // When: the only channel is busy
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("second")).toCompletableFuture();
+
+    // Then: the call returned at once, and its operation runs once the channel is released
+    assertThat(waiting).isNotDone();
+    holding.complete("first");
+    assertThat(waiting.get(2, SECONDS)).isEqualTo("second");
+    assertThat(pool.size()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("close should fail operations still waiting for a channel")
+  @Timeout(5)
+  void close_should_fail_operations_waiting_for_a_channel() {
+    // Given
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    pool.executeAsync(ch -> new CompletableFuture<>());
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("never")).toCompletableFuture();
+
+    // When
+    pool.close();
+
+    // Then
+    assertThatThrownBy(() -> waiting.get(2, SECONDS))
+      .hasCauseInstanceOf(IllegalStateException.class);
+  }
+
+  private static void awaitCondition(java.util.function.BooleanSupplier condition) throws InterruptedException {
+    var deadline = System.nanoTime() + SECONDS.toNanos(2);
+    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+      Thread.sleep(10);
+    }
+    assertThat(condition.getAsBoolean()).isTrue();
+  }
+
+  @Test
+  @DisplayName("execute should return its permit when the channel cannot be created")
+  @Timeout(5)
+  void execute_should_return_permit_when_channel_creation_fails() throws Exception {
+    // Given: a factory that fails twice, then works
+    var calls = new AtomicInteger();
+    pool = ManagedChannelPool.create(2, () -> {
+      if (calls.incrementAndGet() <= 2) throw new IllegalStateException("bad CA path");
+      return createHealthyChannel();
+    });
+
+    // When
+    assertThatThrownBy(() -> pool.execute(ch -> "first")).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> pool.execute(ch -> "second")).isInstanceOf(IllegalStateException.class);
+
+    // Then: both permits are back
+    var first = new CompletableFuture<String>();
+    var second = new CompletableFuture<String>();
+    var started = new AtomicInteger();
+    pool.executeAsync(ch -> { started.incrementAndGet(); return first; });
+    pool.executeAsync(ch -> { started.incrementAndGet(); return second; });
+    assertThat(started.get()).isEqualTo(2);
+    first.complete("1");
+    second.complete("2");
+  }
+
+  @Test
+  @DisplayName("an interrupted execute should not lose its permit")
+  @Timeout(5)
+  void interrupted_execute_should_not_lose_its_permit() throws Exception {
+    // Given: both channels of a pool of 2 are busy, and a caller waits in execute()
+    pool = ManagedChannelPool.create(2, this::createHealthyChannel);
+    var busy = range(0, 2).mapToObj(i -> new CompletableFuture<String>()).toList();
+    busy.forEach(call -> pool.executeAsync(ch -> call));
+    var waiting = new Thread(() -> {
+      try {
+        pool.execute(ch -> "never");
+      } catch (RuntimeException expected) {
+        // interrupted
+      }
+    });
+    waiting.start();
+    awaitCondition(() -> waiting.getState() == Thread.State.WAITING || waiting.getState() == Thread.State.TIMED_WAITING);
+
+    // When: the caller gives up, then the channels are released
+    waiting.interrupt();
+    waiting.join(2000);
+    busy.forEach(call -> call.complete("done"));
+
+    // Then: two calls can still run at once
+    var started = new AtomicInteger();
+    var next = range(0, 2).mapToObj(i -> new CompletableFuture<String>()).toList();
+    next.forEach(call -> pool.executeAsync(ch -> { started.incrementAndGet(); return call; }));
+    awaitCondition(() -> started.get() == 2);
+    next.forEach(call -> call.complete("done"));
+  }
+
+  @Test
+  @DisplayName("a call cancelled while waiting should neither run nor lose its permit")
+  @Timeout(5)
+  void cancelled_waiting_call_should_not_run_nor_lose_its_permit() throws Exception {
+    // Given: the only channel is busy and a second call waits
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    var busy = new CompletableFuture<String>();
+    pool.executeAsync(ch -> busy);
+    var ranCancelled = new AtomicInteger();
+    var cancelled = pool.executeAsync(ch -> { ranCancelled.incrementAndGet(); return CompletableFuture.completedFuture("x"); }).toCompletableFuture();
+
+    // When: the caller gives up, then the channel is released
+    cancelled.cancel(false);
+    busy.complete("done");
+
+    // Then: the cancelled call never runs, and the next one does
+    var next = pool.executeAsync(ch -> CompletableFuture.completedFuture("next")).toCompletableFuture();
+    assertThat(next.get(2, SECONDS)).isEqualTo("next");
+    assertThat(ranCancelled.get()).isZero();
+  }
+
+  @Test
+  @DisplayName("a call handed a permit while the pool closes should not leave an open channel")
+  @Timeout(10)
+  void call_handed_a_permit_during_close_should_not_leave_an_open_channel() throws Exception {
+    for (int attempt = 0; attempt < 50; attempt++) {
+      // Given: the only channel is busy and a second call waits
+      var created = new java.util.concurrent.CopyOnWriteArrayList<ManagedChannel>();
+      pool = ManagedChannelPool.create(1, () -> {
+        var channel = createHealthyChannel();
+        created.add(channel);
+        return channel;
+      });
+      var busy = new CompletableFuture<String>();
+      pool.executeAsync(ch -> busy);
+      var ran = new AtomicInteger();
+      var waiting = pool.executeAsync(ch -> { ran.incrementAndGet(); return CompletableFuture.completedFuture("x"); }).toCompletableFuture();
+
+      // When: the channel is released and the pool closes right away
+      busy.complete("done");
+      pool.close();
+
+      // Then: the waiting call either ran before the close or failed without running,
+      // and every channel the pool created is shut down
+      var outcome = waiting.handle((value, error) -> error == null).get(2, SECONDS);
+      assertThat(ran.get()).isEqualTo(outcome ? 1 : 0);
+      Thread.sleep(20);
+      created.forEach(channel -> verify(channel, atLeastOnce()).shutdown());
+    }
+  }
+
   private static Function<ManagedChannel, CompletionStage<Object>> executeOperation(CountDownLatch acquired, CompletableFuture<Object> operation1) {
     return channel -> {
       acquired.countDown();

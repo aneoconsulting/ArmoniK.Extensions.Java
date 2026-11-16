@@ -80,6 +80,8 @@ public interface ChannelPool extends AutoCloseable {
    * lifecycle is tied to the completion stage lifecycle, ensuring proper cleanup even
    * when async operations fail.
    * <p>
+   * When every channel is busy, the operation waits for one without blocking the calling thread.
+   * <p>
    * <strong>Example usage:</strong>
    * <pre>{@code
    * CompletionStage<String> sessionId = channelPool.executeAsync(channel -> {

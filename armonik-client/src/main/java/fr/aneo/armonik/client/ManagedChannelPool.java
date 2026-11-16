@@ -122,6 +122,11 @@ public final class ManagedChannelPool implements ChannelPool {
     try {
       ensureNotShutdown();
       var channel = takeChannel();
+      if (shutdown.get()) {
+        // close() ran during takeChannel() and may have missed a channel it created: see runWithChannel.
+        returnChannel(channel);
+        throw new IllegalStateException("Channel pool has been shut down");
+      }
       try {
         return operation.apply(channel);
       } finally {
@@ -152,6 +157,12 @@ public final class ManagedChannelPool implements ChannelPool {
       channel = takeChannel();
     } catch (RuntimeException e) {
       return CompletableFuture.failedFuture(e);
+    }
+    // close() may also run during takeChannel(): a channel created there is already in allChannels, so either
+    // close() saw it, or close() set shutdown before it was added and this check fails.
+    if (shutdown.get()) {
+      returnChannel(channel);
+      return CompletableFuture.failedFuture(new IllegalStateException("Channel pool has been shut down"));
     }
 
     try {

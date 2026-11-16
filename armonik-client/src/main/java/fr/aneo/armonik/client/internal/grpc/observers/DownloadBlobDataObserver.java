@@ -24,7 +24,10 @@ import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
+import com.google.protobuf.ByteString;
+
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDataResponse;
@@ -46,9 +49,12 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDa
  */
 public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDataResponse> {
   private static final Logger logger = LoggerFactory.getLogger(DownloadBlobDataObserver.class);
+  private static final long MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
   private final SettableFuture<byte[]> result = SettableFuture.create();
-  private final ByteArrayOutputStream buffer = new ByteArrayOutputStream(8 * 1024);
+  /** Chunks as received, kept until the end so the data is copied once, into an array of the exact size. */
+  private final List<ByteString> chunks = new ArrayList<>();
+  private long size;
   private final SessionId sessionId;
   private final BlobId blobId;
 
@@ -71,11 +77,9 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
 
   @Override
   public void onNext(DownloadResultDataResponse chunk) {
-    try {
-      buffer.write(chunk.getDataChunk().toByteArray());
-    } catch (Exception e) {
-      onError(e);
-    }
+    var data = chunk.getDataChunk();
+    chunks.add(data);
+    size += data.size();
   }
 
   @Override
@@ -89,8 +93,19 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   @Override
   public void onCompleted() {
     logger.debug("Blob download completed: operation={}, sessionId={}, blobId={}, downloadSize={}",
-      "downloadBlob", sessionId.asString(), blobId.asString(), buffer.size());
-    result.set(buffer.toByteArray());
+      "downloadBlob", sessionId.asString(), blobId.asString(), size);
+    if (size > MAX_ARRAY_SIZE) {
+      result.setException(new IllegalStateException("Blob " + blobId.asString() + " is " + size + " bytes, larger than a Java array can hold"));
+      return;
+    }
+    var data = new byte[(int) size];
+    var offset = 0;
+    for (var chunk : chunks) {
+      chunk.copyTo(data, offset);
+      offset += chunk.size();
+    }
+    chunks.clear();
+    result.set(data);
   }
 
   public CompletionStage<byte[]> content() {

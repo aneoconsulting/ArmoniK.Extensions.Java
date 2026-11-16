@@ -198,4 +198,14 @@ class ArmoniKConfigTest {
     assertThat(defaultConfig.taskSubmissionBatching()).isEqualTo(TaskSubmissionBatching.DEFAULT);
     assertThat(customConfig.taskSubmissionBatching()).isEqualTo(customBatching);
   }
+
+  @Test
+  @DisplayName("should default the parallelism limit to 0 and accept any custom one")
+  void should_default_and_customize_parallelism_limit() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThat(builder.build().parallelismLimit()).isZero();
+    assertThat(builder.withParallelismLimit(16).build().parallelismLimit()).isEqualTo(16);
+    assertThat(builder.withParallelismLimit(-1).build().parallelismLimit()).isEqualTo(-1);
+  }
 }

@@ -37,6 +37,7 @@ public final class ArmoniKConfig {
   private final String clientP12Password;
   private final RetryPolicy retryPolicy;
   private final TaskSubmissionBatching taskSubmissionBatching;
+  private final int parallelismLimit;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -48,6 +49,7 @@ public final class ArmoniKConfig {
     this.clientP12Password = builder.clientP12Password;
     this.retryPolicy = builder.retryPolicy;
     this.taskSubmissionBatching = builder.taskSubmissionBatching;
+    this.parallelismLimit = builder.parallelismLimit;
   }
 
   /**
@@ -137,6 +139,18 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the maximum number of calls the client runs at once, whichever session or operation starts them.
+   * <p>
+   * As in the other ArmoniK SDKs, 0 stands for the number of available processors and a negative value
+   * for no limit.
+   *
+   * @return the configured parallelism limit
+   */
+  public int parallelismLimit() {
+    return parallelismLimit;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -154,6 +168,7 @@ public final class ArmoniKConfig {
   public static final class Builder {
     private RetryPolicy retryPolicy = DEFAULT;
     private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
+    private int parallelismLimit = 0;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -274,6 +289,25 @@ public final class ArmoniKConfig {
      */
     public Builder withTaskSubmissionBatching(TaskSubmissionBatching taskSubmissionBatching) {
       this.taskSubmissionBatching = requireNonNullElse(taskSubmissionBatching, TaskSubmissionBatching.DEFAULT);
+      return this;
+    }
+
+    /**
+     * Sets the maximum number of calls the client runs at once, whichever session or operation starts them.
+     * <p>
+     * The client opens one channel, that is one HTTP/2 connection, per call in flight, so this limit
+     * also bounds its connections to the control plane. A call over the limit waits for another to end,
+     * without blocking any thread.
+     * <p>
+     * As in the other ArmoniK SDKs, 0 (the default) stands for the number of available processors and a
+     * negative value for no limit. Without a limit, a large submission opens as many connections as it has
+     * concurrent calls.
+     *
+     * @param parallelismLimit the limit: positive, 0 for the number of processors, negative for none
+     * @return this builder
+     */
+    public Builder withParallelismLimit(int parallelismLimit) {
+      this.parallelismLimit = parallelismLimit;
       return this;
     }
 

@@ -59,7 +59,6 @@ import static java.util.Objects.requireNonNull;
 public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
   private final TaskSubmissionBatching taskSubmissionBatching;
-  final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
 
   /**
@@ -77,11 +76,9 @@ public class ArmoniKClient implements AutoCloseable {
   public ArmoniKClient(ArmoniKConfig armoniKConfig) {
     requireNonNull(armoniKConfig, "armoniKConfig must not be null");
 
-    this.channelPool = ManagedChannelPool.create(
-      DEFAULT_CHANNEL_POOL_SIZE,
-      armoniKConfig.retryPolicy(),
-      () -> createChannel(armoniKConfig)
-    );
+    var pool = ManagedChannelPool.createUnbounded(armoniKConfig.retryPolicy(), () -> createChannel(armoniKConfig));
+    var parallelismLimit = ParallelismLimitedChannelPool.resolve(armoniKConfig.parallelismLimit());
+    this.channelPool = parallelismLimit == Integer.MAX_VALUE ? pool : new ParallelismLimitedChannelPool(pool, parallelismLimit);
     this.taskSubmissionBatching = armoniKConfig.taskSubmissionBatching();
   }
 

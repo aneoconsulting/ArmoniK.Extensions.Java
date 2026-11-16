@@ -22,6 +22,9 @@ import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
 import fr.aneo.armonik.client.testutils.TasksGrpcMock;
 import io.grpc.BindableService;
+import io.grpc.ManagedChannel;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,6 +36,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.client.TestDataFactory.sessionInfo;
@@ -181,9 +189,9 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
     // Then: neither task is submitted
     assertThat(second.deferredTaskInfo().toCompletableFuture())
       .failsWithin(5, SECONDS)
-      .withThrowableOfType(java.util.concurrent.ExecutionException.class)
+      .withThrowableOfType(ExecutionException.class)
       .withMessageContaining("will never be available");
-    assertThat(first.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(java.util.concurrent.ExecutionException.class);
+    assertThat(first.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(ExecutionException.class);
   }
 
   @Test
@@ -191,37 +199,13 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
   void should_fail_tasks_when_pool_closes_before_payloads() throws Exception {
     // Given: a pool that refuses every call once the inputs and outputs are created
     resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
-    var calls = new java.util.concurrent.atomic.AtomicInteger();
-    ChannelPool closing = new ChannelPool() {
+    var calls = new AtomicInteger();
+    ChannelPool closing = new DelegatingChannelPool(channelPool.retryPolicy()) {
       @Override
-      public <T> T execute(java.util.function.Function<io.grpc.ManagedChannel, T> operation) {
-        return channelPool.execute(operation);
-      }
-
-      @Override
-      public <T> java.util.concurrent.CompletionStage<T> executeAsync(java.util.function.Function<io.grpc.ManagedChannel, java.util.concurrent.CompletionStage<T>> operation) {
+      public <T> CompletionStage<T> executeAsync(Function<ManagedChannel, CompletionStage<T>> operation) {
         // GetServiceConfiguration, output metadata, inputs with data; then the payloads find the pool closed
         if (calls.incrementAndGet() > 3) throw new IllegalStateException("Channel pool has been shut down");
-        return channelPool.executeAsync(operation);
-      }
-
-      @Override
-      public void close() {
-      }
-
-      @Override
-      public int size() {
-        return channelPool.size();
-      }
-
-      @Override
-      public int availableChannels() {
-        return channelPool.availableChannels();
-      }
-
-      @Override
-      public RetryPolicy retryPolicy() {
-        return channelPool.retryPolicy();
+        return super.executeAsync(operation);
       }
     };
     var session = new SessionHandle(sessionInfo, null, closing, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(closing));
@@ -231,8 +215,69 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
 
     // Then
     // A future that never completes would also pass failsWithin: require an actual failure
-    assertThat(handle.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(java.util.concurrent.ExecutionException.class);
+    assertThat(handle.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(ExecutionException.class);
     assertThat(calls.get()).as("calls made through the pool").isGreaterThan(3);
+  }
+
+  @Test
+  @DisplayName("should retry a CreateResults call that fails transiently")
+  void should_retry_transient_create_results_failure() throws Exception {
+    // Given: the first CreateResults call fails with UNAVAILABLE, and the pool allows retries
+    resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
+    resultsGrpcMock.failingCreateResults.set(1);
+    var retrying = new DelegatingChannelPool(new RetryPolicy(3, Duration.ofMillis(10), Duration.ofMillis(10), 1));
+    var session = new SessionHandle(sessionInfo, null, retrying, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(retrying));
+
+    // When
+    var handles = session.submitTasks(List.of(task("retried")));
+    awaitSubmitted(handles);
+
+    // Then: the failure was consumed, and the input was created with its data
+    assertThat(resultsGrpcMock.failingCreateResults.get()).isZero();
+    var inputId = tasksGrpcMock.submittedTasksRequest.getTaskCreations(0).getDataDependencies(0);
+    assertThat(new String(resultsGrpcMock.createdData.get(inputId), UTF_8)).isEqualTo("retried");
+    assertThat(resultsGrpcMock.uploadedDataInfos).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should fail the task when the CreateResults call of its input fails for good")
+  void should_fail_task_when_inline_input_creation_fails() {
+    // Given
+    resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
+    resultsGrpcMock.rejectedCreateResultsName = "rejected";
+    var session = sessionHandle();
+    var definition = new TaskDefinition().withInput("A", InputBlobDefinition.from("small".getBytes(UTF_8)).withName("rejected")).withOutput("result");
+
+    // When
+    var handle = session.submitTasks(List.of(definition)).get(0);
+
+    // Then: the input never exists, so neither does the payload naming it, and the task is not submitted
+    assertThat(handle.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(5, SECONDS)
+      .withThrowableOfType(ExecutionException.class)
+      .withRootCauseInstanceOf(StatusRuntimeException.class)
+      .satisfies(exception -> assertThat(rootStatus(exception)).isEqualTo(Status.Code.INVALID_ARGUMENT));
+    assertThat(tasksGrpcMock.submittedTasksRequest).isNull();
+  }
+
+  @Test
+  @DisplayName("should fail the task when the CreateResults call of its payload fails for good")
+  void should_fail_task_when_inline_payload_creation_fails() {
+    // Given
+    resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
+    resultsGrpcMock.rejectedCreateResultsName = "payload";
+    var session = sessionHandle();
+
+    // When
+    var handle = session.submitTasks(List.of(task("small"))).get(0);
+
+    // Then
+    assertThat(handle.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(5, SECONDS)
+      .withThrowableOfType(ExecutionException.class)
+      .withMessageContaining("payload of the task could not be uploaded")
+      .satisfies(exception -> assertThat(rootStatus(exception)).isEqualTo(Status.Code.INVALID_ARGUMENT));
+    assertThat(tasksGrpcMock.submittedTasksRequest).isNull();
   }
 
   @Test
@@ -253,8 +298,8 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
   @DisplayName("should retry a failed service configuration read only after the retry delay")
   void should_retry_failed_service_configuration_after_delay() throws Exception {
     // Given
-    resultsGrpcMock.serviceConfigurationError = io.grpc.Status.UNAVAILABLE.asRuntimeException();
-    var now = new java.util.concurrent.atomic.AtomicLong();
+    resultsGrpcMock.serviceConfigurationError = Status.UNAVAILABLE.asRuntimeException();
+    var now = new AtomicLong();
     var configuration = new ResultsServiceConfiguration(channelPool, now::get);
 
     // When / Then: the failure gives 0 and is not retried within the delay
@@ -274,6 +319,12 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
     return new SessionHandle(sessionInfo, null, channelPool, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(channelPool));
   }
 
+  private static Status.Code rootStatus(Throwable throwable) {
+    var cause = throwable;
+    while (cause.getCause() != null) cause = cause.getCause();
+    return Status.fromThrowable(cause).getCode();
+  }
+
   private static TaskDefinition task(String input) {
     return new TaskDefinition().withInput("A", InputBlobDefinition.from(input.getBytes(UTF_8))).withOutput("result");
   }
@@ -281,6 +332,46 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
   private static void awaitSubmitted(List<TaskHandle> handles) throws Exception {
     for (var handle : handles) {
       handle.deferredTaskInfo().toCompletableFuture().get(5, SECONDS);
+    }
+  }
+
+  /**
+   * A pool that runs every call through the test's pool, with its own retry policy.
+   */
+  private class DelegatingChannelPool implements ChannelPool {
+    private final RetryPolicy retryPolicy;
+
+    DelegatingChannelPool(RetryPolicy retryPolicy) {
+      this.retryPolicy = retryPolicy;
+    }
+
+    @Override
+    public <T> T execute(Function<ManagedChannel, T> operation) {
+      return channelPool.execute(operation);
+    }
+
+    @Override
+    public <T> CompletionStage<T> executeAsync(Function<ManagedChannel, CompletionStage<T>> operation) {
+      return channelPool.executeAsync(operation);
+    }
+
+    @Override
+    public void close() {
+    }
+
+    @Override
+    public int size() {
+      return channelPool.size();
+    }
+
+    @Override
+    public int availableChannels() {
+      return channelPool.availableChannels();
+    }
+
+    @Override
+    public RetryPolicy retryPolicy() {
+      return retryPolicy;
     }
   }
 }

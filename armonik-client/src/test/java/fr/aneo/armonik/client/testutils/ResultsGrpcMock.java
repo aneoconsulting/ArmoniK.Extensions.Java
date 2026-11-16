@@ -57,6 +57,10 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public final List<CreateResultsRequest> createResultsRequests = new CopyOnWriteArrayList<>();
   /** Data received through CreateResults, by result id. */
   public final Map<String, byte[]> createdData = new ConcurrentHashMap<>();
+  /** Number of next CreateResults calls that fail with UNAVAILABLE. */
+  public final AtomicInteger failingCreateResults = new AtomicInteger();
+  /** When set, a CreateResults call holding a result of this name fails with INVALID_ARGUMENT. */
+  public volatile String rejectedCreateResultsName;
 
 
   public void failDownloadFor(BlobId id) {
@@ -85,6 +89,8 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.serviceConfigurationError = null;
     this.createResultsRequests.clear();
     this.createdData.clear();
+    this.failingCreateResults.set(0);
+    this.rejectedCreateResultsName = null;
   }
 
   @Override
@@ -104,6 +110,14 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
 
   @Override
   public void createResults(CreateResultsRequest request, StreamObserver<CreateResultsResponse> responseObserver) {
+    if (failingCreateResults.getAndUpdate(remaining -> Math.max(remaining - 1, 0)) > 0) {
+      responseObserver.onError(io.grpc.Status.UNAVAILABLE.withDescription("transient failure").asRuntimeException());
+      return;
+    }
+    if (rejectedCreateResultsName != null && request.getResultsList().stream().anyMatch(result -> result.getName().equals(rejectedCreateResultsName))) {
+      responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT.withDescription("rejected result " + rejectedCreateResultsName).asRuntimeException());
+      return;
+    }
     if (request.getSerializedSize() > dataChunkMaxSize) {
       responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT.withDescription("request larger than DataChunkMaxSize").asRuntimeException());
       return;

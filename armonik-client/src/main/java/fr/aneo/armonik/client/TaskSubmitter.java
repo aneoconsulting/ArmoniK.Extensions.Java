@@ -29,6 +29,7 @@ import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
+import fr.aneo.armonik.client.internal.retry.RetryableStreamOperation;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -82,8 +83,10 @@ import static java.util.stream.Collectors.toMap;
  * The task submission process follows these steps:
  * <ol>
  *   <li><strong>Blob Allocation:</strong> Allocates blob handles for inputs, outputs, and payload</li>
- *   <li><strong>Input Upload:</strong> Uploads input data from {@link BlobDefinition}s to the cluster</li>
- *   <li><strong>Payload Creation:</strong> Serializes task metadata (input/output mappings) as JSON payload</li>
+ *   <li><strong>Input Creation:</strong> Creates the input blobs; small in-memory inputs go with their
+ *       data in batched {@code CreateResults} calls, the others are uploaded as streams</li>
+ *   <li><strong>Payload Creation:</strong> Serializes the input/output mappings as a JSON payload and creates
+ *       it the same way, once the ids it names are known</li>
  *   <li><strong>Task Submission:</strong> Submits the task with dependencies to the ArmoniK cluster</li>
  *   <li><strong>Output Monitoring:</strong> Registers output blobs for completion monitoring (if configured)</li>
  * </ol>
@@ -101,7 +104,7 @@ final class TaskSubmitter {
   private static final Logger logger = LoggerFactory.getLogger(TaskSubmitter.class);
 
   /**
-   * Maximum number of blobs in one {@code CreateResultsMetaData} call: {@value}.
+   * Maximum number of blobs in one {@code CreateResultsMetaData} or {@code CreateResults} call: {@value}.
    */
   static final int MAX_BLOBS_PER_REQUEST = 1000;
 
@@ -243,8 +246,9 @@ final class TaskSubmitter {
    * This method orchestrates the complete task submission process:
    * <ol>
    *   <li><strong>Blob Allocation:</strong> Allocates blob handles for all inputs, outputs, and the task payload</li>
-   *   <li><strong>Data Upload:</strong> Uploads input data content to the allocated blob handles</li>
-   *   <li><strong>Payload Upload:</strong> Creates and uploads a JSON payload containing input/output mappings</li>
+   *   <li><strong>Input Creation:</strong> Creates the inputs, small in-memory ones with their data in
+   *       batched {@code CreateResults} calls, the others through an upload stream</li>
+   *   <li><strong>Payload Creation:</strong> Creates the JSON payload containing input/output mappings, the same way</li>
    *   <li><strong>Task Creation:</strong> Submits the task to ArmoniK with proper dependencies</li>
    *   <li><strong>Output Monitoring:</strong> Registers output blobs with the completion coordinator</li>
    * </ol>
@@ -278,7 +282,9 @@ final class TaskSubmitter {
    * {@link #submit(TaskDefinition)}, whatever the configured batch size. The blob metadata is created
    * with one {@code CreateResultsMetaData} call per {@value #MAX_BLOBS_PER_REQUEST} blobs, and the
    * tasks are submitted with one {@code SubmitTasks} call per {@value #MAX_TASKS_PER_REQUEST} tasks.
-   * Input and payload data are still uploaded with one stream per blob.
+   * When the cluster reports a positive {@code DataChunkMaxSize}, small in-memory inputs and payloads are
+   * created with their data in batched {@code CreateResults} calls; other inputs, or all of them when it
+   * reports none, are uploaded with one stream per blob.
    * <p>
    * Tasks submitted in the same {@code SubmitTasks} call succeed or fail together.
    *
@@ -491,7 +497,7 @@ final class TaskSubmitter {
 
   private static Map<BlobHandle, CompletableFuture<Void>> inputReadinessByHandle(BlobHandlesAllocation allocation, List<CompletableFuture<Void>> readiness) {
     var handles = new ArrayList<>(allocation.inputHandlesByName().values());
-    var byHandle = new java.util.IdentityHashMap<BlobHandle, CompletableFuture<Void>>();
+    var byHandle = new IdentityHashMap<BlobHandle, CompletableFuture<Void>>();
     for (int i = 0; i < handles.size(); i++) byHandle.put(handles.get(i), readiness.get(i));
     return byHandle;
   }
@@ -665,19 +671,31 @@ final class TaskSubmitter {
     if (!group.isEmpty()) sendCreateResults(group);
   }
 
+  /**
+   * Sends one {@code CreateResults} call for a group, retried on transient failures with the pool's
+   * retry policy, as the uploads it replaces are. A retry after a lost response may leave the results
+   * of the first attempt on the server, unused by any task: they are harmless orphans of the session.
+   */
   private void sendCreateResults(List<InlineBlob> group) {
     var request = CreateResultsRequest.newBuilder()
                                       .setSessionId(sessionId.asString())
                                       .addAllResults(group.stream().map(InlineBlob::resultCreate).toList())
                                       .build();
-    callAsync(channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel).createResults(request)))
-               .thenApply(CreateResultsResponse::getResultsList)
-               .whenComplete((resultRaws, ex) -> {
-                 for (int i = 0; i < group.size(); i++) {
-                   if (ex != null) group.get(i).blobInfo().completeExceptionally(ex);
-                   else group.get(i).blobInfo().complete(toBlobInfo(sessionId, resultRaws.get(i)));
-                 }
-               });
+    RetryableStreamOperation.execute(
+                              () -> callAsync(channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel).createResults(request))),
+                              channelPool.retryPolicy())
+                            .thenApply(CreateResultsResponse::getResultsList)
+                            .whenComplete((resultRaws, ex) -> {
+                              var error = ex;
+                              if (error == null && resultRaws.size() != group.size()) {
+                                error = new ArmoniKException("CreateResults returned " + resultRaws.size() + " results for "
+                                  + group.size() + " requested. Session id:" + sessionId.asString());
+                              }
+                              for (int i = 0; i < group.size(); i++) {
+                                if (error != null) group.get(i).blobInfo().completeExceptionally(error);
+                                else group.get(i).blobInfo().complete(toBlobInfo(sessionId, resultRaws.get(i)));
+                              }
+                            });
   }
 
   private int sessionIdSize() {

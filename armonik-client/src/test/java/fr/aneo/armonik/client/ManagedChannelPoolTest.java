@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -402,7 +403,7 @@ class ManagedChannelPoolTest {
       .hasCauseInstanceOf(IllegalStateException.class);
   }
 
-  private static void awaitCondition(java.util.function.BooleanSupplier condition) throws InterruptedException {
+  private static void awaitCondition(BooleanSupplier condition) throws InterruptedException {
     var deadline = System.nanoTime() + SECONDS.toNanos(2);
     while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
       Thread.sleep(10);
@@ -494,7 +495,7 @@ class ManagedChannelPoolTest {
   void call_handed_a_permit_during_close_should_not_leave_an_open_channel() throws Exception {
     for (int attempt = 0; attempt < 50; attempt++) {
       // Given: the only channel is busy and a second call waits
-      var created = new java.util.concurrent.CopyOnWriteArrayList<ManagedChannel>();
+      var created = new CopyOnWriteArrayList<ManagedChannel>();
       pool = ManagedChannelPool.create(1, () -> {
         var channel = createHealthyChannel();
         created.add(channel);
@@ -513,7 +514,6 @@ class ManagedChannelPoolTest {
       // and every channel the pool created is shut down
       var outcome = waiting.handle((value, error) -> error == null).get(2, SECONDS);
       assertThat(ran.get()).isEqualTo(outcome ? 1 : 0);
-      Thread.sleep(20);
       created.forEach(channel -> verify(channel, atLeastOnce()).shutdown());
     }
   }

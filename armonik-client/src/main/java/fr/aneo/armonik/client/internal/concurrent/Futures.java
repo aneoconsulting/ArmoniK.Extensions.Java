@@ -151,14 +151,6 @@ public final class Futures {
   }
 
   /**
-   * Creates a Guava {@link FutureCallback} that completes the provided {@link CompletableFuture}
-   * according to the source future's outcome.
-   * <p>
-   * Exceptions are wrapped in {@link ArmoniKException} to provide consistent error handling,
-   * except for {@link CancellationException} which results in cancellation instead of
-   * exceptional completion.
-   */
-  /**
    * Returns a throwable as a runtime exception, wrapping it only when it is checked.
    *
    * @param throwable the throwable, typically the cause of an {@code ExecutionException}
@@ -168,6 +160,14 @@ public final class Futures {
     return throwable instanceof RuntimeException runtimeException ? runtimeException : new RuntimeException(throwable);
   }
 
+  /**
+   * Creates a Guava {@link FutureCallback} that completes the provided {@link CompletableFuture}
+   * according to the source future's outcome.
+   * <p>
+   * Exceptions are wrapped in {@link ArmoniKException} to provide consistent error handling,
+   * except for {@link CancellationException} which results in cancellation instead of
+   * exceptional completion.
+   */
   private static <T> FutureCallback<T> completingCallback(CompletableFuture<T> completableFuture) {
     return new FutureCallback<>() {
       @Override

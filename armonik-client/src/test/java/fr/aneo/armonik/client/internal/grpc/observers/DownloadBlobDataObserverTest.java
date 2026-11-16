@@ -74,6 +74,36 @@ class DownloadBlobDataObserverTest {
       .hasRootCauseInstanceOf(IllegalStateException.class);
   }
 
+  @Test
+  @DisplayName("should fill an array of the expected size")
+  void should_fill_array_of_expected_size() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 12);
+    observer.onNext(chunk("Hello"));
+    observer.onNext(chunk(", World"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("Hello, World");
+  }
+
+  @Test
+  @DisplayName("should return only the received data when less than expected arrives")
+  void should_trim_when_less_data_than_expected() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 100);
+    observer.onNext(chunk("short"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("short");
+  }
+
+  @Test
+  @DisplayName("should keep every chunk when more data than expected arrives")
+  void should_fall_back_when_more_data_than_expected() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 4);
+    observer.onNext(chunk("Hel"));
+    observer.onNext(chunk("lo, "));
+    observer.onNext(chunk("World"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("Hello, World");
+  }
+
   private static DownloadResultDataResponse chunk(String data) {
     return DownloadResultDataResponse.newBuilder().setDataChunk(ByteString.copyFrom(data, UTF_8)).build();
   }

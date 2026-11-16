@@ -70,7 +70,23 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
    * @see SessionId
    * @see BlobId
    */
+  /** Array allocated up front from the expected size; null once a chunk does not fit, or when the size is unknown. */
+  private byte[] preallocated;
+  private int filled;
+
   public DownloadBlobDataObserver(SessionId sessionId, BlobId blobId) {
+    this(sessionId, blobId, -1);
+  }
+
+  /**
+   * Creates an observer that fills an array of {@code expectedSize} bytes as chunks arrive, so the
+   * data is copied once and no chunk is kept. When the size is unknown, negative, or turns out wrong,
+   * the observer keeps the chunks and assembles them at the end instead.
+   *
+   * @param expectedSize the size of the data, or a negative value when unknown
+   */
+  public DownloadBlobDataObserver(SessionId sessionId, BlobId blobId, long expectedSize) {
+    if (expectedSize >= 0 && expectedSize <= MAX_ARRAY_SIZE) this.preallocated = new byte[(int) expectedSize];
     this.sessionId = sessionId;
     this.blobId = blobId;
   }
@@ -78,8 +94,18 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   @Override
   public void onNext(DownloadResultDataResponse chunk) {
     var data = chunk.getDataChunk();
-    chunks.add(data);
     size += data.size();
+    if (preallocated != null) {
+      if (filled + data.size() <= preallocated.length) {
+        data.copyTo(preallocated, filled);
+        filled += data.size();
+        return;
+      }
+      // More data than announced: keep what was received as a chunk and collect the rest.
+      chunks.add(ByteString.copyFrom(preallocated, 0, filled));
+      preallocated = null;
+    }
+    chunks.add(data);
   }
 
   @Override
@@ -94,6 +120,11 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   public void onCompleted() {
     logger.debug("Blob download completed: operation={}, sessionId={}, blobId={}, downloadSize={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), size);
+    if (preallocated != null) {
+      result.set(filled == preallocated.length ? preallocated : java.util.Arrays.copyOf(preallocated, filled));
+      preallocated = null;
+      return;
+    }
     if (size > MAX_ARRAY_SIZE) {
       result.setException(new IllegalStateException("Blob " + blobId.asString() + " is " + size + " bytes, larger than a Java array can hold"));
       return;

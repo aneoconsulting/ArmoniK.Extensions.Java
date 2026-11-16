@@ -121,6 +121,7 @@ final class TaskSubmitter {
   private final ScheduledExecutorService scheduler;
   private final Executor flushExecutor;
   private final ResultsServiceConfiguration resultsServiceConfiguration;
+  private final Executor listenerExecutor;
   private final Gson gson = new Gson();
   /**
    * Listener used when the session has none, so that outputs are watched without null checks.
@@ -196,16 +197,6 @@ final class TaskSubmitter {
     this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, defaultExecutor());
   }
 
-  TaskSubmitter(SessionId sessionId,
-                TaskConfiguration taskConfiguration,
-                BlobCompletionListener outputListener,
-                ChannelPool channelPool,
-                TaskSubmissionBatching batching,
-                ScheduledExecutorService scheduler,
-                Executor flushExecutor) {
-    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, new ResultsServiceConfiguration(channelPool));
-  }
-
   /**
    * Creates a new task submitter with explicit batching settings, scheduler and flush executor.
    *
@@ -226,8 +217,36 @@ final class TaskSubmitter {
                 ChannelPool channelPool,
                 TaskSubmissionBatching batching,
                 ScheduledExecutorService scheduler,
+                Executor flushExecutor) {
+    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, new ResultsServiceConfiguration(channelPool), Runnable::run);
+  }
+
+  /**
+   * Creates a new task submitter whose listener calls run on {@code listenerExecutor}.
+   *
+   * @param sessionId         the identifier of the session context for task submission
+   * @param taskConfiguration the default task configuration of the session; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
+   * @param channelPool       the gRPC channel pool for cluster communication
+   * @param batching          how submitted tasks are grouped into batched calls
+   * @param scheduler         the scheduler running the batching window timer
+   * @param flushExecutor     the executor sending the buffer when the batching window elapses
+   * @param resultsServiceConfiguration the configuration of the results service, read once per client
+   * @param listenerExecutor  the executor running the listener calls
+   * @throws NullPointerException if any parameter other than {@code taskConfiguration} and
+   *                              {@code outputListener} is {@code null}
+   */
+  TaskSubmitter(SessionId sessionId,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ScheduledExecutorService scheduler,
                 Executor flushExecutor,
-                ResultsServiceConfiguration resultsServiceConfiguration) {
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                Executor listenerExecutor) {
+    this.listenerExecutor = requireNonNull(listenerExecutor, "listenerExecutor must not be null");
 
     this.sessionId = requireNonNull(sessionId);
     this.resultsServiceConfiguration = requireNonNull(resultsServiceConfiguration, "resultsServiceConfiguration must not be null");
@@ -237,7 +256,7 @@ final class TaskSubmitter {
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.blobCompletionPoller = new BlobCompletionPoller(sessionId, channelPool, this.outputListener, outputListener != null, Runnable::run, scheduler);
+    this.blobCompletionPoller = new BlobCompletionPoller(sessionId, channelPool, this.outputListener, outputListener != null, listenerExecutor, scheduler);
   }
 
   /**
@@ -422,7 +441,7 @@ final class TaskSubmitter {
   private CompletionStage<Void> reportFailedOutputs(List<BlobHandle> outputs, Throwable cause) {
     return CompletableFuture.allOf(outputs.stream()
                                           .map(output -> output.deferredBlobInfo()
-                                                               .thenAccept(blobInfo -> notifyFailedOutput(blobInfo, cause))
+                                                               .thenAcceptAsync(blobInfo -> notifyFailedOutput(blobInfo, cause), listenerExecutor)
                                                                .exceptionally(ex -> null)
                                                                .toCompletableFuture())
                                           .toArray(CompletableFuture[]::new));

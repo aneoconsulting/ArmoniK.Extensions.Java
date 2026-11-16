@@ -208,7 +208,7 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
         return super.executeAsync(operation);
       }
     };
-    var session = new SessionHandle(sessionInfo, null, closing, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(closing));
+    var session = new SessionHandle(sessionInfo, null, closing, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(closing), Runnable::run);
 
     // When
     var handle = session.submitTasks(List.of(task("small"))).get(0);
@@ -226,7 +226,7 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
     resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
     resultsGrpcMock.failingCreateResults.set(1);
     var retrying = new DelegatingChannelPool(new RetryPolicy(3, Duration.ofMillis(10), Duration.ofMillis(10), 1));
-    var session = new SessionHandle(sessionInfo, null, retrying, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(retrying));
+    var session = new SessionHandle(sessionInfo, null, retrying, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(retrying), Runnable::run);
 
     // When
     var handles = session.submitTasks(List.of(task("retried")));
@@ -316,7 +316,7 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
   }
 
   private SessionHandle sessionHandle() {
-    return new SessionHandle(sessionInfo, null, channelPool, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(channelPool));
+    return new SessionHandle(sessionInfo, null, channelPool, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(channelPool), Runnable::run);
   }
 
   private static Status.Code rootStatus(Throwable throwable) {

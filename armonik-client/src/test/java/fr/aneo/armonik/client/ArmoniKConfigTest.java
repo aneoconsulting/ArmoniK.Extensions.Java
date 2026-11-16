@@ -217,4 +217,14 @@ class ArmoniKConfigTest {
     assertThatThrownBy(() -> builder.withChannelPoolSize(0).build()).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> builder.withChannelPoolSize(-1).build()).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  @DisplayName("should keep the listener executor supplied by the application")
+  void should_keep_the_listener_executor() {
+    java.util.concurrent.Executor executor = Runnable::run;
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThat(builder.build().listenerExecutor()).isNull();
+    assertThat(builder.withListenerExecutor(executor).build().listenerExecutor()).isSameAs(executor);
+  }
 }

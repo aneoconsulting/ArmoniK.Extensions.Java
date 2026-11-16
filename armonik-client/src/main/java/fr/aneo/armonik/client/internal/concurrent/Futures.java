@@ -158,6 +158,16 @@ public final class Futures {
    * except for {@link CancellationException} which results in cancellation instead of
    * exceptional completion.
    */
+  /**
+   * Returns a throwable as a runtime exception, wrapping it only when it is checked.
+   *
+   * @param throwable the throwable, typically the cause of an {@code ExecutionException}
+   * @return the throwable itself when it is a runtime exception, a wrapping {@link RuntimeException} otherwise
+   */
+  public static RuntimeException asRuntimeException(Throwable throwable) {
+    return throwable instanceof RuntimeException runtimeException ? runtimeException : new RuntimeException(throwable);
+  }
+
   private static <T> FutureCallback<T> completingCallback(CompletableFuture<T> completableFuture) {
     return new FutureCallback<>() {
       @Override

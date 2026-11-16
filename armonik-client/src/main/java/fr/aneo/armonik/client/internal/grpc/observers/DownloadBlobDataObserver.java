@@ -56,8 +56,11 @@ public class DownloadBlobDataObserver implements ClientResponseObserver<Download
   private static final long MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
   private final SettableFuture<byte[]> result = SettableFuture.create();
-  /** Chunks as received, kept until the end so the data is copied once, into an array of the exact size. */
+  /** Chunks as received, when no array could be allocated up front; copied once, at the end, into an array of the exact size. */
   private final List<ByteString> chunks = new ArrayList<>();
+  /** Array allocated up front from the expected size; null once a chunk does not fit, or when the size is unknown. */
+  private byte[] preallocated;
+  private int filled;
   private long size;
   private final SessionId sessionId;
   private final BlobId blobId;
@@ -78,16 +81,30 @@ public class DownloadBlobDataObserver implements ClientResponseObserver<Download
    * @see BlobId
    */
   public DownloadBlobDataObserver(SessionId sessionId, BlobId blobId) {
-    this(sessionId, blobId, MAX_ARRAY_SIZE);
+    this(sessionId, blobId, -1);
   }
 
   /**
-   * Creates a download observer that fails once the data exceeds {@code maxSize} bytes, for tests.
+   * Creates an observer that fills an array of {@code expectedSize} bytes as chunks arrive, so the
+   * data is copied once and no chunk is kept. When the size is unknown, negative, or turns out wrong,
+   * the observer keeps the chunks and assembles them at the end instead.
+   *
+   * @param sessionId    the identifier of the session containing the blob
+   * @param blobId       the identifier of the blob to download
+   * @param expectedSize the size of the data, or a negative value when unknown
    */
-  DownloadBlobDataObserver(SessionId sessionId, BlobId blobId, long maxSize) {
+  public DownloadBlobDataObserver(SessionId sessionId, BlobId blobId, long expectedSize) {
+    this(sessionId, blobId, expectedSize, MAX_ARRAY_SIZE);
+  }
+
+  /**
+   * Creates an observer that fails once the data exceeds {@code maxSize} bytes, for tests.
+   */
+  DownloadBlobDataObserver(SessionId sessionId, BlobId blobId, long expectedSize, long maxSize) {
     this.sessionId = sessionId;
     this.blobId = blobId;
     this.maxSize = maxSize;
+    if (expectedSize >= 0 && expectedSize <= maxSize) this.preallocated = new byte[(int) expectedSize];
   }
 
   @Override
@@ -104,12 +121,23 @@ public class DownloadBlobDataObserver implements ClientResponseObserver<Download
       // Fail now and drop what was received, rather than keep the data until the stream ends. The call is
       // cancelled before the result fails: the result returns the channel to the pool, which must not lend it
       // to another call while the server is still sending the rest of the blob.
+      preallocated = null;
       chunks.clear();
       var call = this.call;
       if (call != null) call.cancel("Blob larger than a Java array can hold", null);
       result.setException(new IllegalStateException("Blob " + blobId.asString() + " of session " + sessionId.asString()
         + " is over " + maxSize + " bytes, larger than a Java array can hold"));
       return;
+    }
+    if (preallocated != null) {
+      if (filled + data.size() <= preallocated.length) {
+        data.copyTo(preallocated, filled);
+        filled += data.size();
+        return;
+      }
+      // More data than announced: keep what was received as a chunk and collect the rest.
+      chunks.add(ByteString.copyFrom(preallocated, 0, filled));
+      preallocated = null;
     }
     chunks.add(data);
   }
@@ -119,12 +147,14 @@ public class DownloadBlobDataObserver implements ClientResponseObserver<Download
     if (result.isDone()) {
       // The CANCELLED error that follows a download this observer gave up on
       logger.debug("Blob download stopped: sessionId={}, blobId={}", sessionId.asString(), blobId.asString());
+      preallocated = null;
       chunks.clear();
       return;
     }
     logger.error("Blob download failed: operation={}, sessionId={}, blobId={}, error={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), throwable.getClass().getSimpleName(),
       throwable);
+    preallocated = null;
     chunks.clear();
     result.setException(throwable);
   }
@@ -134,6 +164,11 @@ public class DownloadBlobDataObserver implements ClientResponseObserver<Download
     logger.debug("Blob download completed: operation={}, sessionId={}, blobId={}, downloadSize={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), size);
     if (result.isDone()) return;
+    if (preallocated != null) {
+      result.set(filled == preallocated.length ? preallocated : java.util.Arrays.copyOf(preallocated, filled));
+      preallocated = null;
+      return;
+    }
     var data = new byte[(int) size];
     var offset = 0;
     for (var chunk : chunks) {

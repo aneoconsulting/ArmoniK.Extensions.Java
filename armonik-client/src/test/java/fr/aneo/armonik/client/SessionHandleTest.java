@@ -49,7 +49,6 @@ import static org.assertj.core.api.Assertions.*;
 class SessionHandleTest extends InProcessGrpcTestBase {
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
   private final TasksGrpcMock taskGrpcMock = new TasksGrpcMock();
-  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock();
   private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
   private BlobCompletionListenerMock outputTaskListener;
   private SessionInfo sessionInfo;
@@ -57,7 +56,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
   @Override
   protected List<BindableService> services() {
-    return List.of(resultsGrpcMock, taskGrpcMock, eventsGrpcMock, sessionsGrpcMock);
+    return List.of(resultsGrpcMock, taskGrpcMock, sessionsGrpcMock);
   }
 
   @BeforeEach
@@ -82,8 +81,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // When
     var taskHandle = sessionHandle.submitTask(taskDefinition);
-    eventsGrpcMock.emitStatusUpdate(idFrom(taskHandle.outputs().get("result")), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
+    resultsGrpcMock.setStatus(idFrom(taskHandle.outputs().get("result")), RESULT_STATUS_COMPLETED);
     sessionHandle.awaitOutputsProcessed();
 
     // Then
@@ -187,13 +185,12 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // Then
     assertThat(awaitDone.await(150, MILLISECONDS)).isFalse();
-    eventsGrpcMock.emitStatusUpdate(idFrom(task1.outputs().get("output1")), RESULT_STATUS_COMPLETED);
+    resultsGrpcMock.setStatus(idFrom(task1.outputs().get("output1")), RESULT_STATUS_COMPLETED);
 
     // still be waiting after the first output completes
     assertThat(awaitDone.await(150, MILLISECONDS)).isFalse();
 
-    eventsGrpcMock.emitStatusUpdate(idFrom(task2.outputs().get("output2")), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
+    resultsGrpcMock.setStatus(idFrom(task2.outputs().get("output2")), RESULT_STATUS_COMPLETED);
 
     // does not wait after the second output is finished
     assertThat(awaitDone.await(2, SECONDS)).isTrue();
@@ -227,13 +224,12 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // Then
     assertThat(awaitDone.await(150, MILLISECONDS)).isFalse();
-    eventsGrpcMock.emitStatusUpdate(idFrom(task1.outputs().get("output1")), RESULT_STATUS_ABORTED);
+    resultsGrpcMock.setStatus(idFrom(task1.outputs().get("output1")), RESULT_STATUS_ABORTED);
 
     // still be waiting after the first output completes
     assertThat(awaitDone.await(150, MILLISECONDS)).isFalse();
 
-    eventsGrpcMock.emitStatusUpdate(idFrom(task2.outputs().get("output2")), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
+    resultsGrpcMock.setStatus(idFrom(task2.outputs().get("output2")), RESULT_STATUS_COMPLETED);
 
     // does not wait after the second output is finished
     assertThat(awaitDone.await(2, SECONDS)).isTrue();
@@ -323,8 +319,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     // When
     var awaitFuture = runAsync(() -> sessionHandle.awaitOutputsProcessed());
     independent.deferredTaskInfo().toCompletableFuture().get(5, SECONDS);
-    eventsGrpcMock.emitStatusUpdate(idFrom(independent.outputs().get("result")), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
+    resultsGrpcMock.setStatus(idFrom(independent.outputs().get("result")), RESULT_STATUS_COMPLETED);
     awaitFuture.get(5, SECONDS);
 
     // Then: the three tasks were in one batch, and only the independent one was sent
@@ -402,8 +397,7 @@ class SessionHandleTest extends InProcessGrpcTestBase {
 
     // Then: it waits until the output completes
     assertThat(awaitDone.await(300, MILLISECONDS)).isFalse();
-    eventsGrpcMock.emitStatusUpdate(idFrom(task.outputs().get("result")), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
+    resultsGrpcMock.setStatus(idFrom(task.outputs().get("result")), RESULT_STATUS_COMPLETED);
     assertThat(awaitDone.await(5, SECONDS)).isTrue();
     awaitFuture.get(1, SECONDS);
     assertThat(resultsGrpcMock.downloadCalls).hasValue(0);

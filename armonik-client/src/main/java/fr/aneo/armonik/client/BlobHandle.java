@@ -217,19 +217,29 @@ public final class BlobHandle {
    * @see #uploadData(BlobData)
    */
   public CompletionStage<byte[]> downloadData() {
+    return downloadData(-1);
+  }
+
+  /**
+   * Downloads the blob's data into an array allocated up front when its size is known.
+   *
+   * @param expectedSize the size of the data, from a listing of the result, or a negative value when unknown
+   * @return a stage completing with the data
+   */
+  CompletionStage<byte[]> downloadData(long expectedSize) {
     return RetryableStreamOperation.execute(
-      () -> deferredBlobInfo().thenCompose(this::executeDownload),
+      () -> deferredBlobInfo().thenCompose(info -> executeDownload(info, expectedSize)),
       channelPool.retryPolicy()
     );
   }
 
-  private CompletionStage<byte[]> executeDownload(BlobInfo blobInfo) {
+  private CompletionStage<byte[]> executeDownload(BlobInfo blobInfo, long expectedSize) {
     return channelPool.executeAsync(channel -> {
       log.debug("Starting blob download. SessionId: {}, BlobId: {}", sessionId.asString(), blobInfo.id().asString());
 
       var resultsStub = ResultsGrpc.newStub(channel);
       var request = toDownloadResultDataRequest(sessionId, blobInfo.id());
-      var responseObserver = new DownloadBlobDataObserver(sessionId, blobInfo.id());
+      var responseObserver = new DownloadBlobDataObserver(sessionId, blobInfo.id(), expectedSize);
 
       resultsStub.downloadResultData(request, responseObserver);
 

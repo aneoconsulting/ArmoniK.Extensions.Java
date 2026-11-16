@@ -98,7 +98,7 @@ import static java.util.stream.Collectors.toMap;
  *
  * @see SessionHandle#submitTask(TaskDefinition)
  * @see TaskHandle
- * @see BlobCompletionCoordinator
+ * @see BlobCompletionPoller
  */
 final class TaskSubmitter {
   private static final Logger logger = LoggerFactory.getLogger(TaskSubmitter.class);
@@ -137,7 +137,7 @@ final class TaskSubmitter {
   };
 
   private final BlobCompletionListener outputListener;
-  private final BlobCompletionCoordinator blobCompletionCoordinator;
+  private final BlobCompletionPoller blobCompletionPoller;
 
   private final Object lock = new Object();
   private final List<PendingTask> buffer = new ArrayList<>();
@@ -165,7 +165,7 @@ final class TaskSubmitter {
    * @see SessionHandle
    * @see TaskConfiguration
    * @see BlobCompletionListener
-   * @see BlobCompletionCoordinator
+   * @see BlobCompletionPoller
    */
   TaskSubmitter(SessionId sessionId,
                 TaskConfiguration taskConfiguration,
@@ -237,7 +237,7 @@ final class TaskSubmitter {
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, this.outputListener, outputListener != null);
+    this.blobCompletionPoller = new BlobCompletionPoller(sessionId, channelPool, this.outputListener, outputListener != null, Runnable::run, scheduler);
   }
 
   /**
@@ -330,11 +330,11 @@ final class TaskSubmitter {
    * dependent operations.
    *
    * @return a completion stage that completes when all current output operations finish
-   * @see BlobCompletionCoordinator#waitUntilIdle()
+   * @see BlobCompletionPoller#waitUntilIdle()
    * @see SessionHandle#awaitOutputsProcessed()
    */
   CompletionStage<Void> waitUntilFinished() {
-    return blobCompletionCoordinator.waitUntilIdle();
+    return blobCompletionPoller.waitUntilIdle();
   }
 
   /**
@@ -407,9 +407,9 @@ final class TaskSubmitter {
     if (outputHandles.isEmpty()) return;
 
     var outputs = List.copyOf(outputHandles);
-    blobCompletionCoordinator.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
+    blobCompletionPoller.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
       if (ex != null) return reportFailedOutputs(outputs, ex instanceof CompletionException ? ex.getCause() : ex);
-      blobCompletionCoordinator.enqueue(outputs);
+      blobCompletionPoller.enqueue(outputs);
       return completedFuture(null);
     }));
   }

@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.testutils;
 
 import com.google.protobuf.Timestamp;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
+import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.BlobId;
 import io.grpc.stub.StreamObserver;
@@ -61,6 +62,11 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public final AtomicInteger failingCreateResults = new AtomicInteger();
   /** When set, a CreateResults call holding a result of this name fails with INVALID_ARGUMENT. */
   public volatile String rejectedCreateResultsName;
+  /** Status of each result as ListResults reports it; results not set are CREATED. */
+  public final Map<String, ResultStatusOuterClass.ResultStatus> statuses = new ConcurrentHashMap<>();
+  public final AtomicInteger listResultsCalls = new AtomicInteger();
+  /** Number of the next ListResults calls that fail with UNAVAILABLE. */
+  public final AtomicInteger failingListResults = new AtomicInteger();
 
 
   public void failDownloadFor(BlobId id) {
@@ -91,6 +97,9 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.createdData.clear();
     this.failingCreateResults.set(0);
     this.rejectedCreateResultsName = null;
+    this.statuses.clear();
+    this.listResultsCalls.set(0);
+    this.failingListResults.set(0);
   }
 
   @Override
@@ -166,6 +175,56 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     responseObserver.onCompleted();
   }
 
+  public void setStatus(BlobId id, ResultStatusOuterClass.ResultStatus status) {
+    statuses.put(id.asString(), status);
+  }
+
+  /**
+   * Answers the filter the client builds: an OR of AND clauses, each on a result id, and optionally on a status.
+   */
+  @Override
+  public void listResults(ListResultsRequest request, StreamObserver<ListResultsResponse> responseObserver) {
+    listResultsCalls.incrementAndGet();
+    if (failingListResults.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+      responseObserver.onError(io.grpc.Status.UNAVAILABLE.withDescription("listing failed").asRuntimeException());
+      return;
+    }
+    if (!request.hasSort()) {
+      // As the control plane does
+      responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT.withDescription("'ListResultsRequest.Sort' must not be empty.").asRuntimeException());
+      return;
+    }
+    var response = ListResultsResponse.newBuilder();
+    for (var clause : request.getFilters().getOrList()) {
+      String id = null;
+      ResultStatusOuterClass.ResultStatus excluded = null;
+      ResultStatusOuterClass.ResultStatus required = null;
+      for (var field : clause.getAndList()) {
+        if (field.hasFilterString()) id = field.getFilterString().getValue();
+        if (field.hasFilterStatus()) {
+          if (field.getFilterStatus().getOperator() == fr.aneo.armonik.api.grpc.v1.FiltersCommon.FilterStatusOperator.FILTER_STATUS_OPERATOR_NOT_EQUAL) {
+            excluded = field.getFilterStatus().getValue();
+          } else {
+            required = field.getFilterStatus().getValue();
+          }
+        }
+      }
+      if (id == null) continue;
+      var status = statuses.getOrDefault(id, ResultStatusOuterClass.ResultStatus.RESULT_STATUS_CREATED);
+      if (status == excluded || (required != null && status != required)) continue;
+      response.addResults(ResultRaw.newBuilder().setResultId(id).setStatus(status).setSize(contentFor(blobId(id)).length));
+    }
+    response.setTotal(response.getResultsCount());
+    responseObserver.onNext(response.build());
+    responseObserver.onCompleted();
+  }
+
+  private byte[] contentFor(BlobId id) {
+    return ((downloadSuccessId != null) && downloadSuccessId.equals(id))
+      ? downloadContent
+      : ("data-" + id).getBytes(StandardCharsets.UTF_8);
+  }
+
   @Override
   public void downloadResultData(DownloadResultDataRequest request, StreamObserver<DownloadResultDataResponse> responseObserver) {
     downloadCalls.incrementAndGet();
@@ -175,9 +234,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
       return;
     }
 
-    byte[] bytes = ((downloadSuccessId != null) && downloadSuccessId.equals(id))
-      ? downloadContent
-      : ("data-" + id).getBytes(StandardCharsets.UTF_8);
+    byte[] bytes = contentFor(id);
     responseObserver.onNext(DownloadResultDataResponse.newBuilder()
                                                       .setDataChunk(copyFrom(bytes))
                                                       .build());

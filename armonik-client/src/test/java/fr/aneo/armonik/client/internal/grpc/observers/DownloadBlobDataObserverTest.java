@@ -83,10 +83,40 @@ class DownloadBlobDataObserverTest {
   }
 
   @Test
+  @DisplayName("should fill an array of the expected size")
+  void should_fill_array_of_expected_size() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 12);
+    observer.onNext(chunk("Hello"));
+    observer.onNext(chunk(", World"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("Hello, World");
+  }
+
+  @Test
+  @DisplayName("should return only the received data when less than expected arrives")
+  void should_trim_when_less_data_than_expected() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 100);
+    observer.onNext(chunk("short"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("short");
+  }
+
+  @Test
+  @DisplayName("should keep every chunk when more data than expected arrives")
+  void should_fall_back_when_more_data_than_expected() throws Exception {
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 4);
+    observer.onNext(chunk("Hel"));
+    observer.onNext(chunk("lo, "));
+    observer.onNext(chunk("World"));
+    observer.onCompleted();
+    assertThat(new String(observer.content().toCompletableFuture().get(1, SECONDS), UTF_8)).isEqualTo("Hello, World");
+  }
+
+  @Test
   @DisplayName("should fail as soon as the data exceeds the size an array can hold")
   void should_fail_once_the_data_is_too_large() {
     // Given
-    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 8);
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), -1, 8);
     observer.onNext(chunk("12345"));
 
     // When
@@ -108,7 +138,7 @@ class DownloadBlobDataObserverTest {
   void should_cancel_the_call_once_the_data_is_too_large() {
     // Given
     var call = (ClientCallStreamObserver<DownloadResultDataRequest>) mock(ClientCallStreamObserver.class);
-    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 8);
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), -1, 8);
     observer.beforeStart(call);
     observer.onNext(chunk("12345"));
     verify(call, never()).cancel(any(), any());

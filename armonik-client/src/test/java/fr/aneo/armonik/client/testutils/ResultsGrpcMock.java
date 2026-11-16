@@ -45,10 +45,15 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public int metadataCalls;
   public volatile RuntimeException metadataError;
   public volatile byte[] failingUploadData;
+  /** Delay before an upload whose data is failingUploadData is answered with its error. */
+  public volatile long failingUploadDelayMillis;
   public final AtomicInteger downloadCalls = new AtomicInteger();
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
   /** DataChunkMaxSize returned by GetServiceConfiguration; 0 leaves the call unimplemented, as an old control plane would. */
   public volatile int dataChunkMaxSize;
+  public final AtomicInteger serviceConfigurationCalls = new AtomicInteger();
+  /** When set, GetServiceConfiguration fails with this error. */
+  public volatile RuntimeException serviceConfigurationError;
   public final List<CreateResultsRequest> createResultsRequests = new CopyOnWriteArrayList<>();
   /** Data received through CreateResults, by result id. */
   public final Map<String, byte[]> createdData = new ConcurrentHashMap<>();
@@ -72,15 +77,23 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.metadataCalls = 0;
     this.metadataError = null;
     this.failingUploadData = null;
+    this.failingUploadDelayMillis = 0;
     this.downloadCalls.set(0);
     this.pendingUploads.clear();
     this.dataChunkMaxSize = 0;
+    this.serviceConfigurationCalls.set(0);
+    this.serviceConfigurationError = null;
     this.createResultsRequests.clear();
     this.createdData.clear();
   }
 
   @Override
   public void getServiceConfiguration(fr.aneo.armonik.api.grpc.v1.Objects.Empty request, StreamObserver<ResultsServiceConfigurationResponse> responseObserver) {
+    serviceConfigurationCalls.incrementAndGet();
+    if (serviceConfigurationError != null) {
+      responseObserver.onError(serviceConfigurationError);
+      return;
+    }
     if (dataChunkMaxSize <= 0) {
       super.getServiceConfiguration(request, responseObserver);
       return;
@@ -193,6 +206,13 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
       @Override
       public void onCompleted() {
         if (failingUploadData != null && Arrays.equals(failingUploadData, uploadedDataInfo.receivedData.toByteArray())) {
+          if (failingUploadDelayMillis > 0) {
+            try {
+              Thread.sleep(failingUploadDelayMillis);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
           pendingUploads.remove(uploadCompletion);
           responseObserver.onError(io.grpc.Status.INTERNAL.withDescription("Upload failed").asRuntimeException());
           uploadCompletion.completeExceptionally(new IllegalStateException("Upload failed"));

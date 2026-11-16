@@ -358,6 +358,14 @@ final class TaskSubmitter {
                                         taskDefinition.inputHandles().entrySet().stream())
                                       .collect(toMap(Map.Entry::getKey, Map.Entry::getValue));
     var payloadUpload = new CompletableFuture<Void>();
+    // An input is ready once its data is on the cluster. Until send() picks how it is created, the
+    // handle must not report it ready: another task, even in another session, may already wait on it.
+    var inputReadiness = new ArrayList<CompletableFuture<Void>>();
+    allocation.inputHandlesByName().values().forEach(handle -> {
+      var ready = new CompletableFuture<Void>();
+      handle.readyWhen(ready);
+      inputReadiness.add(ready);
+    });
 
     var inputIdsStage = getIdsFrom(allInputHandlesByName.values());
     var outputIdsStage = getIdsFrom(allocation.outputHandlesByName().values());
@@ -380,7 +388,7 @@ final class TaskSubmitter {
     );
     allocation.outputHandlesByName().values().forEach(output -> output.readyWhen(taskInfo));
     watchOutputsOnceSubmitted(taskInfo, allocation.outputHandlesByName().values());
-    return new PendingTask(blobDefinitions, blobInfos, blobHandles, allocation, allInputHandlesByName, deferredTaskCreation, payloadUpload, taskInfo, taskHandle);
+    return new PendingTask(blobDefinitions, blobInfos, blobHandles, inputReadinessByHandle(allocation, inputReadiness), allocation, allInputHandlesByName, deferredTaskCreation, payloadUpload, taskInfo, taskHandle);
   }
 
   /**
@@ -481,6 +489,13 @@ final class TaskSubmitter {
                                         .toArray(CompletableFuture[]::new));
   }
 
+  private static Map<BlobHandle, CompletableFuture<Void>> inputReadinessByHandle(BlobHandlesAllocation allocation, List<CompletableFuture<Void>> readiness) {
+    var handles = new ArrayList<>(allocation.inputHandlesByName().values());
+    var byHandle = new java.util.IdentityHashMap<BlobHandle, CompletableFuture<Void>>();
+    for (int i = 0; i < handles.size(); i++) byHandle.put(handles.get(i), readiness.get(i));
+    return byHandle;
+  }
+
   private void dispatch(List<PendingTask> batch, int dataChunkMaxSize) {
     try {
       createBlobs(batch, dataChunkMaxSize);
@@ -491,6 +506,7 @@ final class TaskSubmitter {
       logger.error("Sending {} tasks failed. Session id:{}", batch.size(), sessionId.asString(), exception);
       batch.forEach(pendingTask -> {
         pendingTask.blobInfos().forEach(blobInfo -> blobInfo.completeExceptionally(exception));
+        pendingTask.inputReadiness().values().forEach(ready -> ready.completeExceptionally(exception));
         pendingTask.payloadUpload().completeExceptionally(exception);
         pendingTask.taskInfo().completeExceptionally(exception);
       });
@@ -511,7 +527,7 @@ final class TaskSubmitter {
     var metadataDefinitions = new ArrayList<BlobDefinition>();
     var metadataBlobInfos = new ArrayList<CompletableFuture<BlobInfo>>();
     var inlineBlobs = new ArrayList<InlineBlob>();
-    var streamedInputs = new ArrayList<Map.Entry<BlobHandle, BlobData>>();
+    var streamedInputs = new ArrayList<StreamedInput>();
 
     for (var pendingTask : batch) {
       var definitions = pendingTask.blobDefinitions();
@@ -527,13 +543,16 @@ final class TaskSubmitter {
           continue;
         }
         var resultCreate = inline && definition instanceof InputBlobDefinition input ? inlineResultCreate(input.name(), input.manualDeletion(), input.data(), dataChunkMaxSize) : null;
+        var handle = pendingTask.blobHandles().get(i);
+        var ready = pendingTask.inputReadiness().get(handle);
         if (resultCreate != null) {
           inlineBlobs.add(new InlineBlob(resultCreate, blobInfo));
+          if (ready != null) blobInfo.whenComplete((info, error) -> completeWith(ready, error));
         } else {
           metadataDefinitions.add(definition);
           metadataBlobInfos.add(blobInfo);
           if (definition instanceof InputBlobDefinition input) {
-            streamedInputs.add(Map.entry(pendingTask.blobHandles().get(i), input.data()));
+            streamedInputs.add(new StreamedInput(handle, input.data(), ready));
           }
         }
       }
@@ -541,7 +560,10 @@ final class TaskSubmitter {
 
     createMetadata(metadataDefinitions, metadataBlobInfos);
     createWithData(inlineBlobs, dataChunkMaxSize);
-    streamedInputs.forEach(input -> input.getKey().uploadData(input.getValue()));
+    streamedInputs.forEach(input -> {
+      var upload = input.handle().uploadData(input.data());
+      if (input.ready() != null) upload.whenComplete((ignored, error) -> completeWith(input.ready(), error));
+    });
 
     if (inline) {
       createPayloads(batch, dataChunkMaxSize);
@@ -562,40 +584,49 @@ final class TaskSubmitter {
 
     CompletableFuture.allOf(payloads.stream().map(payload -> payload.handle((data, error) -> null)).toArray(CompletableFuture[]::new))
                      .thenRun(() -> {
-                       var inlinePayloads = new ArrayList<InlineBlob>();
-                       var metadataDefinitions = new ArrayList<BlobDefinition>();
-                       var metadataBlobInfos = new ArrayList<CompletableFuture<BlobInfo>>();
-                       var streamedPayloads = new ArrayList<Map.Entry<PendingTask, byte[]>>();
+                       try {
+                         var inlinePayloads = new ArrayList<InlineBlob>();
+                         var metadataDefinitions = new ArrayList<BlobDefinition>();
+                         var metadataBlobInfos = new ArrayList<CompletableFuture<BlobInfo>>();
+                         var streamedPayloads = new ArrayList<Map.Entry<PendingTask, byte[]>>();
 
-                       for (int i = 0; i < batch.size(); i++) {
-                         var pendingTask = batch.get(i);
-                         var payloadBlobInfo = pendingTask.blobInfos().get(0);
-                         var payload = payloads.get(i);
-                         if (payload.isCompletedExceptionally()) {
-                           var error = payload.handle((data, ex) -> unwrap(ex)).join();
-                           payloadBlobInfo.completeExceptionally(error);
-                           pendingTask.payloadUpload().completeExceptionally(error);
-                           continue;
+                         for (int i = 0; i < batch.size(); i++) {
+                           var pendingTask = batch.get(i);
+                           var payloadBlobInfo = pendingTask.blobInfos().get(0);
+                           var payload = payloads.get(i);
+                           if (payload.isCompletedExceptionally()) {
+                             var error = payload.handle((data, ex) -> unwrap(ex)).join();
+                             payloadBlobInfo.completeExceptionally(error);
+                             pendingTask.payloadUpload().completeExceptionally(error);
+                             continue;
+                           }
+                           var data = payload.join();
+                           var resultCreate = inlineResultCreate(PAYLOAD_NAME, false, InMemoryBlobData.from(data), dataChunkMaxSize);
+                           if (resultCreate != null) {
+                             inlinePayloads.add(new InlineBlob(resultCreate, payloadBlobInfo));
+                             payloadBlobInfo.whenComplete((info, error) -> completeWith(pendingTask.payloadUpload(), error));
+                           } else {
+                             metadataDefinitions.add(pendingTask.blobDefinitions().get(0));
+                             metadataBlobInfos.add(payloadBlobInfo);
+                             streamedPayloads.add(Map.entry(pendingTask, data));
+                           }
                          }
-                         var data = payload.join();
-                         var resultCreate = inlineResultCreate(PAYLOAD_NAME, false, InMemoryBlobData.from(data), dataChunkMaxSize);
-                         if (resultCreate != null) {
-                           inlinePayloads.add(new InlineBlob(resultCreate, payloadBlobInfo));
-                           payloadBlobInfo.whenComplete((info, error) -> completeWith(pendingTask.payloadUpload(), error));
-                         } else {
-                           metadataDefinitions.add(pendingTask.blobDefinitions().get(0));
-                           metadataBlobInfos.add(payloadBlobInfo);
-                           streamedPayloads.add(Map.entry(pendingTask, data));
-                         }
+
+                         createWithData(inlinePayloads, dataChunkMaxSize);
+                         createMetadata(metadataDefinitions, metadataBlobInfos);
+                         streamedPayloads.forEach(entry -> entry.getKey()
+                                                                .allocation()
+                                                                .payloadHandle()
+                                                                .uploadData(InMemoryBlobData.from(entry.getValue()))
+                                                                .whenComplete((ignored, error) -> completeWith(entry.getKey().payloadUpload(), error)));
+                       } catch (RuntimeException exception) {
+                         // The pool may have closed meanwhile: fail the payloads instead of losing the exception.
+                         logger.error("Creating the payloads of {} tasks failed. Session id:{}", batch.size(), sessionId.asString(), exception);
+                         batch.forEach(pendingTask -> {
+                           pendingTask.blobInfos().get(0).completeExceptionally(exception);
+                           pendingTask.payloadUpload().completeExceptionally(exception);
+                         });
                        }
-
-                       createWithData(inlinePayloads, dataChunkMaxSize);
-                       createMetadata(metadataDefinitions, metadataBlobInfos);
-                       streamedPayloads.forEach(entry -> entry.getKey()
-                                                              .allocation()
-                                                              .payloadHandle()
-                                                              .uploadData(InMemoryBlobData.from(entry.getValue()))
-                                                              .whenComplete((ignored, error) -> completeWith(entry.getKey().payloadUpload(), error)));
                      });
   }
 
@@ -639,7 +670,7 @@ final class TaskSubmitter {
                                       .setSessionId(sessionId.asString())
                                       .addAllResults(group.stream().map(InlineBlob::resultCreate).toList())
                                       .build();
-    channelPool.executeAsync(channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel).createResults(request)))
+    callAsync(channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel).createResults(request)))
                .thenApply(CreateResultsResponse::getResultsList)
                .whenComplete((resultRaws, ex) -> {
                  for (int i = 0; i < group.size(); i++) {
@@ -657,6 +688,17 @@ final class TaskSubmitter {
     return CodedOutputStream.computeMessageSize(CreateResultsRequest.RESULTS_FIELD_NUMBER, resultCreate);
   }
 
+  /**
+   * Runs a call through the pool, turning a synchronous failure, such as a closed pool, into a failed stage.
+   */
+  private <T> CompletionStage<T> callAsync(Function<ManagedChannel, CompletionStage<T>> call) {
+    try {
+      return channelPool.executeAsync(call);
+    } catch (RuntimeException exception) {
+      return CompletableFuture.failedFuture(exception);
+    }
+  }
+
   private static void completeWith(CompletableFuture<Void> future, Throwable error) {
     if (error == null) future.complete(null);
     else future.completeExceptionally(unwrap(error));
@@ -667,7 +709,7 @@ final class TaskSubmitter {
       var end = Math.min(start + MAX_BLOBS_PER_REQUEST, definitions.size());
       var groupDefinitions = new ArrayList<>(definitions.subList(start, end));
       var groupBlobInfos = blobInfos.subList(start, end);
-      channelPool.executeAsync(createMetadataCall(groupDefinitions))
+      callAsync(createMetadataCall(groupDefinitions))
                  .thenApply(CreateResultsMetaDataResponse::getResultsList)
                  .whenComplete((resultRaws, ex) -> {
                    for (int i = 0; i < groupBlobInfos.size(); i++) {
@@ -859,6 +901,7 @@ final class TaskSubmitter {
   private record PendingTask(List<BlobDefinition> blobDefinitions,
                              List<CompletableFuture<BlobInfo>> blobInfos,
                              List<BlobHandle> blobHandles,
+                             Map<BlobHandle, CompletableFuture<Void>> inputReadiness,
                              BlobHandlesAllocation allocation,
                              Map<String, BlobHandle> allInputHandlesByName,
                              CompletionStage<TaskCreation> deferredTaskCreation,
@@ -878,6 +921,9 @@ final class TaskSubmitter {
    * @param outputHandlesByName map of output blob handles keyed by their logical output names
    * @see #prepare(TaskDefinition)
    */
+  private record StreamedInput(BlobHandle handle, BlobData data, CompletableFuture<Void> ready) {
+  }
+
   private record InlineBlob(CreateResultsRequest.ResultCreate resultCreate, CompletableFuture<BlobInfo> blobInfo) {
   }
 

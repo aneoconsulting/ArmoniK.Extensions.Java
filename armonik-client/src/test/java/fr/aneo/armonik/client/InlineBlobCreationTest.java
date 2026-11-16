@@ -160,6 +160,116 @@ class InlineBlobCreationTest extends InProcessGrpcTestBase {
     assertThat(resultsGrpcMock.uploadedDataInfos).hasSize(2);
   }
 
+  @Test
+  @DisplayName("should not report a streamed input ready before its upload ends")
+  void should_not_report_streamed_input_ready_before_upload() throws Exception {
+    // Given: a streamed input whose upload fails
+    resultsGrpcMock.dataChunkMaxSize = 1000;
+    var large = "z".repeat(5000);
+    resultsGrpcMock.failingUploadData = large.getBytes(UTF_8);
+    // Long enough for the other task to be sent before the upload fails, were the input reported ready early
+    resultsGrpcMock.failingUploadDelayMillis = 1000;
+    var producer = sessionHandle();
+    var consumer = sessionHandle();
+
+    // When: the producing task waits in its session's submission buffer, and another task, in
+    // another session, uses its input right away
+    var first = producer.submitTask(task(large));
+    var input = first.inputs().get("A");
+    var second = consumer.submitTasks(List.of(new TaskDefinition().withInput("A", input).withOutput("result"))).get(0);
+
+    // Then: neither task is submitted
+    assertThat(second.deferredTaskInfo().toCompletableFuture())
+      .failsWithin(5, SECONDS)
+      .withThrowableOfType(java.util.concurrent.ExecutionException.class)
+      .withMessageContaining("will never be available");
+    assertThat(first.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(java.util.concurrent.ExecutionException.class);
+  }
+
+  @Test
+  @DisplayName("should fail the tasks when the pool closes before their payloads are created")
+  void should_fail_tasks_when_pool_closes_before_payloads() throws Exception {
+    // Given: a pool that refuses every call once the inputs and outputs are created
+    resultsGrpcMock.dataChunkMaxSize = 1024 * 1024;
+    var calls = new java.util.concurrent.atomic.AtomicInteger();
+    ChannelPool closing = new ChannelPool() {
+      @Override
+      public <T> T execute(java.util.function.Function<io.grpc.ManagedChannel, T> operation) {
+        return channelPool.execute(operation);
+      }
+
+      @Override
+      public <T> java.util.concurrent.CompletionStage<T> executeAsync(java.util.function.Function<io.grpc.ManagedChannel, java.util.concurrent.CompletionStage<T>> operation) {
+        // GetServiceConfiguration, output metadata, inputs with data; then the payloads find the pool closed
+        if (calls.incrementAndGet() > 3) throw new IllegalStateException("Channel pool has been shut down");
+        return channelPool.executeAsync(operation);
+      }
+
+      @Override
+      public void close() {
+      }
+
+      @Override
+      public int size() {
+        return channelPool.size();
+      }
+
+      @Override
+      public int availableChannels() {
+        return channelPool.availableChannels();
+      }
+
+      @Override
+      public RetryPolicy retryPolicy() {
+        return channelPool.retryPolicy();
+      }
+    };
+    var session = new SessionHandle(sessionInfo, null, closing, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(closing));
+
+    // When
+    var handle = session.submitTasks(List.of(task("small"))).get(0);
+
+    // Then
+    // A future that never completes would also pass failsWithin: require an actual failure
+    assertThat(handle.deferredTaskInfo().toCompletableFuture()).failsWithin(5, SECONDS).withThrowableOfType(java.util.concurrent.ExecutionException.class);
+    assertThat(calls.get()).as("calls made through the pool").isGreaterThan(3);
+  }
+
+  @Test
+  @DisplayName("should read the service configuration once when the control plane does not implement it")
+  void should_read_unimplemented_service_configuration_once() throws Exception {
+    // Given: GetServiceConfiguration is not implemented by the mock
+    var session = sessionHandle();
+
+    // When
+    awaitSubmitted(session.submitTasks(List.of(task("one"))));
+    awaitSubmitted(session.submitTasks(List.of(task("two"))));
+
+    // Then
+    assertThat(resultsGrpcMock.serviceConfigurationCalls.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("should retry a failed service configuration read only after the retry delay")
+  void should_retry_failed_service_configuration_after_delay() throws Exception {
+    // Given
+    resultsGrpcMock.serviceConfigurationError = io.grpc.Status.UNAVAILABLE.asRuntimeException();
+    var now = new java.util.concurrent.atomic.AtomicLong();
+    var configuration = new ResultsServiceConfiguration(channelPool, now::get);
+
+    // When / Then: the failure gives 0 and is not retried within the delay
+    assertThat(configuration.dataChunkMaxSize().toCompletableFuture().get(5, SECONDS)).isZero();
+    assertThat(configuration.dataChunkMaxSize().toCompletableFuture().get(5, SECONDS)).isZero();
+    var callsBeforeDelay = resultsGrpcMock.serviceConfigurationCalls.get();
+
+    // And: once the delay has passed and the service works, the size is read again
+    resultsGrpcMock.serviceConfigurationError = null;
+    resultsGrpcMock.dataChunkMaxSize = 4096;
+    now.addAndGet(ResultsServiceConfiguration.RETRY_DELAY.toNanos() + 1);
+    assertThat(configuration.dataChunkMaxSize().toCompletableFuture().get(5, SECONDS)).isEqualTo(4096);
+    assertThat(resultsGrpcMock.serviceConfigurationCalls.get()).isEqualTo(callsBeforeDelay + 1);
+  }
+
   private SessionHandle sessionHandle() {
     return new SessionHandle(sessionInfo, null, channelPool, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(channelPool));
   }

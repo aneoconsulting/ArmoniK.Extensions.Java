@@ -32,6 +32,7 @@ import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.*;
+import static fr.aneo.armonik.client.internal.concurrent.ExecutorProvider.defaultExecutor;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -94,8 +95,16 @@ public final class SessionHandle {
    * @see TaskSubmissionBatching
    */
   SessionHandle(SessionInfo sessionInfo, BlobCompletionListener outputListener, ChannelPool channelPool, TaskSubmissionBatching batching) {
+    this(sessionInfo, outputListener, channelPool, batching, new ResultsServiceConfiguration(channelPool));
+  }
+
+  SessionHandle(SessionInfo sessionInfo,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ResultsServiceConfiguration resultsServiceConfiguration) {
     this(sessionInfo, channelPool, new TaskSubmitter(requireNonNull(sessionInfo, "sessionInfo must not be null").id(),
-      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared()));
+      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration));
   }
 
   SessionHandle(SessionInfo sessionInfo, ChannelPool channelPool, TaskSubmitter taskSubmitter) {

@@ -65,8 +65,12 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   /** Status of each result as ListResults reports it; results not set are CREATED. */
   public final Map<String, ResultStatusOuterClass.ResultStatus> statuses = new ConcurrentHashMap<>();
   public final AtomicInteger listResultsCalls = new AtomicInteger();
-  /** Number of the next ListResults calls that fail with UNAVAILABLE. */
+  /** Number of the next ListResults calls that fail with {@link #failingListResultsStatus}. */
   public final AtomicInteger failingListResults = new AtomicInteger();
+  /** Status of the failing ListResults calls; UNAVAILABLE by default. */
+  public volatile io.grpc.Status failingListResultsStatus = io.grpc.Status.UNAVAILABLE;
+  /** Every ListResults request received, in order. */
+  public final List<ListResultsRequest> listResultsRequests = new CopyOnWriteArrayList<>();
 
 
   public void failDownloadFor(BlobId id) {
@@ -100,6 +104,8 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.statuses.clear();
     this.listResultsCalls.set(0);
     this.failingListResults.set(0);
+    this.failingListResultsStatus = io.grpc.Status.UNAVAILABLE;
+    this.listResultsRequests.clear();
   }
 
   @Override
@@ -185,8 +191,9 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   @Override
   public void listResults(ListResultsRequest request, StreamObserver<ListResultsResponse> responseObserver) {
     listResultsCalls.incrementAndGet();
+    listResultsRequests.add(request);
     if (failingListResults.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
-      responseObserver.onError(io.grpc.Status.UNAVAILABLE.withDescription("listing failed").asRuntimeException());
+      responseObserver.onError(failingListResultsStatus.withDescription("listing failed").asRuntimeException());
       return;
     }
     if (!request.hasSort()) {

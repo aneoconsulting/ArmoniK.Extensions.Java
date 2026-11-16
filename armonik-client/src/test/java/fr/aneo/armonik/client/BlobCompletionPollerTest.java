@@ -32,11 +32,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
+import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_DELETED;
 import static fr.aneo.armonik.client.TestDataFactory.blobInfo;
 import static fr.aneo.armonik.client.TestDataFactory.sessionId;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -202,15 +202,21 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
   @Timeout(10)
   void should_keep_delivering_while_listener_calls_block() throws Exception {
     // Given: one more output than the client has threads; every listener call but the last blocks
-    var blocked = Runtime.getRuntime().availableProcessors();
+    // (as many as the shared client pool of ExecutorProvider)
+    var blocked = Math.max(2, Runtime.getRuntime().availableProcessors());
     var infos = IntStream.rangeClosed(0, blocked).mapToObj(i -> blobInfo("out-" + i)).toList();
     var lastId = infos.get(blocked).id().asString();
     var release = new CountDownLatch(1);
+    var lastDelivered = new CountDownLatch(1);
     var blocking = new RecordingListener() {
       @Override
       public void onSuccess(Blob blob) {
         super.onSuccess(blob);
-        if (!blob.blobInfo().id().asString().equals(lastId)) await(release);
+        if (blob.blobInfo().id().asString().equals(lastId)) {
+          lastDelivered.countDown();
+        } else {
+          await(release);
+        }
       }
     };
     var listenerExecutor = Executors.newFixedThreadPool(blocked + 1);
@@ -222,7 +228,7 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
       infos.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
 
       // Then: the last output is delivered while the others block
-      awaitCondition(() -> blocking.blobs.stream().anyMatch(blob -> blob.blobInfo().id().asString().equals(lastId)));
+      assertThat(lastDelivered.await(3, SECONDS)).isTrue();
       assertThat(poller.waitUntilIdle().toCompletableFuture()).isNotDone();
       release.countDown();
       poller.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
@@ -273,6 +279,47 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should report outputs as failed when the listing fails with a non-transient status")
+  @Timeout(5)
+  void should_report_outputs_when_listing_fails_for_good() throws Exception {
+    // Given
+    resultsGrpcMock.failingListResults.set(1);
+    resultsGrpcMock.failingListResultsStatus = io.grpc.Status.PERMISSION_DENIED;
+    var info = blobInfo("out");
+    var poller = poller(listener, true, Runnable::run);
+
+    // When
+    poller.enqueue(List.of(handle(info)));
+    poller.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then: reported once, and not polled again
+    assertThat(listener.blobs).isEmpty();
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).blobInfo().id()).isEqualTo(info.id());
+    assertThat(resultsGrpcMock.listResultsCalls.get()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("should report an output deleted before it was seen completed as failed")
+  @Timeout(5)
+  void should_report_deleted_output() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    var poller = poller(listener, true, Runnable::run);
+
+    // When
+    poller.enqueue(List.of(handle(info)));
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_DELETED);
+    poller.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.blobs).isEmpty();
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("RESULT_STATUS_DELETED");
+    assertThat(resultsGrpcMock.downloadCalls.get()).isZero();
+  }
+
+  @Test
   @DisplayName("should list more outputs than one request holds")
   @Timeout(10)
   void should_list_more_outputs_than_one_request_holds() throws Exception {
@@ -284,8 +331,14 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
     poller.enqueue(infos.stream().map(this::handle).toList());
     infos.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
 
-    // Then
+    // Then: one request per chunk of ids, each sized to its chunk
     poller.waitUntilIdle().toCompletableFuture().get(5, SECONDS);
+    var requests = List.copyOf(resultsGrpcMock.listResultsRequests);
+    assertThat(requests).hasSizeGreaterThanOrEqualTo(2);
+    assertThat(requests).allSatisfy(request -> {
+      assertThat(request.getFilters().getOrCount()).isLessThanOrEqualTo(BlobCompletionPoller.MAX_IDS_PER_REQUEST);
+      assertThat(request.getPageSize()).isEqualTo(request.getFilters().getOrCount());
+    });
   }
 
   @Test
@@ -298,23 +351,34 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("should stop polling and release waiters once the pool is closed")
+  @DisplayName("should stop polling and report pending outputs as failed once the pool is closed")
   @Timeout(5)
   void should_stop_once_pool_is_closed() throws Exception {
     // Given: an output that never completes, watched through a pool that gets closed
     var pool = channelPool;
+    var info = blobInfo("out");
     var poller = poller(listener, false, Runnable::run);
-    poller.enqueue(List.of(handle(blobInfo("out"))));
+    poller.enqueue(List.of(handle(info)));
     var idle = poller.waitUntilIdle().toCompletableFuture();
 
     // When
     pool.close();
 
-    // Then
+    // Then: the output is reported, and polling stops
     idle.get(3, SECONDS);
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).blobInfo().id()).isEqualTo(info.id());
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
     var calls = resultsGrpcMock.listResultsCalls.get();
     Thread.sleep(300);
     assertThat(resultsGrpcMock.listResultsCalls.get()).isEqualTo(calls);
+
+    // And: an output enqueued afterwards is reported instead of awaited
+    var late = blobInfo("late");
+    poller.enqueue(List.of(handle(late)));
+    poller.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.errors).hasSize(2);
+    assertThat(listener.errors.get(1).blobInfo().id()).isEqualTo(late.id());
   }
 
   private BlobCompletionPoller poller(BlobCompletionListener listener, boolean downloadData, Executor listenerExecutor) {
@@ -331,12 +395,6 @@ class BlobCompletionPollerTest extends InProcessGrpcTestBase {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
-  }
-
-  private static void awaitCondition(BooleanSupplier condition) throws InterruptedException {
-    var deadline = System.nanoTime() + SECONDS.toNanos(3);
-    while (!condition.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(10);
-    assertThat(condition.getAsBoolean()).isTrue();
   }
 
   static class RecordingListener implements BlobCompletionListener {

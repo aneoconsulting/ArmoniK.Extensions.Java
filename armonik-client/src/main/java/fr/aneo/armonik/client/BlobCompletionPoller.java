@@ -30,6 +30,7 @@ import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.api.grpc.v1.sortdirection.SortDirectionOuterClass.SortDirection;
 import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
+import io.grpc.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,10 +52,13 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
  * Waits for the outputs of a session by polling {@code ListResults}, as the C# and C++ SDKs do.
  * <p>
  * Watched outputs are kept in a set. While it is not empty, a poll lists those that are no longer
- * {@code CREATED}, in requests of at most {@link #MAX_IDS_PER_REQUEST} ids. Each completed output
- * is downloaded, its size known from the listing, and handed to the listener; each aborted output is
- * reported as failed. The delay between polls starts at {@link #MIN_INTERVAL} and doubles up to
- * {@link #MAX_INTERVAL} while no output progresses; any progress or new output resets it.
+ * {@code CREATED}, in requests of at most {@link #MAX_IDS_PER_REQUEST} ids sent one after another.
+ * Each completed output is downloaded, its size known from the listing, and handed to the listener;
+ * each aborted or deleted output is reported as failed. A listing failing with a transient status is
+ * retried at the next poll; any other failure reports the outputs of that request as failed. Once
+ * the client is closed, every output still pending is reported as failed. The delay between polls
+ * starts at {@link #MIN_INTERVAL} and doubles up to {@link #MAX_INTERVAL} while no output
+ * progresses; any progress or new output resets it.
  * <p>
  * Every call is a short unary call or a download: no call stays open while outputs are awaited.
  */
@@ -115,7 +119,8 @@ final class BlobCompletionPoller {
   }
 
   /**
-   * Starts watching outputs, once their ids are known.
+   * Starts watching outputs, once their ids are known. Once the client is closed, they are reported
+   * as failed instead.
    *
    * @param blobHandles the outputs to watch
    */
@@ -125,10 +130,23 @@ final class BlobCompletionPoller {
       inFlight.incrementAndGet();
       handle.deferredBlobInfo().whenComplete((info, error) -> {
         // An output without id has no task producing it: the failure is reported where the task fails.
-        if (error == null) pending.put(info.id().asString(), handle);
-        inFlight.decrementAndGet();
-        schedulePoll(true);
-        maybeSignalIdle();
+        if (error != null) {
+          done();
+          return;
+        }
+        boolean watched;
+        synchronized (lock) {
+          watched = !stopped;
+          if (watched) pending.put(info.id().asString(), handle);
+        }
+        if (watched) {
+          inFlight.decrementAndGet();
+          schedulePoll(true);
+          maybeSignalIdle();
+        } else {
+          // The count taken above now covers the listener call
+          failed(handle, clientClosed());
+        }
       });
     });
   }
@@ -195,59 +213,113 @@ final class BlobCompletionPoller {
     }
   }
 
+  /**
+   * Lists the pending outputs, one request after another so that a poll holds at most one of the
+   * client's channels at a time.
+   */
   private void poll() {
     var ids = new ArrayList<>(pending.keySet());
-    var requests = new ArrayList<CompletableFuture<List<ResultRaw>>>();
+    CompletableFuture<Boolean> progress = CompletableFuture.completedFuture(false);
     for (int start = 0; start < ids.size(); start += MAX_IDS_PER_REQUEST) {
-      requests.add(list(ids.subList(start, Math.min(start + MAX_IDS_PER_REQUEST, ids.size()))).toCompletableFuture());
+      var chunk = ids.subList(start, Math.min(start + MAX_IDS_PER_REQUEST, ids.size()));
+      progress = progress.thenCompose(previous -> {
+        if (isStopped()) return CompletableFuture.completedFuture(previous);
+        return list(chunk).handle((results, error) -> listed(chunk, results, error) || previous);
+      });
     }
-    CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new))
-                     .handle((ignored, error) -> {
-                       var progress = false;
-                       for (var request : requests) {
-                         if (request.isCompletedExceptionally()) {
-                           var failure = request.handle((value, ex) -> ex).join();
-                           if (isPoolClosed(failure)) {
-                             stop();
-                             return progress;
-                           }
-                           logger.warn("Polling the outputs of session {} failed, retrying: {}", sessionId.asString(), failure.toString());
-                           continue;
-                         }
-                         for (var result : request.join()) progress |= handle(result);
-                       }
-                       return progress;
-                     })
-                     .whenComplete((progress, error) -> {
-                       synchronized (lock) {
-                         pollScheduled = false;
-                         if (!resetInterval) {
-                           intervalNanos = Boolean.TRUE.equals(progress) ? minIntervalNanos : Math.min(intervalNanos * 2, maxIntervalNanos);
-                         }
-                       }
-                       schedulePoll(false);
-                       maybeSignalIdle();
-                     });
+    progress.whenComplete((anyProgress, error) -> {
+      if (error != null) logger.error("Could not poll the outputs of session {}", sessionId.asString(), error);
+      synchronized (lock) {
+        pollScheduled = false;
+        if (!resetInterval) {
+          intervalNanos = Boolean.TRUE.equals(anyProgress) ? minIntervalNanos : Math.min(intervalNanos * 2, maxIntervalNanos);
+        }
+      }
+      schedulePoll(false);
+      maybeSignalIdle();
+    });
   }
 
-  private static boolean isPoolClosed(Throwable failure) {
+  /**
+   * Handles the answer to one listing request.
+   *
+   * @return true when it ended the wait for a pending output
+   */
+  private boolean listed(List<String> ids, List<ResultRaw> results, Throwable error) {
+    if (error == null) {
+      var progress = false;
+      for (var result : results) progress |= handle(result);
+      return progress;
+    }
+    var cause = unwrap(error);
+    if (isPoolClosed(cause)) {
+      stop();
+      return false;
+    }
+    if (isTransient(cause)) {
+      logger.warn("Polling the outputs of session {} failed, retrying: {}", sessionId.asString(), cause.toString());
+      return false;
+    }
+    logger.error("Polling the outputs of session {} failed, reporting {} outputs as failed", sessionId.asString(), ids.size(), cause);
+    var progress = false;
+    for (var id : ids) {
+      var handle = take(id);
+      if (handle == null) continue;
+      failed(handle, new ArmoniKException("Could not poll the status of the output: " + cause, cause));
+      progress = true;
+    }
+    return progress;
+  }
+
+  private static Throwable unwrap(Throwable failure) {
     var cause = failure;
     while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null) cause = cause.getCause();
+    return cause;
+  }
+
+  private static boolean isPoolClosed(Throwable cause) {
     return cause instanceof IllegalStateException;
   }
 
   /**
+   * Tells whether a failed listing may succeed later, with the statuses the client retries elsewhere
+   * (see {@code RetryableStreamOperation}).
+   */
+  private static boolean isTransient(Throwable cause) {
+    var code = Status.fromThrowable(cause).getCode();
+    return code == Status.Code.UNAVAILABLE
+      || code == Status.Code.DEADLINE_EXCEEDED
+      || code == Status.Code.RESOURCE_EXHAUSTED
+      || code == Status.Code.ABORTED;
+  }
+
+  private boolean isStopped() {
+    synchronized (lock) {
+      return stopped;
+    }
+  }
+
+  /**
    * Stops watching once the client is closed: no output can be listed or downloaded any more, so
-   * {@link #waitUntilIdle()} is released instead of waiting for good.
+   * each pending output is reported as failed, and {@link #waitUntilIdle()} is released once the
+   * listener has been told.
    */
   private void stop() {
     synchronized (lock) {
+      if (stopped) return;
       stopped = true;
     }
     if (!pending.isEmpty()) {
       logger.info("Client closed: stopped watching {} outputs of session {}", pending.size(), sessionId.asString());
-      pending.clear();
     }
+    for (var id : new ArrayList<>(pending.keySet())) {
+      var handle = take(id);
+      if (handle != null) failed(handle, clientClosed());
+    }
+  }
+
+  private static ArmoniKException clientClosed() {
+    return new ArmoniKException("The client was closed before the output was available");
   }
 
   private CompletionStage<List<ResultRaw>> list(List<String> ids) {
@@ -294,17 +366,19 @@ final class BlobCompletionPoller {
    * @return true when it ended the wait for a pending output
    */
   private boolean handle(ResultRaw result) {
-    switch (result.getStatus()) {
-      case RESULT_STATUS_COMPLETED -> {
-        var handle = pending.remove(result.getResultId());
+    var status = result.getStatus();
+    switch (status) {
+      case RESULT_STATUS_COMPLETED, RESULT_STATUS_ABORTED, RESULT_STATUS_DELETED, RESULT_STATUS_NOTFOUND -> {
+        var handle = take(result.getResultId());
         if (handle == null) return false;
-        completed(handle, result.getSize());
-        return true;
-      }
-      case RESULT_STATUS_ABORTED -> {
-        var handle = pending.remove(result.getResultId());
-        if (handle == null) return false;
-        aborted(handle);
+        if (status == ResultStatus.RESULT_STATUS_COMPLETED) {
+          completed(handle, result.getSize());
+        } else if (status == ResultStatus.RESULT_STATUS_ABORTED) {
+          failed(handle, new ArmoniKException("Blob aborted"));
+        } else {
+          // Deleted (or gone) before it could be downloaded: it will never complete
+          failed(handle, new ArmoniKException("Blob is no longer available, its status is " + status.name()));
+        }
         return true;
       }
       default -> {
@@ -313,9 +387,25 @@ final class BlobCompletionPoller {
     }
   }
 
-  private void completed(BlobHandle handle, long size) {
-    if (!downloadData) return;
+  /**
+   * Removes an output from the pending ones and counts it as in flight, in that order, so that the
+   * poller is never seen idle between the two. The caller then notifies the listener, which ends
+   * the count.
+   *
+   * @return the output, or null when it is no longer pending
+   */
+  private BlobHandle take(String id) {
     inFlight.incrementAndGet();
+    var handle = pending.remove(id);
+    if (handle == null) done();
+    return handle;
+  }
+
+  private void completed(BlobHandle handle, long size) {
+    if (!downloadData) {
+      done();
+      return;
+    }
     handle.deferredBlobInfo()
           .thenCompose(info -> handle.downloadData(size).handle((bytes, error) -> {
             notify(error == null
@@ -330,10 +420,9 @@ final class BlobCompletionPoller {
           });
   }
 
-  private void aborted(BlobHandle handle) {
-    inFlight.incrementAndGet();
+  private void failed(BlobHandle handle, Throwable cause) {
     handle.deferredBlobInfo()
-          .thenAccept(info -> notify(() -> listener.onError(new BlobCompletionListener.BlobError(info, new ArmoniKException("Blob aborted")))))
+          .thenAccept(info -> notify(() -> listener.onError(new BlobCompletionListener.BlobError(info, cause))))
           .exceptionally(error -> {
             done();
             return null;

@@ -49,6 +49,7 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDa
  */
 public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDataResponse> {
   private static final Logger logger = LoggerFactory.getLogger(DownloadBlobDataObserver.class);
+  /** Largest array the JVM reliably allocates: a few words below {@code Integer.MAX_VALUE} are taken by the array header. */
   private static final long MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
 
   private final SettableFuture<byte[]> result = SettableFuture.create();
@@ -57,6 +58,7 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   private long size;
   private final SessionId sessionId;
   private final BlobId blobId;
+  private final long maxSize;
 
   /**
    * Creates a new download observer for the specified blob within a session context.
@@ -71,15 +73,31 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
    * @see BlobId
    */
   public DownloadBlobDataObserver(SessionId sessionId, BlobId blobId) {
+    this(sessionId, blobId, MAX_ARRAY_SIZE);
+  }
+
+  /**
+   * Creates a download observer that fails once the data exceeds {@code maxSize} bytes, for tests.
+   */
+  DownloadBlobDataObserver(SessionId sessionId, BlobId blobId, long maxSize) {
     this.sessionId = sessionId;
     this.blobId = blobId;
+    this.maxSize = maxSize;
   }
 
   @Override
   public void onNext(DownloadResultDataResponse chunk) {
+    if (result.isDone()) return;
     var data = chunk.getDataChunk();
-    chunks.add(data);
     size += data.size();
+    if (size > maxSize) {
+      // Fail now and drop what was received, rather than keep the data until the stream ends
+      chunks.clear();
+      result.setException(new IllegalStateException("Blob " + blobId.asString() + " of session " + sessionId.asString()
+        + " is over " + maxSize + " bytes, larger than a Java array can hold"));
+      return;
+    }
+    chunks.add(data);
   }
 
   @Override
@@ -87,6 +105,7 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
     logger.error("Blob download failed: operation={}, sessionId={}, blobId={}, error={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), throwable.getClass().getSimpleName(),
       throwable);
+    chunks.clear();
     result.setException(throwable);
   }
 
@@ -94,10 +113,7 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   public void onCompleted() {
     logger.debug("Blob download completed: operation={}, sessionId={}, blobId={}, downloadSize={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), size);
-    if (size > MAX_ARRAY_SIZE) {
-      result.setException(new IllegalStateException("Blob " + blobId.asString() + " is " + size + " bytes, larger than a Java array can hold"));
-      return;
-    }
+    if (result.isDone()) return;
     var data = new byte[(int) size];
     var offset = 0;
     for (var chunk : chunks) {

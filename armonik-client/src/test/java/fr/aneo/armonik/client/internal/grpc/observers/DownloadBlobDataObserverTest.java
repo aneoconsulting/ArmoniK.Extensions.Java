@@ -74,6 +74,26 @@ class DownloadBlobDataObserverTest {
       .hasRootCauseInstanceOf(IllegalStateException.class);
   }
 
+  @Test
+  @DisplayName("should fail as soon as the data exceeds the size an array can hold")
+  void should_fail_once_the_data_is_too_large() {
+    // Given
+    var observer = new DownloadBlobDataObserver(sessionId(), blobId("blob"), 8);
+    observer.onNext(chunk("12345"));
+
+    // When
+    observer.onNext(chunk("6789"));
+
+    // Then: the result fails before the stream ends, and later chunks or completion change nothing
+    assertThatThrownBy(() -> observer.content().toCompletableFuture().get(1, SECONDS))
+      .hasRootCauseInstanceOf(IllegalStateException.class)
+      .hasMessageContaining("blob");
+    observer.onNext(chunk("more"));
+    observer.onCompleted();
+    assertThatThrownBy(() -> observer.content().toCompletableFuture().get(1, SECONDS))
+      .hasRootCauseInstanceOf(IllegalStateException.class);
+  }
+
   private static DownloadResultDataResponse chunk(String data) {
     return DownloadResultDataResponse.newBuilder().setDataChunk(ByteString.copyFrom(data, UTF_8)).build();
   }

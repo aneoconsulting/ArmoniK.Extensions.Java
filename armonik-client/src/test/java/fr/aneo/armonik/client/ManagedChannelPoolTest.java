@@ -21,8 +21,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -420,11 +423,10 @@ class ManagedChannelPoolTest {
     pool = ManagedChannelPool.create(5, this::createHealthyChannel);
     var first = new CompletableFuture<>();
     var second = new CompletableFuture<>();
-    var acquired = new CountDownLatch(2);
-    var firstChannel = new java.util.concurrent.atomic.AtomicReference<ManagedChannel>();
-    var secondChannel = new java.util.concurrent.atomic.AtomicReference<ManagedChannel>();
-    pool.executeAsync(ch -> { firstChannel.set(ch); acquired.countDown(); return first; });
-    pool.executeAsync(ch -> { secondChannel.set(ch); acquired.countDown(); return second; });
+    var firstChannel = new AtomicReference<ManagedChannel>();
+    var secondChannel = new AtomicReference<ManagedChannel>();
+    pool.executeAsync(ch -> { firstChannel.set(ch); return first; });
+    pool.executeAsync(ch -> { secondChannel.set(ch); return second; });
 
     // When: the first channel is released, then the second
     first.complete("1");
@@ -439,18 +441,18 @@ class ManagedChannelPoolTest {
   @DisplayName("pool should shut down channels left unused longer than the maximum idle time")
   void pool_should_shut_down_channels_left_unused_too_long() {
     // Given
-    var now = new java.util.concurrent.atomic.AtomicLong();
-    pool = ManagedChannelPool.create(0, this::createHealthyChannel, java.time.Duration.ofMinutes(5), now::get);
+    var now = new AtomicLong();
+    pool = ManagedChannelPool.create(0, this::createHealthyChannel, Duration.ofMinutes(5), now::get);
     var busy = range(0, 3).mapToObj(i -> new CompletableFuture<>()).toList();
-    var channels = new java.util.concurrent.CopyOnWriteArrayList<ManagedChannel>();
+    var channels = new CopyOnWriteArrayList<ManagedChannel>();
     busy.forEach(call -> pool.executeAsync(ch -> { channels.add(ch); return call; }));
     busy.forEach(call -> call.complete("done"));
     assertThat(pool.size()).isEqualTo(3);
 
     // When: one channel keeps serving calls while the others stay unused past the idle time
-    now.addAndGet(java.time.Duration.ofMinutes(4).toNanos());
+    now.addAndGet(Duration.ofMinutes(4).toNanos());
     var reused = pool.execute(ch -> ch);
-    now.addAndGet(java.time.Duration.ofMinutes(2).toNanos());
+    now.addAndGet(Duration.ofMinutes(2).toNanos());
     pool.execute(ch -> ch);
 
     // Then: the two unused channels are shut down, the one in use is kept

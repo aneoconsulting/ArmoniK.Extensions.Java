@@ -288,7 +288,7 @@ public class ArmoniKClient implements AutoCloseable {
   private ManagedChannel createChannel(ArmoniKConfig armoniKConfig) {
     var channelBuilder = GrpcChannelBuilder.forEndpoint(armoniKConfig.endpoint())
                                            .withRetry(armoniKConfig.retryPolicy())
-                                           .withIdleTimeout(Duration.ofMinutes(5))
+                                           .withIdleTimeout(ManagedChannelPool.DEFAULT_MAX_IDLE)
                                            .withKeepAlive(Duration.ofSeconds(30), Duration.ofSeconds(30));
 
     if (!armoniKConfig.sslValidation()) {

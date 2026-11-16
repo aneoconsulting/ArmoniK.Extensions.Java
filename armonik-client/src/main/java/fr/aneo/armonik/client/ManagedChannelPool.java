@@ -23,7 +23,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,8 +70,8 @@ public final class ManagedChannelPool implements ChannelPool {
   private static final Logger logger = LoggerFactory.getLogger(ManagedChannelPool.class);
   private static final Duration GRACEFUL_SHUTDOWN_TIMEOUT = Duration.ofSeconds(2);
   /**
-   * How long a released channel may stay unused before the pool shuts it down. It matches the idle
-   * timeout of the client's channels, after which gRPC closes their connection anyway.
+   * How long a released channel may stay unused before the pool shuts it down. {@link ArmoniKClient}
+   * also uses it as the idle timeout of its channels, after which gRPC closes their connection anyway.
    */
   static final Duration DEFAULT_MAX_IDLE = Duration.ofMinutes(5);
 
@@ -80,8 +79,7 @@ public final class ManagedChannelPool implements ChannelPool {
   private final int maxSize;
   private final boolean isUnbounded;
   private final AsyncLimiter channelPermits;
-  private final ConcurrentLinkedDeque<ManagedChannel> availableChannels;
-  private final Map<ManagedChannel, Long> releasedAt = new ConcurrentHashMap<>();
+  private final ConcurrentLinkedDeque<IdleChannel> availableChannels;
   private final long maxIdleNanos;
   private final LongSupplier nanoTime;
   private final Set<ManagedChannel> allChannels;
@@ -227,7 +225,6 @@ public final class ManagedChannelPool implements ChannelPool {
       }
 
       availableChannels.clear();
-      releasedAt.clear();
       allChannels.clear();
       logger.info("Channel pool shutdown complete");
     }
@@ -350,9 +347,9 @@ public final class ManagedChannelPool implements ChannelPool {
    */
   private ManagedChannel takeChannel() {
     evictIdleChannels();
-    ManagedChannel candidate;
-    while ((candidate = availableChannels.pollFirst()) != null) {
-      releasedAt.remove(candidate);
+    IdleChannel idle;
+    while ((idle = availableChannels.pollFirst()) != null) {
+      var candidate = idle.channel();
       if (isChannelHealthy(candidate)) {
         logger.trace("Reusing channel from pool. Pool size: {}", size());
         return candidate;
@@ -386,8 +383,7 @@ public final class ManagedChannelPool implements ChannelPool {
     if (isChannelHealthy(channel)) {
       // Most recently used first: under a light load the same few channels serve every call,
       // and the others stay unused until evictIdleChannels shuts them down.
-      releasedAt.put(channel, nanoTime.getAsLong());
-      availableChannels.offerFirst(channel);
+      availableChannels.offerFirst(new IdleChannel(channel, nanoTime.getAsLong()));
       logger.trace("Channel returned to the pool");
     } else {
       logger.debug("Discarding unhealthy channel on release. Channel state: {}", channel.getState(false));
@@ -404,15 +400,37 @@ public final class ManagedChannelPool implements ChannelPool {
     var now = nanoTime.getAsLong();
     var iterator = availableChannels.descendingIterator();
     while (iterator.hasNext()) {
-      var channel = iterator.next();
-      var released = releasedAt.get(channel);
-      if (released == null) continue;
-      if (now - released < maxIdleNanos) break;
-      if (availableChannels.removeLastOccurrence(channel)) {
-        releasedAt.remove(channel);
-        logger.debug("Shutting down channel unused for {}. Pool size: {}", Duration.ofNanos(now - released), size() - 1);
-        discard(channel);
+      var idle = iterator.next();
+      if (now - idle.releasedAt() < maxIdleNanos) break;
+      // Each release adds a new entry, compared by identity: removing this one succeeds only if no
+      // other thread has taken the channel since this release, and then no other thread can take it.
+      if (availableChannels.removeLastOccurrence(idle)) {
+        logger.debug("Shutting down channel unused for {}. Pool size: {}", Duration.ofNanos(now - idle.releasedAt()), size() - 1);
+        discard(idle.channel());
       }
+    }
+  }
+
+  /**
+   * An available channel and the time it was released. Each release creates a new instance and
+   * instances compare by identity, so an entry read by the evicter never matches a later release of
+   * the same channel.
+   */
+  private static final class IdleChannel {
+    private final ManagedChannel channel;
+    private final long releasedAt;
+
+    IdleChannel(ManagedChannel channel, long releasedAt) {
+      this.channel = channel;
+      this.releasedAt = releasedAt;
+    }
+
+    ManagedChannel channel() {
+      return channel;
+    }
+
+    long releasedAt() {
+      return releasedAt;
     }
   }
 

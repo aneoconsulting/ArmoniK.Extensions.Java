@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -221,7 +222,7 @@ class ArmoniKConfigTest {
   @Test
   @DisplayName("should keep the listener executor supplied by the application")
   void should_keep_the_listener_executor() {
-    java.util.concurrent.Executor executor = Runnable::run;
+    Executor executor = Runnable::run;
     var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
 
     assertThat(builder.build().listenerExecutor()).isNull();

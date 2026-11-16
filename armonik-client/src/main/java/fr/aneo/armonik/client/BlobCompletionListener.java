@@ -35,7 +35,7 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
  * concurrently from multiple threads.
  * <p>
  * The callbacks run on the client's listener executor (see {@link ArmoniKConfig.Builder#withListenerExecutor}),
- * never on the threads that complete the client's gRPC calls: a callback may take time without
+ * by default never on the threads that complete the client's gRPC calls: a callback may take time without
  * delaying submissions, uploads or downloads, only the other callbacks. An output counts as processed,
  * for {@link SessionHandle#awaitOutputsProcessed()}, once its callback has returned.
  *

@@ -46,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Function;
@@ -246,7 +247,7 @@ final class TaskSubmitter {
                 Executor flushExecutor,
                 ResultsServiceConfiguration resultsServiceConfiguration,
                 Executor listenerExecutor) {
-    this.listenerExecutor = requireNonNull(listenerExecutor, "listenerExecutor must not be null");
+    this.listenerExecutor = runInlineWhenRejected(requireNonNull(listenerExecutor, "listenerExecutor must not be null"));
 
     this.sessionId = requireNonNull(sessionId);
     this.resultsServiceConfiguration = requireNonNull(resultsServiceConfiguration, "resultsServiceConfiguration must not be null");
@@ -256,7 +257,7 @@ final class TaskSubmitter {
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.blobCompletionPoller = new BlobCompletionPoller(sessionId, channelPool, this.outputListener, outputListener != null, listenerExecutor, scheduler);
+    this.blobCompletionPoller = new BlobCompletionPoller(sessionId, channelPool, this.outputListener, outputListener != null, this.listenerExecutor, scheduler);
   }
 
   /**
@@ -1050,5 +1051,21 @@ final class TaskSubmitter {
 
       return TaskMapper.toTaskCreation(dataDependencies, outputBlobIds, payloadId, effectiveTaskConfig);
     }
+  }
+
+  /**
+   * Wraps the listener executor so that a call it rejects, because it is shut down or saturated,
+   * runs on the current thread instead of being lost: the listener is still notified, and
+   * {@link #waitUntilFinished()} still completes.
+   */
+  private Executor runInlineWhenRejected(Executor executor) {
+    return task -> {
+      try {
+        executor.execute(task);
+      } catch (RejectedExecutionException rejected) {
+        logger.warn("The listener executor rejected a call, running it on the current thread. Session id: {}", sessionId.asString(), rejected);
+        task.run();
+      }
+    };
   }
 }

@@ -335,7 +335,9 @@ public final class ArmoniKConfig {
      * complete the client's gRPC calls, so a slow listener only delays other listener calls, never
      * submissions, uploads or downloads. By default each client runs them on its own pool of one
      * daemon thread per available processor, shut down with the client. An executor supplied here
-     * is used as is, and left running when the client closes.
+     * is used as is, and left running when the client closes; it must not run tasks on the calling
+     * thread, or the listener calls run on the gRPC threads again. A call the executor rejects runs
+     * on the current thread, so that no output is lost.
      *
      * @param listenerExecutor the executor, or null for the client's own
      * @return this builder

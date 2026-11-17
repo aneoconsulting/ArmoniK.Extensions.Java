@@ -15,6 +15,9 @@
  */
 package fr.aneo.armonik.client;
 
+import fr.aneo.armonik.client.internal.concurrent.AsyncLimiter;
+import fr.aneo.armonik.client.internal.concurrent.Futures;
+
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +40,9 @@ import static java.util.Objects.requireNonNull;
  * <p>
  * The pool can operate in two modes:
  * <ul>
- *   <li><strong>Bounded:</strong> Maximum number of channels enforced. Operations block when pool is exhausted.</li>
+ *   <li><strong>Bounded:</strong> Maximum number of channels enforced. When the pool is exhausted,
+ *   {@link #executeAsync(Function)} waits for a channel without blocking any thread, while the
+ *   synchronous {@link #execute(Function)} blocks its caller.</li>
  *   <li><strong>Unbounded:</strong> No maximum limit. Channels created on-demand without blocking.</li>
  * </ul>
  * <p>
@@ -50,6 +55,8 @@ import static java.util.Objects.requireNonNull;
  *   <li>Functional API preventing resource leaks</li>
  *   <li>Configurable retry policy for handling transient failures</li>
  * </ul>
+ * <p>
+ * Each channel carries one call at a time.
  * <p>
  * The pool also maintains a {@link RetryPolicy} that defines how operations should handle
  * and retry transient failures such as network issues or temporary unavailability.
@@ -65,7 +72,7 @@ public final class ManagedChannelPool implements ChannelPool {
   private final Supplier<ManagedChannel> channelFactory;
   private final int maxSize;
   private final boolean isUnbounded;
-  private final Semaphore semaphore;
+  private final AsyncLimiter channelPermits;
   private final ConcurrentLinkedQueue<ManagedChannel> availableChannels;
   private final Set<ManagedChannel> allChannels;
   private final AtomicBoolean shutdown;
@@ -85,48 +92,85 @@ public final class ManagedChannelPool implements ChannelPool {
     this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy must not be null");
     this.maxSize = maxSize;
     this.isUnbounded = (maxSize == 0);
-    this.semaphore = isUnbounded ? null : new Semaphore(maxSize);
+    this.channelPermits = new AsyncLimiter(isUnbounded ? Integer.MAX_VALUE : maxSize);
     this.availableChannels = new ConcurrentLinkedQueue<>();
     this.allChannels = ConcurrentHashMap.newKeySet();
     this.shutdown = new AtomicBoolean(false);
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * This synchronous variant blocks the calling thread until a channel is available.
+   */
   @Override
   public <T> T execute(Function<ManagedChannel, T> operation) {
     requireNonNull(operation, "operation must not be null");
+    ensureNotShutdown();
 
-    ManagedChannel channel;
+    var waiter = channelPermits.acquire();
     try {
-      channel = acquire();
+      waiter.get();
     } catch (InterruptedException e) {
+      if (!channelPermits.cancel(waiter)) channelPermits.release();
       Thread.currentThread().interrupt();
       throw new RuntimeException("Interrupted while acquiring channel from pool", e);
+    } catch (ExecutionException e) {
+      throw Futures.asRuntimeException(e.getCause());
     }
 
     try {
-      return operation.apply(channel);
+      ensureNotShutdown();
+      var channel = takeChannel();
+      if (shutdown.get()) {
+        // close() ran during takeChannel() and may have missed a channel it created: see runWithChannel.
+        returnChannel(channel);
+        throw new IllegalStateException("Channel pool has been shut down");
+      }
+      try {
+        return operation.apply(channel);
+      } finally {
+        returnChannel(channel);
+      }
     } finally {
-      release(channel);
+      channelPermits.release();
     }
   }
 
   @Override
   public <T> CompletionStage<T> executeAsync(Function<ManagedChannel, CompletionStage<T>> operation) {
     requireNonNull(operation, "operation must not be null");
+    ensureNotShutdown();
+
+    return channelPermits.withPermit(() -> runWithChannel(operation));
+  }
+
+  /**
+   * Runs an operation on a channel, for a caller that holds a channel permit; the caller returns the permit.
+   */
+  private <T> CompletableFuture<T> runWithChannel(Function<ManagedChannel, CompletionStage<T>> operation) {
+    // A permit handed over by release() may arrive after close(): do not open a channel close() would miss.
+    if (shutdown.get()) return CompletableFuture.failedFuture(new IllegalStateException("Channel pool has been shut down"));
 
     ManagedChannel channel;
     try {
-      channel = acquire();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return CompletableFuture.failedFuture(new RuntimeException("Interrupted while acquiring channel from pool", e));
+      channel = takeChannel();
+    } catch (RuntimeException e) {
+      return CompletableFuture.failedFuture(e);
+    }
+    // close() may also run during takeChannel(): a channel created there is already in allChannels, so either
+    // close() saw it, or close() set shutdown before it was added and this check fails.
+    if (shutdown.get()) {
+      returnChannel(channel);
+      return CompletableFuture.failedFuture(new IllegalStateException("Channel pool has been shut down"));
     }
 
     try {
       return operation.apply(channel)
-                      .whenComplete((result, error) -> release(channel));
+                      .whenComplete((result, error) -> returnChannel(channel))
+                      .toCompletableFuture();
     } catch (Exception e) {
-      release(channel);
+      returnChannel(channel);
       return CompletableFuture.failedFuture(e);
     }
   }
@@ -135,6 +179,9 @@ public final class ManagedChannelPool implements ChannelPool {
   public void close() {
     if (shutdown.compareAndSet(false, true)) {
       logger.info("Shutting down channel pool (size: {}, unbounded: {})", allChannels.size(), isUnbounded);
+
+      var closed = new IllegalStateException("Channel pool has been shut down");
+      channelPermits.close(closed);
 
       var shutdownLatch = new CountDownLatch(allChannels.size());
       allChannels.forEach(channel ->
@@ -193,8 +240,7 @@ public final class ManagedChannelPool implements ChannelPool {
    * Creates an unbounded channel pool with a default retry policy.
    * <p>
    * An unbounded pool creates channels on-demand without any maximum limit.
-   * Operations never block waiting for a channel to become available.
-   * This is useful for highly concurrent scenarios where blocking is unacceptable.
+   * Operations never wait for a channel to become available.
    * <p>
    * The pool will use {@link RetryPolicy#DEFAULT} for handling transient failures.
    * <strong>Warning:</strong> Unbounded pools can create unlimited channels,
@@ -206,22 +252,26 @@ public final class ManagedChannelPool implements ChannelPool {
    * @throws NullPointerException if channelFactory is null
    */
   public static ManagedChannelPool createUnbounded(Supplier<ManagedChannel> channelFactory) {
-    return new ManagedChannelPool(0, RetryPolicy.DEFAULT, channelFactory);
+    return createUnbounded(RetryPolicy.DEFAULT, channelFactory);
+  }
+
+  /**
+   * Creates an unbounded channel pool with a custom retry policy.
+   *
+   * @param retryPolicy    retry policy for handling transient failures
+   * @param channelFactory factory for creating new gRPC channels
+   * @return an unbounded channel pool with the specified retry policy
+   * @throws NullPointerException if retryPolicy or channelFactory is null
+   * @see #createUnbounded(Supplier)
+   */
+  public static ManagedChannelPool createUnbounded(RetryPolicy retryPolicy, Supplier<ManagedChannel> channelFactory) {
+    return new ManagedChannelPool(0, retryPolicy, channelFactory);
   }
 
   /**
    * Creates a bounded channel pool with custom size and default retry policy.
    * <p>
-   * <strong>⚠️ Important: Pool Sizing for Event Streaming</strong>
-   * <p>
-   * When using event streams (e.g., {@link SessionHandle#awaitOutputsProcessed()}),
-   * each stream holds a dedicated channel for the entire stream duration to prevent
-   * channel state contamination. This means:
-   * <ul>
-   *   <li>Each active event stream occupies one channel from the pool</li>
-   *   <li>Concurrent operations (downloads, submissions) need additional channels</li>
-   *   <li>Pool must be sized to accommodate: <code>numStreams + numConcurrentOps</code></li>
-   * </ul>
+   * Each channel carries one call at a time.
    * <p>
    * The pool will use {@link RetryPolicy#DEFAULT} for handling transient failures.
    * To specify a custom retry policy, use {@link #create(int, RetryPolicy, Supplier)}.
@@ -239,16 +289,7 @@ public final class ManagedChannelPool implements ChannelPool {
   /**
    * Creates a bounded channel pool with custom size and retry policy.
    * <p>
-   * <strong>⚠️ Important: Pool Sizing for Event Streaming</strong>
-   * <p>
-   * When using event streams (e.g., {@link SessionHandle#awaitOutputsProcessed()}),
-   * each stream holds a dedicated channel for the entire stream duration to prevent
-   * channel state contamination. This means:
-   * <ul>
-   *   <li>Each active event stream occupies one channel from the pool</li>
-   *   <li>Concurrent operations (downloads, submissions) need additional channels</li>
-   *   <li>Pool must be sized to accommodate: <code>numStreams + numConcurrentOps</code></li>
-   * </ul>
+   * Each channel carries one call at a time.
    * <p>
    * The specified retry policy will be used to handle transient failures during operations.
    * Pass {@code null} or {@link RetryPolicy#DEFAULT} to use default retry behavior.
@@ -267,92 +308,54 @@ public final class ManagedChannelPool implements ChannelPool {
   }
 
   /**
-   * Acquires a {@link ManagedChannel} from the pool.
+   * Takes a healthy channel for a caller that already holds a channel permit.
    * <p>
-   * Behavior differs depending on the pool mode:
-   * <ul>
-   *   <li><strong>Bounded pool:</strong> If all channels are in use and the pool has reached its maximum size,
-   *   this call blocks until a channel is released by another thread.</li>
-   *   <li><strong>Unbounded pool:</strong> Always creates a new channel if none are available. Never blocks.</li>
-   * </ul>
-   * <p>
-   * When acquiring a channel:
-   * <ul>
-   *   <li>The method polls the internal queue of available channels.</li>
-   *   <li>Each polled channel is validated via {@link #isChannelHealthy(ManagedChannel)}.</li>
-   *   <li>Unhealthy channels are automatically removed from the pool and shut down.</li>
-   *   <li>The first healthy channel encountered is returned for reuse.</li>
-   *   <li>If no healthy channel is found, a new one is created using the configured {@code channelFactory}.</li>
-   * </ul>
+   * Unhealthy channels found on the way are discarded; when no healthy channel is available, a new one is created.
    *
    * @return a healthy {@link ManagedChannel} ready for use
-   * @throws IllegalStateException if the pool has been shut down
-   * @throws InterruptedException  if interrupted while waiting for a channel in a bounded pool
    */
-  private ManagedChannel acquire() throws InterruptedException {
-    ensureNotShutdown();
-
-    if (!isUnbounded) {
-      semaphore.acquire();
+  private ManagedChannel takeChannel() {
+    ManagedChannel candidate;
+    while ((candidate = availableChannels.poll()) != null) {
+      if (isChannelHealthy(candidate)) {
+        logger.trace("Reusing channel from pool. Pool size: {}", size());
+        return candidate;
+      }
+      logger.debug("Discarding unhealthy channel from pool. Channel state: {}. Trying next...", candidate.getState(false));
+      discard(candidate);
     }
-    try {
-      ManagedChannel channel = null;
-      ManagedChannel candidate;
-      while (channel == null && (candidate = availableChannels.poll()) != null) {
-        if (isChannelHealthy(candidate)) {
-          channel = candidate;
-          logger.trace("Reusing channel from pool. Pool size: {}", size());
-        } else {
-          logger.debug("Discarding unhealthy channel from pool. Channel state: {}. Trying next...",candidate.getState(false));
-          shutdownChannel(candidate);
-          allChannels.remove(candidate);
-        }
-      }
-      if (channel == null) {
-        channel = createChannel();
-        logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
-      }
-      return channel;
-    } catch (Exception exception) {
-      if (!isUnbounded) {
-        semaphore.release();
-      }
-      throw exception;
-    }
+    var channel = createChannel();
+    logger.debug("Created new channel. Pool size: {}, max size: {}", size(), isUnbounded ? "unbounded" : maxSize);
+    return channel;
   }
 
   /**
-   * Releases a channel back to the pool.
+   * Returns a channel to the pool, or discards it when the pool is closed or the channel unhealthy.
+   * The caller returns the permit it holds.
    *
    * @param channel the channel to return to the pool
    * @throws IllegalArgumentException if the channel was not acquired from this pool
    */
-  private void release(ManagedChannel channel) {
+  private void returnChannel(ManagedChannel channel) {
     requireNonNull(channel, "channel must not be null");
+    if (shutdown.get()) {
+      // close() has already forgotten every channel: shut this one down without checking its origin.
+      logger.trace("Pool is shutdown, closing released channel");
+      allChannels.remove(channel);
+      channel.shutdown();
+      return;
+    }
     if (!allChannels.contains(channel)) throw new IllegalArgumentException("Channel was not acquired from this pool");
 
-    try {
-      if (shutdown.get()) {
-        logger.trace("Pool is shutdown, closing released channel");
-        shutdownChannel(channel);
-        allChannels.remove(channel);
-        return;
-      }
-
-      if (isChannelHealthy(channel)) {
-        availableChannels.offer(channel);
-        logger.trace("Channel returned to the pool");
-      } else {
-        logger.debug("Discarding unhealthy channel on release. Channel state: {}", channel.getState(false));
-        shutdownChannel(channel);
-        allChannels.remove(channel);
-      }
-    } finally {
-      if (!isUnbounded) {
-        semaphore.release();
-      }
+    if (isChannelHealthy(channel)) {
+      availableChannels.offer(channel);
+      logger.trace("Channel returned to the pool");
+    } else {
+      logger.debug("Discarding unhealthy channel on release. Channel state: {}", channel.getState(false));
+      discard(channel);
     }
   }
+
 
   private ManagedChannel createChannel() {
     var channel = channelFactory.get();
@@ -365,6 +368,15 @@ public final class ManagedChannelPool implements ChannelPool {
       case READY, IDLE, CONNECTING -> true;
       case TRANSIENT_FAILURE, SHUTDOWN -> false;
     };
+  }
+
+  /**
+   * Drops a channel that carries no call, without waiting for its termination: this runs on
+   * callers' and gRPC callback threads, which must never block.
+   */
+  private void discard(ManagedChannel channel) {
+    allChannels.remove(channel);
+    channel.shutdown();
   }
 
   private void shutdownChannel(ManagedChannel channel) {
@@ -387,4 +399,6 @@ public final class ManagedChannelPool implements ChannelPool {
       throw new IllegalStateException("Channel pool has been shut down");
     }
   }
+
+
 }

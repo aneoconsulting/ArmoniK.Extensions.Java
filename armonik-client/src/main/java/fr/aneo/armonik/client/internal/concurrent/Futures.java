@@ -151,6 +151,16 @@ public final class Futures {
   }
 
   /**
+   * Returns a throwable as a runtime exception, wrapping it only when it is checked.
+   *
+   * @param throwable the throwable, typically the cause of an {@code ExecutionException}
+   * @return the throwable itself when it is a runtime exception, a wrapping {@link RuntimeException} otherwise
+   */
+  public static RuntimeException asRuntimeException(Throwable throwable) {
+    return throwable instanceof RuntimeException runtimeException ? runtimeException : new RuntimeException(throwable);
+  }
+
+  /**
    * Creates a Guava {@link FutureCallback} that completes the provided {@link CompletableFuture}
    * according to the source future's outcome.
    * <p>

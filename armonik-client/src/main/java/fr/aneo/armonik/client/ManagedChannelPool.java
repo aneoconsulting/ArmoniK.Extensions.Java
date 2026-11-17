@@ -56,7 +56,10 @@ import static java.util.Objects.requireNonNull;
  *   <li>Configurable retry policy for handling transient failures</li>
  * </ul>
  * <p>
- * Each channel carries one call at a time.
+ * Each channel carries one call at a time. A call on a dedicated connection is not affected when
+ * another connection is cut, for instance by an intermediate proxy, and shared HTTP/2 connections
+ * caused problems in the C++ and C# SDKs. The cost is one TCP and TLS connection per call in flight,
+ * and a throughput of at most about the pool size divided by the duration of a call.
  * <p>
  * The pool also maintains a {@link RetryPolicy} that defines how operations should handle
  * and retry transient failures such as network issues or temporary unavailability.
@@ -252,20 +255,7 @@ public final class ManagedChannelPool implements ChannelPool {
    * @throws NullPointerException if channelFactory is null
    */
   public static ManagedChannelPool createUnbounded(Supplier<ManagedChannel> channelFactory) {
-    return createUnbounded(RetryPolicy.DEFAULT, channelFactory);
-  }
-
-  /**
-   * Creates an unbounded channel pool with a custom retry policy.
-   *
-   * @param retryPolicy    retry policy for handling transient failures
-   * @param channelFactory factory for creating new gRPC channels
-   * @return an unbounded channel pool with the specified retry policy
-   * @throws NullPointerException if retryPolicy or channelFactory is null
-   * @see #createUnbounded(Supplier)
-   */
-  public static ManagedChannelPool createUnbounded(RetryPolicy retryPolicy, Supplier<ManagedChannel> channelFactory) {
-    return new ManagedChannelPool(0, retryPolicy, channelFactory);
+    return new ManagedChannelPool(0, RetryPolicy.DEFAULT, channelFactory);
   }
 
   /**

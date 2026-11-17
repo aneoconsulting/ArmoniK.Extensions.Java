@@ -28,6 +28,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -44,8 +45,22 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public int metadataCalls;
   public volatile RuntimeException metadataError;
   public volatile byte[] failingUploadData;
+  /** Delay before an upload whose data is failingUploadData is answered with its error. */
+  public volatile long failingUploadDelayMillis;
   public final AtomicInteger downloadCalls = new AtomicInteger();
   private final List<CompletableFuture<UploadedDataInfo>> pendingUploads = new CopyOnWriteArrayList<>();
+  /** DataChunkMaxSize returned by GetServiceConfiguration; 0 leaves the call unimplemented, as an old control plane would. */
+  public volatile int dataChunkMaxSize;
+  public final AtomicInteger serviceConfigurationCalls = new AtomicInteger();
+  /** When set, GetServiceConfiguration fails with this error. */
+  public volatile RuntimeException serviceConfigurationError;
+  public final List<CreateResultsRequest> createResultsRequests = new CopyOnWriteArrayList<>();
+  /** Data received through CreateResults, by result id. */
+  public final Map<String, byte[]> createdData = new ConcurrentHashMap<>();
+  /** Number of next CreateResults calls that fail with UNAVAILABLE. */
+  public final AtomicInteger failingCreateResults = new AtomicInteger();
+  /** When set, a CreateResults call holding a result of this name fails with INVALID_ARGUMENT. */
+  public volatile String rejectedCreateResultsName;
 
 
   public void failDownloadFor(BlobId id) {
@@ -66,8 +81,61 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.metadataCalls = 0;
     this.metadataError = null;
     this.failingUploadData = null;
+    this.failingUploadDelayMillis = 0;
     this.downloadCalls.set(0);
     this.pendingUploads.clear();
+    this.dataChunkMaxSize = 0;
+    this.serviceConfigurationCalls.set(0);
+    this.serviceConfigurationError = null;
+    this.createResultsRequests.clear();
+    this.createdData.clear();
+    this.failingCreateResults.set(0);
+    this.rejectedCreateResultsName = null;
+  }
+
+  @Override
+  public void getServiceConfiguration(fr.aneo.armonik.api.grpc.v1.Objects.Empty request, StreamObserver<ResultsServiceConfigurationResponse> responseObserver) {
+    serviceConfigurationCalls.incrementAndGet();
+    if (serviceConfigurationError != null) {
+      responseObserver.onError(serviceConfigurationError);
+      return;
+    }
+    if (dataChunkMaxSize <= 0) {
+      super.getServiceConfiguration(request, responseObserver);
+      return;
+    }
+    responseObserver.onNext(ResultsServiceConfigurationResponse.newBuilder().setDataChunkMaxSize(dataChunkMaxSize).build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void createResults(CreateResultsRequest request, StreamObserver<CreateResultsResponse> responseObserver) {
+    if (failingCreateResults.getAndUpdate(remaining -> Math.max(remaining - 1, 0)) > 0) {
+      responseObserver.onError(io.grpc.Status.UNAVAILABLE.withDescription("transient failure").asRuntimeException());
+      return;
+    }
+    if (rejectedCreateResultsName != null && request.getResultsList().stream().anyMatch(result -> result.getName().equals(rejectedCreateResultsName))) {
+      responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT.withDescription("rejected result " + rejectedCreateResultsName).asRuntimeException());
+      return;
+    }
+    if (request.getSerializedSize() > dataChunkMaxSize) {
+      responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT.withDescription("request larger than DataChunkMaxSize").asRuntimeException());
+      return;
+    }
+    createResultsRequests.add(request);
+    var builder = CreateResultsResponse.newBuilder();
+    request.getResultsList().forEach(result -> {
+      var id = UUID.randomUUID().toString();
+      createdData.put(id, result.getData().toByteArray());
+      builder.addResults(ResultRaw.newBuilder()
+                                  .setResultId(id)
+                                  .setName(result.getName())
+                                  .setManualDeletion(result.getManualDeletion())
+                                  .setCreatedAt(Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()).build())
+                                  .build());
+    });
+    responseObserver.onNext(builder.build());
+    responseObserver.onCompleted();
   }
 
   @Override
@@ -152,6 +220,13 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
       @Override
       public void onCompleted() {
         if (failingUploadData != null && Arrays.equals(failingUploadData, uploadedDataInfo.receivedData.toByteArray())) {
+          if (failingUploadDelayMillis > 0) {
+            try {
+              Thread.sleep(failingUploadDelayMillis);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
           pendingUploads.remove(uploadCompletion);
           responseObserver.onError(io.grpc.Status.INTERNAL.withDescription("Upload failed").asRuntimeException());
           uploadCompletion.completeExceptionally(new IllegalStateException("Upload failed"));

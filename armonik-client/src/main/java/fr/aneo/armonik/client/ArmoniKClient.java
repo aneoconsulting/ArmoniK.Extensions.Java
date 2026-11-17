@@ -60,6 +60,7 @@ public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
   private final TaskSubmissionBatching taskSubmissionBatching;
   final int DEFAULT_CHANNEL_POOL_SIZE = 50;
+  private final ResultsServiceConfiguration resultsServiceConfiguration;
 
 
   /**
@@ -83,6 +84,7 @@ public class ArmoniKClient implements AutoCloseable {
       () -> createChannel(armoniKConfig)
     );
     this.taskSubmissionBatching = armoniKConfig.taskSubmissionBatching();
+    this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
   }
 
   ArmoniKClient(ChannelPool channelPool) {
@@ -92,6 +94,7 @@ public class ArmoniKClient implements AutoCloseable {
   ArmoniKClient(ChannelPool channelPool, TaskSubmissionBatching taskSubmissionBatching) {
     this.channelPool = channelPool;
     this.taskSubmissionBatching = taskSubmissionBatching;
+    this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
   }
 
 
@@ -118,7 +121,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     var sessionInfo = createSession(sessionDefinition);
-    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration);
   }
 
   /**
@@ -159,7 +162,7 @@ public class ArmoniKClient implements AutoCloseable {
         toTaskConfiguration(sessionResponse.getSession().getOptions())
       );
 
-      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching);
+      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration);
     } catch (Exception e) {
       throw new ArmoniKException(e.getMessage(), e);
     }

@@ -37,6 +37,12 @@ public final class ArmoniKConfig {
   private final String clientP12Password;
   private final RetryPolicy retryPolicy;
   private final TaskSubmissionBatching taskSubmissionBatching;
+  private final int channelPoolSize;
+
+  /**
+   * Default number of channels, that is of calls in flight, per client.
+   */
+  public static final int DEFAULT_CHANNEL_POOL_SIZE = 50;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -48,6 +54,7 @@ public final class ArmoniKConfig {
     this.clientP12Password = builder.clientP12Password;
     this.retryPolicy = builder.retryPolicy;
     this.taskSubmissionBatching = builder.taskSubmissionBatching;
+    this.channelPoolSize = builder.channelPoolSize;
   }
 
   /**
@@ -137,6 +144,16 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the number of channels of the client, which is also the number of calls it runs at once.
+   *
+   * @return the channel pool size, at least 1
+   * @see Builder#withChannelPoolSize(int)
+   */
+  public int channelPoolSize() {
+    return channelPoolSize;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -154,6 +171,7 @@ public final class ArmoniKConfig {
   public static final class Builder {
     private RetryPolicy retryPolicy = DEFAULT;
     private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
+    private int channelPoolSize = DEFAULT_CHANNEL_POOL_SIZE;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -278,6 +296,23 @@ public final class ArmoniKConfig {
     }
 
     /**
+     * Sets the number of channels of the client, that is of HTTP/2 connections to the control plane.
+     * <p>
+     * Each channel carries one call at a time, so this is also the number of calls the client runs at
+     * once, whichever session starts them; a call that finds every channel busy waits for one without
+     * blocking any thread. One connection per call costs one TCP and TLS connection per call in flight,
+     * and caps the throughput at about this size divided by the duration of a call, network round
+     * trip included. Raise it for a distant control plane or many concurrent transfers.
+     *
+     * @param channelPoolSize the number of channels, at least 1; defaults to {@link ArmoniKConfig#DEFAULT_CHANNEL_POOL_SIZE}
+     * @return this builder
+     */
+    public Builder withChannelPoolSize(int channelPoolSize) {
+      this.channelPoolSize = channelPoolSize;
+      return this;
+    }
+
+    /**
      * Builds the immutable {@link ArmoniKConfig} instance.
      * <p>
      * Validates that the configuration is consistent and all required fields are set.
@@ -293,6 +328,9 @@ public final class ArmoniKConfig {
     private void validate() {
       if (endpoint == null || endpoint.isBlank())
         throw new IllegalArgumentException("endpoint is required");
+
+      if (channelPoolSize < 1)
+        throw new IllegalArgumentException("channelPoolSize must be at least 1, got: " + channelPoolSize);
 
       if (clientCertPem != null && clientKeyPem == null)
         throw new IllegalArgumentException("clientKeyPem is required when clientCertPem is specified");

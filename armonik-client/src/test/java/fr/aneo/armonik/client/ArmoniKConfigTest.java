@@ -198,4 +198,23 @@ class ArmoniKConfigTest {
     assertThat(defaultConfig.taskSubmissionBatching()).isEqualTo(TaskSubmissionBatching.DEFAULT);
     assertThat(customConfig.taskSubmissionBatching()).isEqualTo(customBatching);
   }
+
+  @Test
+  @DisplayName("should default the channel pool size to 50 and accept a custom one")
+  void should_default_and_customize_channel_pool_size() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThat(builder.build().channelPoolSize()).isEqualTo(ArmoniKConfig.DEFAULT_CHANNEL_POOL_SIZE).isEqualTo(50);
+    assertThat(builder.withChannelPoolSize(1).build().channelPoolSize()).isEqualTo(1);
+    assertThat(builder.withChannelPoolSize(200).build().channelPoolSize()).isEqualTo(200);
+  }
+
+  @Test
+  @DisplayName("should reject a channel pool size below 1")
+  void should_reject_channel_pool_size_below_one() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThatThrownBy(() -> builder.withChannelPoolSize(0).build()).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> builder.withChannelPoolSize(-1).build()).isInstanceOf(IllegalArgumentException.class);
+  }
 }

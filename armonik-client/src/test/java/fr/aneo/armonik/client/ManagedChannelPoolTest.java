@@ -21,8 +21,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -344,9 +347,11 @@ class ManagedChannelPoolTest {
     pool.executeAsync(executeOperation(acquired, operation1));
     pool.executeAsync(executeOperation(acquired, operation2));
     pool.executeAsync(executeOperation(acquired, operation3));
-    operation1.complete("ok-1");
-    operation2.complete("ok-2");
+    // Released channels are reused most recent first: release the healthy one first, so the two
+    // channels that degrade are found, and discarded, before it.
     operation3.complete("ok-3");
+    operation2.complete("ok-2");
+    operation1.complete("ok-1");
 
     // Degrade channel 1 and channel 2
     when(degradingChannel1.getState(false)).thenReturn(TRANSIENT_FAILURE);
@@ -409,6 +414,51 @@ class ManagedChannelPoolTest {
       Thread.sleep(10);
     }
     assertThat(condition.getAsBoolean()).isTrue();
+  }
+
+  @Test
+  @DisplayName("pool should reuse the most recently released channel first")
+  void pool_should_reuse_the_most_recently_released_channel_first() {
+    // Given
+    pool = ManagedChannelPool.create(5, this::createHealthyChannel);
+    var first = new CompletableFuture<>();
+    var second = new CompletableFuture<>();
+    var firstChannel = new AtomicReference<ManagedChannel>();
+    var secondChannel = new AtomicReference<ManagedChannel>();
+    pool.executeAsync(ch -> { firstChannel.set(ch); return first; });
+    pool.executeAsync(ch -> { secondChannel.set(ch); return second; });
+
+    // When: the first channel is released, then the second
+    first.complete("1");
+    second.complete("2");
+
+    // Then: the next call gets the second, released last
+    ManagedChannel reused = pool.execute(ch -> ch);
+    assertThat(reused).isSameAs(secondChannel.get());
+  }
+
+  @Test
+  @DisplayName("pool should shut down channels left unused longer than the maximum idle time")
+  void pool_should_shut_down_channels_left_unused_too_long() {
+    // Given
+    var now = new AtomicLong();
+    pool = ManagedChannelPool.create(0, this::createHealthyChannel, Duration.ofMinutes(5), now::get);
+    var busy = range(0, 3).mapToObj(i -> new CompletableFuture<>()).toList();
+    var channels = new CopyOnWriteArrayList<ManagedChannel>();
+    busy.forEach(call -> pool.executeAsync(ch -> { channels.add(ch); return call; }));
+    busy.forEach(call -> call.complete("done"));
+    assertThat(pool.size()).isEqualTo(3);
+
+    // When: one channel keeps serving calls while the others stay unused past the idle time
+    now.addAndGet(Duration.ofMinutes(4).toNanos());
+    var reused = pool.execute(ch -> ch);
+    now.addAndGet(Duration.ofMinutes(2).toNanos());
+    pool.execute(ch -> ch);
+
+    // Then: the two unused channels are shut down, the one in use is kept
+    assertThat(pool.size()).isEqualTo(1);
+    channels.stream().filter(ch -> ch != reused).forEach(ch -> verify(ch).shutdown());
+    verify(reused, never()).shutdown();
   }
 
   @Test

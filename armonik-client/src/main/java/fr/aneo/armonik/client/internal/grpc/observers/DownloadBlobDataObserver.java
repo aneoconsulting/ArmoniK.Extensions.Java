@@ -20,6 +20,8 @@ import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.BlobHandle;
 import fr.aneo.armonik.client.BlobId;
 import fr.aneo.armonik.client.SessionId;
+import io.grpc.stub.ClientCallStreamObserver;
+import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
 
+import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDataRequest;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDataResponse;
 
 /**
@@ -47,7 +50,7 @@ import static fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.DownloadResultDa
  * @see UploadBlobDataObserver
  * @see StreamObserver
  */
-public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDataResponse> {
+public class DownloadBlobDataObserver implements ClientResponseObserver<DownloadResultDataRequest, DownloadResultDataResponse> {
   private static final Logger logger = LoggerFactory.getLogger(DownloadBlobDataObserver.class);
   /** Largest array the JVM reliably allocates: a few words below {@code Integer.MAX_VALUE} are taken by the array header. */
   private static final long MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
@@ -59,6 +62,8 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   private final SessionId sessionId;
   private final BlobId blobId;
   private final long maxSize;
+  /** The call this observer receives, so that it can stop a download it gives up on. */
+  private volatile ClientCallStreamObserver<DownloadResultDataRequest> call;
 
   /**
    * Creates a new download observer for the specified blob within a session context.
@@ -86,13 +91,22 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
   }
 
   @Override
+  public void beforeStart(ClientCallStreamObserver<DownloadResultDataRequest> requestStream) {
+    this.call = requestStream;
+  }
+
+  @Override
   public void onNext(DownloadResultDataResponse chunk) {
     if (result.isDone()) return;
     var data = chunk.getDataChunk();
     size += data.size();
     if (size > maxSize) {
-      // Fail now and drop what was received, rather than keep the data until the stream ends
+      // Fail now and drop what was received, rather than keep the data until the stream ends. The call is
+      // cancelled before the result fails: the result returns the channel to the pool, which must not lend it
+      // to another call while the server is still sending the rest of the blob.
       chunks.clear();
+      var call = this.call;
+      if (call != null) call.cancel("Blob larger than a Java array can hold", null);
       result.setException(new IllegalStateException("Blob " + blobId.asString() + " of session " + sessionId.asString()
         + " is over " + maxSize + " bytes, larger than a Java array can hold"));
       return;
@@ -102,6 +116,12 @@ public class DownloadBlobDataObserver implements StreamObserver<DownloadResultDa
 
   @Override
   public void onError(Throwable throwable) {
+    if (result.isDone()) {
+      // The CANCELLED error that follows a download this observer gave up on
+      logger.debug("Blob download stopped: sessionId={}, blobId={}", sessionId.asString(), blobId.asString());
+      chunks.clear();
+      return;
+    }
     logger.error("Blob download failed: operation={}, sessionId={}, blobId={}, error={}",
       "downloadBlob", sessionId.asString(), blobId.asString(), throwable.getClass().getSimpleName(),
       throwable);

@@ -33,6 +33,11 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
  * <p>
  * Implementations of this interface must be thread-safe, as callback methods may be invoked
  * concurrently from multiple threads.
+ * <p>
+ * The callbacks run on the client's listener executor (see {@link ArmoniKConfig.Builder#withListenerExecutor}),
+ * by default never on the threads that complete the client's gRPC calls: a callback may take time without
+ * delaying submissions, uploads or downloads, only the other callbacks. An output counts as processed,
+ * for {@link SessionHandle#awaitOutputsProcessed()}, once its callback has returned.
  *
  * @see BlobCompletionEventWatcher
  * @see SessionHandle#awaitOutputsProcessed()
@@ -47,9 +52,8 @@ public interface BlobCompletionListener {
    * a blob operation completes successfully. The provided blob contains both metadata
    * and the actual data content.
    * <p>
-   * Implementations should complete quickly to avoid blocking the event processing
-   * pipeline. For CPU-intensive operations, consider offloading work to a separate
-   * thread or executor service.
+   * A slow implementation delays the other callbacks of the client, not its gRPC calls; size the
+   * listener executor to the work done here.
    *
    * @param blob the completed blob containing metadata and data content
    * @see Blob

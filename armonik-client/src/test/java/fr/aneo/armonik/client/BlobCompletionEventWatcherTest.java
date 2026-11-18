@@ -32,6 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
@@ -198,6 +199,28 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     call.run();
     idle.get(3, SECONDS);
     assertThat(listener.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should still notify the listener when the listener executor rejects the call")
+  @Timeout(5)
+  void should_notify_listener_when_executor_rejects() throws Exception {
+    // Given: an executor that rejects every call, as a shut down or saturated one does
+    var completed = blobInfo("completed");
+    var aborted = blobInfo("aborted");
+    var watcher = watcher(listener, true, task -> {
+      throw new RejectedExecutionException("shut down");
+    }, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(completed), handle(aborted)));
+    resultsGrpcMock.setStatus(completed.id(), RESULT_STATUS_COMPLETED);
+    resultsGrpcMock.setStatus(aborted.id(), RESULT_STATUS_ABORTED);
+
+    // Then: both outputs reach the listener and the watcher becomes idle
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(1);
+    assertThat(listener.errors).hasSize(1);
   }
 
   @Test

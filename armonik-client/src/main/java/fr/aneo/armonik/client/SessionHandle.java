@@ -28,6 +28,7 @@ import io.grpc.ManagedChannel;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
@@ -112,8 +113,19 @@ public final class SessionHandle {
                 TaskSubmissionBatching batching,
                 ResultsServiceConfiguration resultsServiceConfiguration,
                 ChannelPool eventChannelPool) {
+    this(sessionInfo, outputListener, channelPool, batching, resultsServiceConfiguration, eventChannelPool, Runnable::run);
+  }
+
+  SessionHandle(SessionInfo sessionInfo,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool,
+                Executor listenerExecutor) {
     this(sessionInfo, channelPool, new TaskSubmitter(requireNonNull(sessionInfo, "sessionInfo must not be null").id(),
-      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration, eventChannelPool));
+      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration,
+      eventChannelPool, listenerExecutor));
   }
 
   SessionHandle(SessionInfo sessionInfo, ChannelPool channelPool, TaskSubmitter taskSubmitter) {

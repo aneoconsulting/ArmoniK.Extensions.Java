@@ -24,6 +24,10 @@ import io.grpc.ManagedChannel;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.*;
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.toSessionState;
@@ -63,6 +67,9 @@ public class ArmoniKClient implements AutoCloseable {
   private final ManagedChannelPool ownedEventChannelPool;
   private final TaskSubmissionBatching taskSubmissionBatching;
   private final ResultsServiceConfiguration resultsServiceConfiguration;
+  private final Executor listenerExecutor;
+  /** The listener executor this client created, and shuts down on close; null when the application supplied it. */
+  private final ExecutorService ownedListenerExecutor;
 
 
   /**
@@ -93,6 +100,13 @@ public class ArmoniKClient implements AutoCloseable {
     this.eventChannelPool = ownedEventChannelPool;
     this.taskSubmissionBatching = armoniKConfig.taskSubmissionBatching();
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
+    if (armoniKConfig.listenerExecutor() != null) {
+      this.listenerExecutor = armoniKConfig.listenerExecutor();
+      this.ownedListenerExecutor = null;
+    } else {
+      this.ownedListenerExecutor = newListenerExecutor();
+      this.listenerExecutor = ownedListenerExecutor;
+    }
   }
 
   ArmoniKClient(ChannelPool channelPool) {
@@ -105,6 +119,8 @@ public class ArmoniKClient implements AutoCloseable {
     this.ownedEventChannelPool = null;
     this.taskSubmissionBatching = taskSubmissionBatching;
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
+    this.listenerExecutor = Runnable::run;
+    this.ownedListenerExecutor = null;
   }
 
 
@@ -131,7 +147,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     var sessionInfo = createSession(sessionDefinition);
-    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor);
   }
 
   /**
@@ -172,7 +188,7 @@ public class ArmoniKClient implements AutoCloseable {
         toTaskConfiguration(sessionResponse.getSession().getOptions())
       );
 
-      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool);
+      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor);
     } catch (Exception e) {
       throw new ArmoniKException(e.getMessage(), e);
     }
@@ -285,6 +301,20 @@ public class ArmoniKClient implements AutoCloseable {
     // which also reports the outputs still awaited as failed
     if (ownedEventChannelPool != null) ownedEventChannelPool.closeNow();
     channelPool.close();
+    if (ownedListenerExecutor != null) ownedListenerExecutor.shutdown();
+  }
+
+  /**
+   * Creates the executor running this client's listener calls: one daemon thread per available
+   * processor, separate from the threads that complete gRPC calls.
+   */
+  private static ExecutorService newListenerExecutor() {
+    var counter = new AtomicInteger();
+    return Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors(), runnable -> {
+      var thread = new Thread(runnable, "ArmoniK-Listener-" + counter.getAndIncrement());
+      thread.setDaemon(true);
+      return thread;
+    });
   }
 
   private SessionInfo createSession(SessionDefinition definition) {

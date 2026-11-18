@@ -46,6 +46,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -576,19 +577,21 @@ final class BlobCompletionEventWatcher {
   }
 
   private void notify(Runnable call) {
+    Runnable counted = () -> {
+      try {
+        call.run();
+      } catch (Throwable throwable) {
+        logger.error("Listener threw an exception. SessionId: {}", sessionId.asString(), throwable);
+      } finally {
+        done();
+      }
+    };
     try {
-      listenerExecutor.execute(() -> {
-        try {
-          call.run();
-        } catch (Throwable throwable) {
-          logger.error("Listener threw an exception. SessionId: {}", sessionId.asString(), throwable);
-        } finally {
-          done();
-        }
-      });
-    } catch (RuntimeException rejected) {
-      logger.error("The listener executor rejected a call. SessionId: {}", sessionId.asString(), rejected);
-      done();
+      listenerExecutor.execute(counted);
+    } catch (RejectedExecutionException rejected) {
+      // A shut down or saturated executor must neither lose the output nor leave waiters hanging
+      logger.warn("The listener executor rejected a call, running it on the current thread. SessionId: {}", sessionId.asString(), rejected);
+      counted.run();
     }
   }
 

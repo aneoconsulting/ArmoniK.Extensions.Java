@@ -16,6 +16,7 @@
 package fr.aneo.armonik.client;
 
 import java.net.URI;
+import java.util.concurrent.Executor;
 
 import static fr.aneo.armonik.client.RetryPolicy.DEFAULT;
 import static java.util.Objects.requireNonNullElse;
@@ -45,6 +46,7 @@ public final class ArmoniKConfig {
   private final TaskSubmissionBatching taskSubmissionBatching;
   private final int channelPoolSize;
   private final int eventChannelPoolSize;
+  private final Executor listenerExecutor;
 
   /**
    * Default number of channels, that is of calls in flight, per client.
@@ -68,6 +70,7 @@ public final class ArmoniKConfig {
     this.taskSubmissionBatching = builder.taskSubmissionBatching;
     this.channelPoolSize = builder.channelPoolSize;
     this.eventChannelPoolSize = builder.eventChannelPoolSize;
+    this.listenerExecutor = builder.listenerExecutor;
   }
 
   /**
@@ -207,6 +210,17 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the executor running the {@link BlobCompletionListener} calls, or null when the client
+   * creates its own.
+   *
+   * @return the application-supplied listener executor, or null
+   * @see Builder#withListenerExecutor(Executor)
+   */
+  public Executor listenerExecutor() {
+    return listenerExecutor;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -226,6 +240,7 @@ public final class ArmoniKConfig {
     private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
     private int channelPoolSize = DEFAULT_CHANNEL_POOL_SIZE;
     private int eventChannelPoolSize = DEFAULT_EVENT_CHANNEL_POOL_SIZE;
+    private Executor listenerExecutor;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -394,6 +409,25 @@ public final class ArmoniKConfig {
      */
     public Builder withEventChannelPoolSize(int eventChannelPoolSize) {
       this.eventChannelPoolSize = eventChannelPoolSize;
+      return this;
+    }
+
+    /**
+     * Sets the executor running the {@link BlobCompletionListener} calls.
+     * <p>
+     * Listener calls are application code and may take time: they never run on the threads that
+     * complete the client's gRPC calls, so a slow listener only delays other listener calls, never
+     * submissions, uploads or downloads. By default each client runs them on its own pool of one
+     * daemon thread per available processor, shut down with the client. An executor supplied here
+     * is used as is, and left running when the client closes; it must not run tasks on the calling
+     * thread, or the listener calls run on the gRPC threads again. A call the executor rejects runs
+     * on the current thread, so that no output is lost.
+     *
+     * @param listenerExecutor the executor, or null for the client's own
+     * @return this builder
+     */
+    public Builder withListenerExecutor(Executor listenerExecutor) {
+      this.listenerExecutor = listenerExecutor;
       return this;
     }
 

@@ -241,6 +241,35 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should give up awaiting outputs after the timeout, and wait for them again later")
+  void should_give_up_awaiting_outputs_after_timeout() throws Exception {
+    // Given: an output that does not complete
+    var task = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                            .withOutput("output"));
+
+    // When
+    var start = System.nanoTime();
+    var processed = sessionHandle.awaitOutputsProcessed(Duration.ofMillis(200));
+
+    // Then: the wait gives up after the timeout, and checks at once with a zero timeout
+    assertThat(processed).isFalse();
+    assertThat(System.nanoTime() - start).isBetween(MILLISECONDS.toNanos(200), SECONDS.toNanos(3));
+    assertThat(sessionHandle.awaitOutputsProcessed(Duration.ZERO)).isFalse();
+
+    // And: once the output completes, a later call returns true
+    resultsGrpcMock.setStatus(idFrom(task.outputs().get("output")), RESULT_STATUS_COMPLETED);
+    assertThat(sessionHandle.awaitOutputsProcessed(Duration.ofSeconds(3))).isTrue();
+    assertThat(outputTaskListener.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should return at once from a timed wait when nothing is pending")
+  void should_return_at_once_from_timed_wait_when_nothing_pending() throws Exception {
+    assertThat(sessionHandle.awaitOutputsProcessed(Duration.ZERO)).isTrue();
+    assertThatThrownBy(() -> sessionHandle.awaitOutputsProcessed(null)).isInstanceOf(NullPointerException.class);
+  }
+
+  @Test
   @DisplayName("should report outputs as failed and stop waiting when the task submission fails")
   void should_report_outputs_as_failed_when_submission_fails() {
     // Given

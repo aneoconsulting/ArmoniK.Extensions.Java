@@ -408,6 +408,27 @@ class ManagedChannelPoolTest {
       .hasCauseInstanceOf(IllegalStateException.class);
   }
 
+  @Test
+  @DisplayName("close now should shut every channel down at once and fail operations waiting for one")
+  @Timeout(5)
+  void close_now_should_shut_channels_down_at_once() {
+    // Given: the only channel carries a call that never ends, and another call waits for it
+    var channel = createHealthyChannel();
+    pool = ManagedChannelPool.create(1, () -> channel);
+    pool.executeAsync(ch -> new CompletableFuture<>());
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("never")).toCompletableFuture();
+
+    // When
+    pool.closeNow();
+
+    // Then: no graceful shutdown is attempted, and the pool reports itself closed
+    verify(channel).shutdownNow();
+    verify(channel, never()).shutdown();
+    assertThat(pool.isClosed()).isTrue();
+    assertThat(pool.size()).isZero();
+    assertThatThrownBy(() -> waiting.get(2, SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+  }
+
   private static void awaitCondition(BooleanSupplier condition) throws InterruptedException {
     var deadline = System.nanoTime() + SECONDS.toNanos(2);
     while (!condition.getAsBoolean() && System.nanoTime() < deadline) {

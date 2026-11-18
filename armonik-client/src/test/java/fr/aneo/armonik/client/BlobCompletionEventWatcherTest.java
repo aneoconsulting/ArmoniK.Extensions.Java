@@ -325,7 +325,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("should report pending outputs as failed once the pool is closed, and outputs enqueued afterwards")
+  @DisplayName("should report pending outputs as failed at once when the pool is closed, and outputs enqueued afterwards")
   @Timeout(5)
   void should_stop_once_pool_is_closed() throws Exception {
     // Given: an output that never completes
@@ -335,13 +335,16 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
     var idle = watcher.waitUntilIdle().toCompletableFuture();
 
-    // When
-    channelPool.close();
+    // When: the pool is closed at once, as the client closes its event pool
+    var closing = System.nanoTime();
+    channelPool.closeNow();
 
-    // Then
+    // Then: the output is reported without waiting, and the subscription is not reopened
     idle.get(3, SECONDS);
+    assertThat(System.nanoTime() - closing).isLessThan(SECONDS.toNanos(1));
     assertThat(listener.errors).hasSize(1);
     assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
+    assertThat(eventsGrpcMock.requests).hasSize(1);
 
     // And: an output enqueued afterwards is reported instead of awaited
     var late = blobInfo("late");

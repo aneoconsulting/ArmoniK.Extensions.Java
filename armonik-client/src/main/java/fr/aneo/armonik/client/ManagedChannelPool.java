@@ -233,6 +233,30 @@ public final class ManagedChannelPool implements ChannelPool {
     }
   }
 
+  /**
+   * Closes the pool at once, cancelling the calls still open instead of waiting for them.
+   * <p>
+   * {@link #close()} lets the calls in flight finish, waiting up to 2 s per channel. A pool whose calls
+   * are streams that only end when cancelled, such as {@code GetEvents}, would wait out that timeout
+   * for every channel. This method shuts every channel down immediately: open calls fail with
+   * {@code UNAVAILABLE}, and operations still waiting for a channel fail with
+   * {@link IllegalStateException}.
+   */
+  public void closeNow() {
+    if (shutdown.compareAndSet(false, true)) {
+      logger.info("Shutting down channel pool at once (size: {})", allChannels.size());
+      channelPermits.close(new IllegalStateException("Channel pool has been shut down"));
+      allChannels.forEach(ManagedChannel::shutdownNow);
+      availableChannels.clear();
+      allChannels.clear();
+    }
+  }
+
+  @Override
+  public boolean isClosed() {
+    return shutdown.get();
+  }
+
   @Override
   public int size() {
     return allChannels.size();

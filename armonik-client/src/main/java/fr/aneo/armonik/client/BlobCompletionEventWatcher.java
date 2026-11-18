@@ -310,7 +310,7 @@ final class BlobCompletionEventWatcher {
   /** Handles the end of a subscription that was not cancelled by this watcher. */
   private void ended(Subscription subscription, Throwable cause) {
     if (subscription.isCancelled()) return;
-    if (cause instanceof IllegalStateException) {
+    if (cause instanceof IllegalStateException || eventChannelPool.isClosed()) {
       stop();
       return;
     }

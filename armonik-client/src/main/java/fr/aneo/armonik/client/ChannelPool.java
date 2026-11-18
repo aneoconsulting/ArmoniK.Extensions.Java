@@ -113,6 +113,15 @@ public interface ChannelPool extends AutoCloseable {
   void close();
 
   /**
+   * Returns whether this pool has been closed. Once closed, a pool fails every new operation.
+   *
+   * @return true once {@link #close()} (or an implementation's own closing method) has been called
+   */
+  default boolean isClosed() {
+    return false;
+  }
+
+  /**
    * Returns the current number of channels in the pool (both idle and in-use).
    * <p>
    * The returned value is a snapshot and may change immediately after this method

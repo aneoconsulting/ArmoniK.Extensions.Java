@@ -25,10 +25,14 @@ import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import io.grpc.ManagedChannel;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
@@ -254,10 +258,39 @@ public final class SessionHandle {
    * of that specific invocation.
    *
    * @see BlobCompletionListener
+   * @see #awaitOutputsProcessed(Duration)
    */
   public void awaitOutputsProcessed() {
     taskSubmitter.flush();
     taskSubmitter.waitUntilFinished().toCompletableFuture().join();
+  }
+
+  /**
+   * Waits, at most {@code timeout}, until the outputs being watched have been processed.
+   * <p>
+   * Same as {@link #awaitOutputsProcessed()}, but gives up after {@code timeout}, for instance
+   * when an output is never reported. Giving up stops only this wait: the outputs are still
+   * watched, and a later call waits for them again. A zero or negative timeout checks without
+   * waiting.
+   *
+   * @param timeout the maximum time to wait
+   * @return {@code true} if every output was processed, {@code false} if the timeout elapsed first
+   * @throws NullPointerException if {@code timeout} is {@code null}
+   * @throws InterruptedException if the calling thread is interrupted while waiting
+   * @see #awaitOutputsProcessed()
+   */
+  public boolean awaitOutputsProcessed(Duration timeout) throws InterruptedException {
+    requireNonNull(timeout, "timeout must not be null");
+    taskSubmitter.flush();
+    var finished = taskSubmitter.waitUntilFinished().toCompletableFuture();
+    try {
+      finished.get(Math.max(0, timeout.toNanos()), TimeUnit.NANOSECONDS);
+      return true;
+    } catch (TimeoutException e) {
+      return false;
+    } catch (ExecutionException e) {
+      throw Futures.asRuntimeException(e.getCause());
+    }
   }
 
   @Override

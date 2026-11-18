@@ -34,6 +34,7 @@ import java.util.List;
 public abstract class InProcessGrpcTestBase {
   protected ManagedChannelPool channelPool;
   private Server server;
+  private String serverName;
 
   /** Subclasses provide the services they want to add to the server. */
   protected abstract List<BindableService> services();
@@ -41,6 +42,7 @@ public abstract class InProcessGrpcTestBase {
   @BeforeEach
   void startServer() throws IOException {
     var name = InProcessServerBuilder.generateName();
+    serverName = name;
     var serverBuilder = InProcessServerBuilder.forName(name).directExecutor();
     services().forEach(serverBuilder::addService);
     server = serverBuilder.build().start();
@@ -51,6 +53,12 @@ public abstract class InProcessGrpcTestBase {
       fastRetryPolicy,
       () -> InProcessChannelBuilder.forName(name).directExecutor().build()
     );
+  }
+
+  /** Creates another pool of {@code size} channels to the same server; the caller closes it. */
+  protected ManagedChannelPool newChannelPool(int size) {
+    var fastRetryPolicy = new RetryPolicy(1, Duration.ofMillis(10), Duration.ofMillis(10), 1);
+    return ManagedChannelPool.create(size, fastRetryPolicy, () -> InProcessChannelBuilder.forName(serverName).directExecutor().build());
   }
 
   @AfterEach

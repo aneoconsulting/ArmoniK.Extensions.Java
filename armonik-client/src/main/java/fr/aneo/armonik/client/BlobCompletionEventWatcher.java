@@ -27,6 +27,7 @@ import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultRawEnumField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultRawField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFilters;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
@@ -55,27 +56,35 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 /**
  * Waits for the outputs of a session through {@code GetEvents} streams filtered on their ids.
  * <p>
- * A subscription watches up to {@link #MAX_IDS_PER_STREAM} outputs. When it opens, the control plane
- * registers its watchers, then sends the current status of every output of its filter, then every
- * status change: an output that completed before the subscription opened is therefore reported too.
- * New outputs are not watched by a stream of their own: they are added to the last subscription,
- * which is reopened with the outputs it still waits for plus the new ones. Reopenings are grouped:
- * new outputs wait {@link #REOPEN_DELAY} (or {@link #OPEN_DELAY} when no subscription is open) so
- * that one reopening covers every output enqueued meanwhile. Only the last subscription is reopened,
- * so a reopening costs the control plane a status query on at most {@link #MAX_IDS_PER_STREAM} ids,
- * whatever the number of pending outputs; a full subscription is never reopened to add outputs.
- * The new subscription is opened before the old one is cancelled; since the new one starts with the
- * current status of its outputs, nothing that changed in between is missed.
+ * A subscription watches up to {@link #MAX_IDS_PER_STREAM} outputs on one channel of the event
+ * channel pool, which it keeps until none of its outputs is pending. When a call opens, the control
+ * plane registers its watchers, then sends the current status of every output of its filter, then
+ * every status change: an output that completed before the call opened is therefore reported too.
+ * <p>
+ * New outputs are not watched by a stream of their own: they join the last subscription, if it is not
+ * full. A subscription still waiting for its channel simply takes them, since its request is built
+ * when the channel is granted. A subscription already open is reopened on the channel it holds: its
+ * call is cancelled and a new one is started with the outputs it still waits for plus the new ones,
+ * and since the new call starts with the current status of its outputs, nothing that changed in
+ * between is missed. Keeping the channel means that a session never loses it to the streams of other
+ * sessions waiting for one. Reopenings are grouped: new outputs wait {@link #REOPEN_DELAY} (or
+ * {@link #OPEN_DELAY} when no subscription is open) so that one reopening covers every output
+ * enqueued meanwhile. Only the last subscription is reopened, so a reopening costs the control plane
+ * a status query on at most {@link #MAX_IDS_PER_STREAM} ids, whatever the number of pending outputs.
  * <p>
  * A subscription is cancelled as soon as none of its outputs is pending, since the control plane
- * never ends one on its own. A subscription that fails or ends is reopened with an exponential
- * backoff from {@link #MIN_BACKOFF} to {@link #MAX_BACKOFF}, reset by any event received; only a
- * status showing that reopening cannot succeed (invalid argument, unknown session, denied access,
- * unimplemented method) reports its outputs as failed. Once the client is closed, every output still
- * pending is reported as failed.
+ * never ends one on its own. A subscription that fails or ends gives its channel back and is reopened
+ * with an exponential backoff from {@link #MIN_BACKOFF} to {@link #MAX_BACKOFF}, reset by any event
+ * received; no subscription is opened before the backoff ends, even for new outputs. Only a status
+ * showing that reopening cannot succeed (invalid argument, unknown session, denied access,
+ * unimplemented method) reports its outputs as failed. When the event channel pool closes, every
+ * output still pending is reported as failed at once, whether or not its subscription is open.
  * <p>
- * Each subscription holds one channel of the event channel pool for as long as it is open, so that
- * it never takes a channel from the calls of the client. Downloads use the client's channel pool.
+ * Subscriptions take their channels from the event channel pool, so that they never take a channel
+ * from the other calls of the client; downloads use the client's channel pool. When every event
+ * channel is held, a subscription waits for one, possibly indefinitely if the streams holding them
+ * wait for outputs that do not progress, such as those of paused sessions; a warning is logged once it
+ * has waited {@link #WAIT_WARNING}.
  */
 final class BlobCompletionEventWatcher {
   private static final Logger logger = LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
@@ -85,6 +94,7 @@ final class BlobCompletionEventWatcher {
   static final Duration REOPEN_DELAY = Duration.ofSeconds(1);
   static final Duration MIN_BACKOFF = Duration.ofSeconds(1);
   static final Duration MAX_BACKOFF = Duration.ofSeconds(30);
+  static final Duration WAIT_WARNING = Duration.ofSeconds(5);
 
   private final SessionId sessionId;
   private final ChannelPool eventChannelPool;
@@ -97,20 +107,26 @@ final class BlobCompletionEventWatcher {
   private final long reopenDelayNanos;
   private final long minBackoffNanos;
   private final long maxBackoffNanos;
+  private final long waitWarningNanos;
 
   private final Map<String, BlobHandle> pending = new ConcurrentHashMap<>();
   private final AtomicInteger inFlight = new AtomicInteger();
 
   private final Object lock = new Object();
-  /** Open subscriptions, in the order they were opened; the last one is the only one reopened. */
+  /** Subscriptions waiting for a channel or open, in the order they were created; only the last one takes new outputs. */
   private final List<Subscription> subscriptions = new ArrayList<>();
   /** The subscription watching each pending output; outputs not yet watched have none. */
   private final Map<String, Subscription> owners = new HashMap<>();
-  /** Pending outputs that no open subscription watches yet. */
+  /** Pending outputs that no subscription watches yet. */
   private final Set<String> unwatched = new LinkedHashSet<>();
   private ScheduledFuture<?> refresh;
   private long refreshAtNanos;
   private long backoffNanos;
+  /** Time before which no subscription is opened, after a failure; 0 when none. */
+  private long retryAtNanos;
+  /** Unregisters this watcher from the pool's close notification; registered only while outputs are pending. */
+  private Runnable closeRegistration;
+  private boolean registering;
   private boolean stopped;
   private CompletableFuture<Void> idleFuture;
 
@@ -121,7 +137,7 @@ final class BlobCompletionEventWatcher {
                              Executor listenerExecutor,
                              ScheduledExecutorService scheduler) {
     this(sessionId, eventChannelPool, listener, downloadData, listenerExecutor, scheduler,
-      MAX_IDS_PER_STREAM, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF);
+      MAX_IDS_PER_STREAM, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF, WAIT_WARNING);
   }
 
   BlobCompletionEventWatcher(SessionId sessionId,
@@ -134,7 +150,8 @@ final class BlobCompletionEventWatcher {
                              Duration openDelay,
                              Duration reopenDelay,
                              Duration minBackoff,
-                             Duration maxBackoff) {
+                             Duration maxBackoff,
+                             Duration waitWarning) {
     this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
     this.eventChannelPool = requireNonNull(eventChannelPool, "eventChannelPool must not be null");
     this.listener = requireNonNull(listener, "listener must not be null");
@@ -147,6 +164,7 @@ final class BlobCompletionEventWatcher {
     this.reopenDelayNanos = reopenDelay.toNanos();
     this.minBackoffNanos = minBackoff.toNanos();
     this.maxBackoffNanos = maxBackoff.toNanos();
+    this.waitWarningNanos = waitWarning.toNanos();
     this.backoffNanos = minBackoffNanos;
   }
 
@@ -165,6 +183,7 @@ final class BlobCompletionEventWatcher {
         }
         var id = info.id().asString();
         boolean watched;
+        boolean register = false;
         long delay = 0;
         synchronized (lock) {
           watched = !stopped;
@@ -172,9 +191,14 @@ final class BlobCompletionEventWatcher {
             pending.put(id, handle);
             unwatched.add(id);
             delay = subscriptions.isEmpty() ? openDelayNanos : reopenDelayNanos;
+            if (closeRegistration == null && !registering) {
+              registering = true;
+              register = true;
+            }
           }
         }
         if (watched) {
+          if (register) registerForClose();
           inFlight.decrementAndGet();
           scheduleRefresh(delay);
           maybeSignalIdle();
@@ -205,7 +229,7 @@ final class BlobCompletionEventWatcher {
     }
   }
 
-  /** Number of open subscriptions, for tests. */
+  /** Number of subscriptions waiting for a channel or open, for tests. */
   int openSubscriptions() {
     synchronized (lock) {
       return subscriptions.size();
@@ -224,18 +248,38 @@ final class BlobCompletionEventWatcher {
     if (toComplete != null) toComplete.complete(null);
   }
 
-  /** Schedules a refresh in {@code delayNanos}, or keeps the one already scheduled if it runs sooner. */
+  /**
+   * Registers {@link #stop()} to run when the event channel pool closes. Called without the lock,
+   * since a pool already closed runs the listener at once.
+   */
+  private void registerForClose() {
+    var registration = eventChannelPool.onClose(this::stop);
+    Runnable toRemove = null;
+    synchronized (lock) {
+      registering = false;
+      if (pending.isEmpty() || stopped) toRemove = registration;
+      else closeRegistration = registration;
+    }
+    if (toRemove != null) toRemove.run();
+  }
+
+  /**
+   * Schedules a refresh in {@code delayNanos}, but not before the end of a running backoff, or keeps
+   * the refresh already scheduled if it runs sooner.
+   */
   private void scheduleRefresh(long delayNanos) {
     synchronized (lock) {
       if (stopped) return;
-      var at = System.nanoTime() + delayNanos;
+      var now = System.nanoTime();
+      var at = now + delayNanos;
+      if (retryAtNanos != 0 && retryAtNanos - at > 0) at = retryAtNanos;
       if (refresh != null && !refresh.isDone()) {
         if (refreshAtNanos - at <= 0) return;
         refresh.cancel(false);
       }
       refreshAtNanos = at;
       try {
-        refresh = scheduler.schedule(this::refresh, delayNanos, NANOSECONDS);
+        refresh = scheduler.schedule(this::refresh, Math.max(0, at - now), NANOSECONDS);
       } catch (RuntimeException e) {
         refresh = null;
         logger.error("Could not schedule the watch of outputs. SessionId: {}", sessionId.asString(), e);
@@ -245,71 +289,115 @@ final class BlobCompletionEventWatcher {
 
   /**
    * Watches the outputs no subscription watches yet: they join the last subscription if it is not
-   * full, which is then reopened, and the rest go to new subscriptions.
+   * full, which is reopened on its channel if it is already open, and the rest go to new subscriptions.
    */
   private void refresh() {
     var toOpen = new ArrayList<Subscription>();
-    var toCancel = new ArrayList<Subscription>();
+    Subscription toReopen = null;
     synchronized (lock) {
       refresh = null;
       if (stopped || unwatched.isEmpty()) return;
-      var ids = new LinkedHashSet<String>();
+      if (retryAtNanos != 0) {
+        if (retryAtNanos - System.nanoTime() > 0) {
+          // Woken before the end of the backoff: wait for it
+          scheduleRefresh(0);
+          return;
+        }
+        retryAtNanos = 0;
+      }
+      var ids = new ArrayList<>(unwatched);
+      unwatched.clear();
+      var next = 0;
       if (!subscriptions.isEmpty()) {
         var last = subscriptions.get(subscriptions.size() - 1);
-        if (last.remaining < maxIdsPerStream) {
-          subscriptions.remove(last);
-          toCancel.add(last);
-          last.ids.stream().filter(id -> owners.get(id) == last).forEach(ids::add);
+        while (next < ids.size() && last.ids.size() < maxIdsPerStream) {
+          var id = ids.get(next++);
+          last.ids.add(id);
+          owners.put(id, last);
         }
+        if (next > 0 && last.channel != null) toReopen = last;
       }
-      ids.addAll(unwatched);
-      unwatched.clear();
-      var chunk = new ArrayList<String>(Math.min(ids.size(), maxIdsPerStream));
-      for (var id : ids) {
-        chunk.add(id);
-        if (chunk.size() == maxIdsPerStream) {
-          toOpen.add(subscribe(chunk));
-          chunk = new ArrayList<>(maxIdsPerStream);
+      while (next < ids.size()) {
+        var subscription = new Subscription();
+        while (next < ids.size() && subscription.ids.size() < maxIdsPerStream) {
+          var id = ids.get(next++);
+          subscription.ids.add(id);
+          owners.put(id, subscription);
         }
+        subscriptions.add(subscription);
+        toOpen.add(subscription);
       }
-      if (!chunk.isEmpty()) toOpen.add(subscribe(chunk));
     }
+    if (toReopen != null) startCall(toReopen, toReopen.channel);
     toOpen.forEach(this::open);
-    toCancel.forEach(Subscription::cancel);
   }
 
-  /** Registers a subscription for {@code ids}; called with the lock held. */
-  private Subscription subscribe(List<String> ids) {
-    var subscription = new Subscription(List.copyOf(ids));
-    subscriptions.add(subscription);
-    ids.forEach(id -> owners.put(id, subscription));
-    return subscription;
-  }
-
+  /** Waits for a channel of the event pool, then starts the subscription's call on it and keeps it. */
   private void open(Subscription subscription) {
-    var request = request(subscription.ids);
-    CompletionStage<Void> stream;
+    scheduleWaitWarning(subscription);
+    CompletionStage<Void> held;
     try {
-      stream = eventChannelPool.executeAsync(channel -> {
-        var ended = new CompletableFuture<Void>();
-        if (subscription.isCancelled()) {
-          ended.complete(null);
-          return ended;
-        }
-        EventsGrpc.newStub(channel).getEvents(request, new Observer(subscription, ended));
-        return ended;
+      held = eventChannelPool.executeAsync(channel -> {
+        startCall(subscription, channel);
+        return subscription.released;
       });
     } catch (RuntimeException e) {
-      stream = CompletableFuture.failedFuture(e);
+      held = CompletableFuture.failedFuture(e);
     }
-    stream.whenComplete((ignored, error) -> {
-      if (error != null) ended(subscription, unwrap(error));
+    held.whenComplete((ignored, error) -> {
+      if (error != null) ended(subscription, -1, unwrap(error));
     });
   }
 
-  /** Handles the end of a subscription that was not cancelled by this watcher. */
-  private void ended(Subscription subscription, Throwable cause) {
-    if (subscription.isCancelled()) return;
+  /**
+   * Starts a call on {@code channel} for the outputs the subscription waits for, cancelling the call it
+   * had, if any: the subscription keeps its channel across reopenings.
+   */
+  private void startCall(Subscription subscription, ManagedChannel channel) {
+    ClientCallStreamObserver<EventSubscriptionRequest> previous;
+    EventSubscriptionRequest request;
+    Observer observer;
+    synchronized (lock) {
+      if (subscription.finished || subscription.ids.isEmpty()) {
+        // Every output it waited for arrived before it got its channel
+        subscription.finish();
+        subscriptions.remove(subscription);
+        return;
+      }
+      subscription.channel = channel;
+      previous = subscription.call;
+      subscription.call = null;
+      subscription.generation++;
+      request = request(List.copyOf(subscription.ids));
+      observer = new Observer(subscription, subscription.generation);
+    }
+    if (previous != null) previous.cancel("Reopened with new outputs", null);
+    EventsGrpc.newStub(channel).getEvents(request, observer);
+  }
+
+  /** Logs a warning once a subscription has waited {@link #WAIT_WARNING} for a channel. */
+  private void scheduleWaitWarning(Subscription subscription) {
+    try {
+      scheduler.schedule(() -> {
+        synchronized (lock) {
+          if (stopped || subscription.finished || subscription.channel != null) return;
+        }
+        logger.warn("Outputs of session {} have waited {} s for an event channel: every channel of the event channel pool " +
+            "({} open) is held by a stream waiting for outputs, for instance those of paused sessions, and new streams wait " +
+            "until one closes. If this persists, raise the event channel pool size a little with ArmoniKConfig.withEventChannelPoolSize.",
+          sessionId.asString(), NANOSECONDS.toSeconds(waitWarningNanos), eventChannelPool.size());
+      }, waitWarningNanos, NANOSECONDS);
+    } catch (RuntimeException ignored) {
+      // The scheduler is shut down: the warning is not needed any more
+    }
+  }
+
+  /**
+   * Handles the end of a subscription's call of {@code generation} (-1 when it never got a channel)
+   * that this watcher did not cancel: its channel goes back to the pool and its outputs are watched
+   * again after a backoff, unless reopening cannot succeed.
+   */
+  private void ended(Subscription subscription, int generation, Throwable cause) {
     if (cause instanceof IllegalStateException || eventChannelPool.isClosed()) {
       stop();
       return;
@@ -318,17 +406,18 @@ final class BlobCompletionEventWatcher {
     List<String> ids;
     long delay;
     synchronized (lock) {
-      if (!subscriptions.remove(subscription)) return;
-      ids = new ArrayList<>();
-      for (var id : subscription.ids) {
-        if (owners.get(id) == subscription) {
-          owners.remove(id);
-          ids.add(id);
-        }
-      }
-      if (retry) unwatched.addAll(ids);
+      if (subscription.finished || (generation >= 0 && generation != subscription.generation)) return;
+      subscription.finish();
+      subscriptions.remove(subscription);
+      ids = new ArrayList<>(subscription.ids);
+      ids.forEach(owners::remove);
+      subscription.ids.clear();
       delay = backoffNanos;
-      if (retry) backoffNanos = Math.min(backoffNanos * 2, maxBackoffNanos);
+      if (retry) {
+        unwatched.addAll(ids);
+        backoffNanos = Math.min(backoffNanos * 2, maxBackoffNanos);
+        retryAtNanos = System.nanoTime() + delay;
+      }
     }
     if (retry) {
       logger.warn("Event stream of session {} ended, watching its {} outputs again in {} ms: {}",
@@ -363,18 +452,23 @@ final class BlobCompletionEventWatcher {
       || code == Status.Code.FAILED_PRECONDITION;
   }
 
+  /** Stops watching, once the client is closed: every pending output is reported as failed. */
   private void stop() {
-    List<Subscription> toCancel;
+    List<Subscription> toFinish;
+    Runnable registration;
     synchronized (lock) {
       if (stopped) return;
       stopped = true;
       if (refresh != null) refresh.cancel(false);
-      toCancel = new ArrayList<>(subscriptions);
+      toFinish = new ArrayList<>(subscriptions);
       subscriptions.clear();
       owners.clear();
       unwatched.clear();
+      registration = closeRegistration;
+      closeRegistration = null;
+      toFinish.forEach(Subscription::finish);
     }
-    toCancel.forEach(Subscription::cancel);
+    if (registration != null) registration.run();
     if (!pending.isEmpty()) {
       logger.info("Client closed: stopped watching {} outputs of session {}", pending.size(), sessionId.asString());
     }
@@ -426,20 +520,30 @@ final class BlobCompletionEventWatcher {
 
   /**
    * Removes an output from the pending set, counting it in flight first so that the watcher is never
-   * seen idle before its listener call, and cancels its subscription once it waits for nothing more.
+   * seen idle before its listener call. A subscription that waits for nothing more is cancelled and
+   * gives its channel back, and the watcher leaves the pool's close notification once nothing is pending.
    */
   private BlobHandle take(String id) {
     inFlight.incrementAndGet();
     BlobHandle handle;
     Subscription finished = null;
+    Runnable registration = null;
     synchronized (lock) {
       handle = pending.remove(id);
       unwatched.remove(id);
       var owner = owners.remove(id);
-      if (handle != null && owner != null && --owner.remaining == 0 && subscriptions.remove(owner)) finished = owner;
+      if (handle != null && owner != null) {
+        owner.ids.remove(id);
+        if (owner.ids.isEmpty() && subscriptions.remove(owner)) finished = owner;
+      }
+      if (pending.isEmpty()) {
+        registration = closeRegistration;
+        closeRegistration = null;
+      }
+      if (finished != null) finished.finish();
     }
     if (handle == null) done();
-    if (finished != null) finished.cancel();
+    if (registration != null) registration.run();
     return handle;
   }
 
@@ -493,57 +597,63 @@ final class BlobCompletionEventWatcher {
     maybeSignalIdle();
   }
 
-  /** One {@code GetEvents} call and the outputs it watches. */
+  /**
+   * The outputs one {@code GetEvents} stream watches, and the channel it holds once granted. Every
+   * field is guarded by the watcher's lock.
+   */
   private static final class Subscription {
-    final List<String> ids;
-    /** Outputs of this subscription still pending; guarded by the watcher's lock. */
-    int remaining;
-    private ClientCallStreamObserver<EventSubscriptionRequest> call;
-    private boolean cancelled;
+    /** Outputs of this subscription still pending. */
+    final Set<String> ids = new LinkedHashSet<>();
+    /** Completes once the subscription is finished, which gives its channel back to the pool. */
+    final CompletableFuture<Void> released = new CompletableFuture<>();
+    /** The channel granted by the pool; null while the subscription waits for one. */
+    ManagedChannel channel;
+    /** The current call, once started. */
+    ClientCallStreamObserver<EventSubscriptionRequest> call;
+    /** Incremented at each call started and when finished, so that the end of a replaced call is ignored. */
+    int generation;
+    boolean finished;
 
-    Subscription(List<String> ids) {
-      this.ids = ids;
-      this.remaining = ids.size();
-    }
-
-    synchronized boolean isCancelled() {
-      return cancelled;
-    }
-
-    synchronized void started(ClientCallStreamObserver<EventSubscriptionRequest> call) {
-      this.call = call;
-      if (cancelled) call.cancel("Outputs no longer watched by this stream", null);
-    }
-
-    void cancel() {
-      ClientCallStreamObserver<EventSubscriptionRequest> toCancel;
-      synchronized (this) {
-        if (cancelled) return;
-        cancelled = true;
-        toCancel = call;
-      }
+    /** Cancels the current call and gives the channel back; called with the watcher's lock held. */
+    void finish() {
+      if (finished) return;
+      finished = true;
+      generation++;
+      var toCancel = call;
+      call = null;
       if (toCancel != null) toCancel.cancel("Outputs no longer watched by this stream", null);
+      released.complete(null);
     }
   }
 
   private final class Observer implements ClientResponseObserver<EventSubscriptionRequest, EventSubscriptionResponse> {
     private final Subscription subscription;
-    private final CompletableFuture<Void> ended;
+    private final int generation;
 
-    Observer(Subscription subscription, CompletableFuture<Void> ended) {
+    Observer(Subscription subscription, int generation) {
       this.subscription = subscription;
-      this.ended = ended;
+      this.generation = generation;
     }
 
     @Override
     public void beforeStart(ClientCallStreamObserver<EventSubscriptionRequest> requestStream) {
-      subscription.started(requestStream);
+      synchronized (lock) {
+        if (!subscription.finished && subscription.generation == generation) {
+          subscription.call = requestStream;
+          return;
+        }
+      }
+      // Replaced or finished before it started
+      requestStream.cancel("Outputs no longer watched by this stream", null);
     }
 
     @Override
     public void onNext(EventSubscriptionResponse response) {
       synchronized (lock) {
-        backoffNanos = minBackoffNanos;
+        if (subscription.generation == generation) {
+          backoffNanos = minBackoffNanos;
+          retryAtNanos = 0;
+        }
       }
       if (response.hasNewResult()) {
         onStatus(response.getNewResult().getResultId(), response.getNewResult().getStatus());
@@ -554,15 +664,12 @@ final class BlobCompletionEventWatcher {
 
     @Override
     public void onError(Throwable throwable) {
-      // The channel goes back to the event pool, then the end is handled
-      ended.complete(null);
-      ended(subscription, throwable);
+      ended(subscription, generation, throwable);
     }
 
     @Override
     public void onCompleted() {
-      ended.complete(null);
-      ended(subscription, null);
+      ended(subscription, generation, null);
     }
   }
 }

@@ -52,6 +52,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   private static final Duration REOPEN_DELAY = Duration.ofMillis(100);
   private static final Duration MIN_BACKOFF = Duration.ofMillis(20);
   private static final Duration MAX_BACKOFF = Duration.ofMillis(80);
+  private static final Duration WAIT_WARNING = Duration.ofSeconds(30);
 
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
   private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock(resultsGrpcMock);
@@ -354,9 +355,156 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     assertThat(listener.errors.get(1).blobInfo().id()).isEqualTo(late.id());
   }
 
+  @Test
+  @DisplayName("should keep its channel when reopening, rather than lose it to a session waiting for one")
+  @Timeout(10)
+  void should_keep_its_channel_when_reopening() throws Exception {
+    // Given: one event channel, held by session A, and session X waiting for it
+    var pool = newChannelPool(1);
+    try {
+      var a = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, WAIT_WARNING);
+      var x = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, WAIT_WARNING);
+      var a1 = blobInfo("a1");
+      var x1 = blobInfo("x1");
+      a.enqueue(List.of(handle(a1)));
+      waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+      x.enqueue(List.of(handle(x1)));
+      waitFor(() -> x.openSubscriptions() == 1);
+
+      // When: A adds an output, then both of its outputs complete
+      var a2 = blobInfo("a2");
+      a.enqueue(List.of(handle(a2)));
+      waitFor(() -> requestsWatching(a2).size() == 1);
+      resultsGrpcMock.setStatus(a1.id(), RESULT_STATUS_COMPLETED);
+      resultsGrpcMock.setStatus(a2.id(), RESULT_STATUS_COMPLETED);
+
+      // Then: A is reported on the channel it kept, and X gets the channel once A is done
+      a.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+      waitFor(() -> requestsWatching(x1).size() == 1);
+      resultsGrpcMock.setStatus(x1.id(), RESULT_STATUS_COMPLETED);
+      x.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    } finally {
+      pool.close();
+    }
+  }
+
+  @Test
+  @DisplayName("should add new outputs to a subscription still waiting for its channel")
+  @Timeout(10)
+  void should_add_outputs_to_a_subscription_waiting_for_its_channel() throws Exception {
+    // Given: the only event channel is held by session X
+    var pool = newChannelPool(1);
+    try {
+      var x = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, WAIT_WARNING);
+      var a = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, WAIT_WARNING);
+      var x1 = blobInfo("x1");
+      x.enqueue(List.of(handle(x1)));
+      waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+
+      // When: session A enqueues two outputs, one after the other, while it waits for the channel
+      var a1 = blobInfo("a1");
+      var a2 = blobInfo("a2");
+      a.enqueue(List.of(handle(a1)));
+      waitFor(() -> a.openSubscriptions() == 1);
+      a.enqueue(List.of(handle(a2)));
+      Thread.sleep(REOPEN_DELAY.toMillis() * 2);
+      resultsGrpcMock.setStatus(x1.id(), RESULT_STATUS_COMPLETED);
+      x.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+      // Then: A opens one stream, for both outputs
+      waitFor(() -> requestsWatching(a1).size() == 1);
+      assertThat(requestsWatching(a1)).containsExactly(java.util.Set.of(a1.id().asString(), a2.id().asString()));
+      assertThat(a.openSubscriptions()).isEqualTo(1);
+    } finally {
+      pool.close();
+    }
+  }
+
+  @Test
+  @DisplayName("should not reopen before the end of the backoff, even for new outputs")
+  @Timeout(10)
+  void should_not_reopen_before_the_end_of_the_backoff() throws Exception {
+    // Given: every subscription fails, and the backoff after a failure lasts 1 s
+    eventsGrpcMock.failingSubscriptions.set(1000);
+    var watcher = watcher(sessionId, channelPool, listener, false, Runnable::run, 1000, Duration.ofSeconds(1), WAIT_WARNING);
+
+    // When: a new output arrives every 20 ms for 600 ms
+    for (int i = 0; i < 30; i++) {
+      watcher.enqueue(List.of(handle(blobInfo("out-" + i))));
+      Thread.sleep(20);
+    }
+
+    // Then: only the first subscription was attempted
+    assertThat(eventsGrpcMock.requests).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should report pending outputs at once when the pool closes during a backoff")
+  @Timeout(10)
+  void should_report_outputs_when_pool_closes_during_backoff() throws Exception {
+    // Given: the subscription failed and waits out a 5 s backoff
+    eventsGrpcMock.failingSubscriptions.set(1);
+    var watcher = watcher(sessionId, channelPool, listener, false, Runnable::run, 1000, Duration.ofSeconds(5), WAIT_WARNING);
+    var info = blobInfo("out");
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> eventsGrpcMock.requests.size() == 1 && watcher.openSubscriptions() == 0);
+    var idle = watcher.waitUntilIdle().toCompletableFuture();
+
+    // When
+    var closing = System.nanoTime();
+    channelPool.closeNow();
+
+    // Then: the output is reported without waiting for the backoff
+    idle.get(3, SECONDS);
+    assertThat(System.nanoTime() - closing).isLessThan(SECONDS.toNanos(1));
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
+  }
+
+  @Test
+  @DisplayName("should warn, suggesting a larger event channel pool, when a subscription waits for a channel")
+  @Timeout(10)
+  void should_warn_when_waiting_for_a_channel() throws Exception {
+    // Given: the only event channel is held by session X, and a warning delay of 100 ms
+    var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+    var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
+    var level = logger.getLevel();
+    logger.setLevel(ch.qos.logback.classic.Level.WARN);
+    logs.start();
+    logger.addAppender(logs);
+    var pool = newChannelPool(1);
+    try {
+      var x = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, WAIT_WARNING);
+      x.enqueue(List.of(handle(blobInfo("x1"))));
+      waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+
+      // When
+      var a = watcher(sessionId(), pool, listener, false, Runnable::run, 1000, MIN_BACKOFF, Duration.ofMillis(100));
+      a.enqueue(List.of(handle(blobInfo("a1"))));
+
+      // Then
+      waitFor(() -> logs.list.stream().anyMatch(event -> event.getLevel() == ch.qos.logback.classic.Level.WARN
+        && event.getFormattedMessage().contains("withEventChannelPoolSize")));
+    } finally {
+      logger.detachAppender(logs);
+      logger.setLevel(level);
+      pool.close();
+    }
+  }
+
   private BlobCompletionEventWatcher watcher(BlobCompletionListener listener, boolean downloadData, Executor listenerExecutor, int maxIdsPerStream) {
-    return new BlobCompletionEventWatcher(sessionId, channelPool, listener, downloadData, listenerExecutor, scheduler,
-      maxIdsPerStream, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF);
+    return watcher(sessionId, channelPool, listener, downloadData, listenerExecutor, maxIdsPerStream, MIN_BACKOFF, WAIT_WARNING);
+  }
+
+  private BlobCompletionEventWatcher watcher(SessionId session, ManagedChannelPool pool, BlobCompletionListener listener, boolean downloadData,
+                                             Executor listenerExecutor, int maxIdsPerStream, Duration minBackoff, Duration waitWarning) {
+    return new BlobCompletionEventWatcher(session, pool, listener, downloadData, listenerExecutor, scheduler,
+      maxIdsPerStream, OPEN_DELAY, REOPEN_DELAY, minBackoff, minBackoff.compareTo(MAX_BACKOFF) > 0 ? minBackoff : MAX_BACKOFF, waitWarning);
+  }
+
+  /** The requests that watched {@code info}. */
+  private List<java.util.Set<String>> requestsWatching(BlobInfo info) {
+    return eventsGrpcMock.requests.stream().map(EventsGrpcMock::ids).filter(ids -> ids.contains(info.id().asString())).toList();
   }
 
   private BlobHandle handle(BlobInfo info) {

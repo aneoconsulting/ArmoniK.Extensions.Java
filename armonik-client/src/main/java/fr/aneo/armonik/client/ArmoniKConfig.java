@@ -335,10 +335,13 @@ public final class ArmoniKConfig {
      * Sets the number of event channels of the client, kept apart from its other channels.
      * <p>
      * Outputs are watched through {@code GetEvents} streams, one per session for up to 1000 pending
-     * outputs. Each stream holds one event channel, that is one HTTP/2 connection, for as long as it
-     * is open, so that waiting for outputs never takes a channel from the other calls. Beyond this
-     * number of open streams, further streams wait for one to close: their outputs are reported
-     * later, never lost.
+     * outputs. Each stream holds one event channel, that is one HTTP/2 connection, for as long as
+     * its session waits for outputs, so that waiting for outputs never takes a channel from the other
+     * calls. Beyond this number of streams, further streams wait for one to close, and their outputs
+     * are reported only then. Since the stream of a session whose outputs do not progress, a paused
+     * session for instance, never closes, that wait can last indefinitely: a warning is logged when a
+     * stream has waited 5 s for a channel. Size the pool for the number of sessions that wait for
+     * outputs at the same time.
      *
      * @param eventChannelPoolSize the number of event channels, at least 1; defaults to {@link ArmoniKConfig#DEFAULT_EVENT_CHANNEL_POOL_SIZE}
      * @return this builder

@@ -23,6 +23,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -87,6 +89,8 @@ public final class ManagedChannelPool implements ChannelPool {
   private final LongSupplier nanoTime;
   private final Set<ManagedChannel> allChannels;
   private final AtomicBoolean shutdown;
+  /** Listeners run once when the pool closes, keyed by a registration object so that the same listener can be registered twice. */
+  private final Map<Object, Runnable> closeListeners = new ConcurrentHashMap<>();
   private final RetryPolicy retryPolicy;
 
   /**
@@ -203,6 +207,7 @@ public final class ManagedChannelPool implements ChannelPool {
 
       var closed = new IllegalStateException("Channel pool has been shut down");
       channelPermits.close(closed);
+      notifyClose();
 
       var shutdownLatch = new CountDownLatch(allChannels.size());
       allChannels.forEach(channel ->
@@ -230,6 +235,59 @@ public final class ManagedChannelPool implements ChannelPool {
       availableChannels.clear();
       allChannels.clear();
       logger.info("Channel pool shutdown complete");
+    }
+  }
+
+  /**
+   * Closes the pool at once, cancelling the calls still open instead of waiting for them.
+   * <p>
+   * {@link #close()} lets the calls in flight finish, waiting up to 2 s per channel. A pool whose calls
+   * are streams that only end when cancelled, such as {@code GetEvents}, would wait out that timeout
+   * for every channel. This method shuts every channel down immediately: open calls fail with
+   * {@code UNAVAILABLE}, and operations still waiting for a channel fail with
+   * {@link IllegalStateException}.
+   */
+  public void closeNow() {
+    if (shutdown.compareAndSet(false, true)) {
+      logger.info("Shutting down channel pool at once (size: {})", allChannels.size());
+      channelPermits.close(new IllegalStateException("Channel pool has been shut down"));
+      notifyClose();
+      allChannels.forEach(ManagedChannel::shutdownNow);
+      availableChannels.clear();
+      allChannels.clear();
+    }
+  }
+
+  @Override
+  public boolean isClosed() {
+    return shutdown.get();
+  }
+
+  @Override
+  public Runnable onClose(Runnable listener) {
+    requireNonNull(listener, "listener must not be null");
+    if (shutdown.get()) {
+      listener.run();
+      return () -> {
+      };
+    }
+    var registration = new Object();
+    closeListeners.put(registration, listener);
+    // close() may have run its listeners between the check above and the registration
+    if (shutdown.get() && closeListeners.remove(registration) != null) listener.run();
+    return () -> closeListeners.remove(registration);
+  }
+
+  /** Runs the close listeners once, after {@code shutdown} is set. */
+  private void notifyClose() {
+    for (var registration : List.copyOf(closeListeners.keySet())) {
+      var listener = closeListeners.remove(registration);
+      if (listener == null) continue;
+      try {
+        listener.run();
+      } catch (RuntimeException e) {
+        logger.warn("A close listener of the channel pool failed", e);
+      }
     }
   }
 

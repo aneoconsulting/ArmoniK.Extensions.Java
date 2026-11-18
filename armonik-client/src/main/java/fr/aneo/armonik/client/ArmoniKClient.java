@@ -58,6 +58,9 @@ import static java.util.Objects.requireNonNull;
  */
 public class ArmoniKClient implements AutoCloseable {
   private final ChannelPool channelPool;
+  private final ChannelPool eventChannelPool;
+  /** The event channel pool this client created and closes at once; null when events share the client's pool. */
+  private final ManagedChannelPool ownedEventChannelPool;
   private final TaskSubmissionBatching taskSubmissionBatching;
   private final ResultsServiceConfiguration resultsServiceConfiguration;
 
@@ -82,6 +85,12 @@ public class ArmoniKClient implements AutoCloseable {
       armoniKConfig.retryPolicy(),
       () -> createChannel(armoniKConfig)
     );
+    this.ownedEventChannelPool = ManagedChannelPool.create(
+      armoniKConfig.eventChannelPoolSize(),
+      armoniKConfig.retryPolicy(),
+      () -> createChannel(armoniKConfig)
+    );
+    this.eventChannelPool = ownedEventChannelPool;
     this.taskSubmissionBatching = armoniKConfig.taskSubmissionBatching();
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
   }
@@ -92,6 +101,8 @@ public class ArmoniKClient implements AutoCloseable {
 
   ArmoniKClient(ChannelPool channelPool, TaskSubmissionBatching taskSubmissionBatching) {
     this.channelPool = channelPool;
+    this.eventChannelPool = channelPool;
+    this.ownedEventChannelPool = null;
     this.taskSubmissionBatching = taskSubmissionBatching;
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
   }
@@ -120,7 +131,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     var sessionInfo = createSession(sessionDefinition);
-    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool);
   }
 
   /**
@@ -161,7 +172,7 @@ public class ArmoniKClient implements AutoCloseable {
         toTaskConfiguration(sessionResponse.getSession().getOptions())
       );
 
-      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration);
+      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool);
     } catch (Exception e) {
       throw new ArmoniKException(e.getMessage(), e);
     }
@@ -270,6 +281,9 @@ public class ArmoniKClient implements AutoCloseable {
    */
   @Override
   public void close() {
+    // Event streams never end on their own: cancel them at once rather than wait for each channel,
+    // which also reports the outputs still awaited as failed
+    if (ownedEventChannelPool != null) ownedEventChannelPool.closeNow();
     channelPool.close();
   }
 

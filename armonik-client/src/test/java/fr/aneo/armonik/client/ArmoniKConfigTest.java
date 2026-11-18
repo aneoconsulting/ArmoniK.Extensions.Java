@@ -217,4 +217,14 @@ class ArmoniKConfigTest {
     assertThatThrownBy(() -> builder.withChannelPoolSize(0).build()).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> builder.withChannelPoolSize(-1).build()).isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  @DisplayName("should default the event channel pool size to 50, accept a custom one and reject one below 1")
+  void should_default_customize_and_validate_event_channel_pool_size() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThat(builder.build().eventChannelPoolSize()).isEqualTo(ArmoniKConfig.DEFAULT_EVENT_CHANNEL_POOL_SIZE).isEqualTo(50);
+    assertThat(builder.withEventChannelPoolSize(8).build().eventChannelPoolSize()).isEqualTo(8);
+    assertThatThrownBy(() -> builder.withEventChannelPoolSize(0).build()).isInstanceOf(IllegalArgumentException.class);
+  }
 }

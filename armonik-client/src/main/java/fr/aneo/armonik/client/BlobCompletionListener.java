@@ -32,10 +32,9 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
  * {@code BlobCompletionListener} to receive immediate notifications when outputs are ready.
  * <p>
  * Implementations of this interface must be thread-safe, as callback methods may be invoked
- * concurrently from multiple threads within the ArmoniK client's event processing system.
+ * concurrently from multiple threads.
  *
  * @see BlobCompletionEventWatcher
- * @see BlobCompletionCoordinator
  * @see SessionHandle#awaitOutputsProcessed()
  * @see SessionDefinition
  */

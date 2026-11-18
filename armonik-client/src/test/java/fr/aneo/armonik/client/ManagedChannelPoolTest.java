@@ -269,6 +269,58 @@ class ManagedChannelPoolTest {
   }
 
   @Test
+  @DisplayName("onClose should run its listener once, on close or closeNow")
+  void on_close_should_run_listener_on_close_and_close_now() {
+    // Given
+    var onClose = new AtomicInteger();
+    var onCloseNow = new AtomicInteger();
+    var closed = ManagedChannelPool.create(1, this::createHealthyChannel);
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    closed.onClose(onClose::incrementAndGet);
+    pool.onClose(onCloseNow::incrementAndGet);
+
+    // When
+    closed.close();
+    closed.close();
+    pool.closeNow();
+
+    // Then
+    assertThat(onClose).hasValue(1);
+    assertThat(onCloseNow).hasValue(1);
+  }
+
+  @Test
+  @DisplayName("onClose should run its listener at once when the pool is already closed")
+  void on_close_should_run_listener_at_once_when_already_closed() {
+    // Given
+    var calls = new AtomicInteger();
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    pool.close();
+
+    // When
+    pool.onClose(calls::incrementAndGet);
+
+    // Then
+    assertThat(calls).hasValue(1);
+  }
+
+  @Test
+  @DisplayName("onClose should not run a listener that was unregistered")
+  void on_close_should_not_run_unregistered_listener() {
+    // Given
+    var calls = new AtomicInteger();
+    pool = ManagedChannelPool.create(1, this::createHealthyChannel);
+    var unregister = pool.onClose(calls::incrementAndGet);
+
+    // When
+    unregister.run();
+    pool.close();
+
+    // Then
+    assertThat(calls).hasValue(0);
+  }
+
+  @Test
   @DisplayName("close should shutdown all channels gracefully")
   void close_should_shutdown_all_channels_gracefully() {
     // Given
@@ -406,6 +458,27 @@ class ManagedChannelPoolTest {
     // Then
     assertThatThrownBy(() -> waiting.get(2, SECONDS))
       .hasCauseInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  @DisplayName("close now should shut every channel down at once and fail operations waiting for one")
+  @Timeout(5)
+  void close_now_should_shut_channels_down_at_once() {
+    // Given: the only channel carries a call that never ends, and another call waits for it
+    var channel = createHealthyChannel();
+    pool = ManagedChannelPool.create(1, () -> channel);
+    pool.executeAsync(ch -> new CompletableFuture<>());
+    var waiting = pool.executeAsync(ch -> CompletableFuture.completedFuture("never")).toCompletableFuture();
+
+    // When
+    pool.closeNow();
+
+    // Then: no graceful shutdown is attempted, and the pool reports itself closed
+    verify(channel).shutdownNow();
+    verify(channel, never()).shutdown();
+    assertThat(pool.isClosed()).isTrue();
+    assertThat(pool.size()).isZero();
+    assertThatThrownBy(() -> waiting.get(2, SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
   }
 
   private static void awaitCondition(BooleanSupplier condition) throws InterruptedException {

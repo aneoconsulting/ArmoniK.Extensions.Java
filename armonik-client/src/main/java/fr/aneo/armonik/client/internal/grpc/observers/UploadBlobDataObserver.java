@@ -63,7 +63,7 @@ public final class UploadBlobDataObserver implements ClientResponseObserver<Uplo
   private final BlobData blobData;
   private boolean headerSent = false;
   private InputStream inputStream;
-  private final byte[] buffer;
+  private final int chunkSize;
   private boolean streamCompleted = false;
   private final AtomicBoolean draining = new AtomicBoolean(false);
 
@@ -87,7 +87,8 @@ public final class UploadBlobDataObserver implements ClientResponseObserver<Uplo
     this.sessionId = sessionId;
     this.blobId = blobId;
     this.blobData = blobData;
-    this.buffer = new byte[chunkSize];
+    if (chunkSize <= 0) throw new IllegalArgumentException("chunkSize must be positive, got: " + chunkSize);
+    this.chunkSize = chunkSize;
   }
 
   /**
@@ -181,12 +182,15 @@ public final class UploadBlobDataObserver implements ClientResponseObserver<Uplo
       // Stream chunks while there is demand
       while (headerSent && request.isReady() && !streamCompleted) {
         try {
-          int bytesRead = inputStream.read(buffer);
+          // A new array for every chunk: the request only wraps it, and gRPC keeps sent requests to
+          // replay them on a retry, so a reused array would replay the bytes of a later chunk
+          var chunkData = new byte[chunkSize];
+          int bytesRead = inputStream.read(chunkData);
           if (bytesRead == -1) {
             streamCompleted = true;
             break;
           }
-          var chunk = toUploadResultDataRequest(buffer, 0, bytesRead);
+          var chunk = toUploadResultDataRequest(chunkData, 0, bytesRead);
           request.onNext(chunk);
         } catch (IOException e) {
           logger.error("Upload stream read error. BlobId: {}, SessionId: {}", blobId.asString(), sessionId.asString(), e);

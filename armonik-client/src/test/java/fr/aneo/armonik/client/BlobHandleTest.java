@@ -15,14 +15,25 @@
  */
 package fr.aneo.armonik.client;
 
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataRequest;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.UploadResultDataResponse;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.definition.blob.InMemoryBlobData;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import io.grpc.BindableService;
+import io.grpc.Status;
+import io.grpc.inprocess.InProcessChannelBuilder;
+import io.grpc.inprocess.InProcessServerBuilder;
+import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.IntStream;
 
@@ -74,6 +85,63 @@ class BlobHandleTest extends InProcessGrpcTestBase {
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).blobId).isEqualTo("BlobId");
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).dataChunkSizes).containsExactly(UPLOAD_CHUNK_SIZE, UPLOAD_CHUNK_SIZE, REMAINDER);
     assertThat(resultsGrpcMock.uploadedDataInfos.get(0).receivedData.toByteArray()).isEqualTo(payload);
+  }
+
+  @Test
+  void should_send_the_same_bytes_when_the_channel_retries_an_upload() throws Exception {
+    // Given: a server that fails the first upload attempt once it has received every chunk, and a
+    // channel that retries it, as the channels of the client do
+    var attempts = new CopyOnWriteArrayList<byte[]>();
+    var name = InProcessServerBuilder.generateName();
+    var server = InProcessServerBuilder.forName(name).directExecutor().addService(new ResultsGrpc.ResultsImplBase() {
+      @Override
+      public StreamObserver<UploadResultDataRequest> uploadResultData(StreamObserver<UploadResultDataResponse> responseObserver) {
+        var received = new ByteArrayOutputStream();
+        return new StreamObserver<>() {
+          @Override
+          public void onNext(UploadResultDataRequest request) {
+            if (request.hasDataChunk()) received.writeBytes(request.getDataChunk().toByteArray());
+          }
+
+          @Override
+          public void onError(Throwable throwable) {
+          }
+
+          @Override
+          public void onCompleted() {
+            attempts.add(received.toByteArray());
+            if (attempts.size() == 1) {
+              responseObserver.onError(Status.UNAVAILABLE.asRuntimeException());
+            } else {
+              responseObserver.onNext(UploadResultDataResponse.getDefaultInstance());
+              responseObserver.onCompleted();
+            }
+          }
+        };
+      }
+    }).build().start();
+    var retryPolicy = Map.of("maxAttempts", 2.0, "initialBackoff", "0.01s", "maxBackoff", "0.01s", "backoffMultiplier", 1.0,
+      "retryableStatusCodes", List.of("UNAVAILABLE"));
+    var serviceConfig = Map.of("methodConfig", List.of(Map.of("name", List.of(Map.of()), "retryPolicy", retryPolicy)));
+    var retryingPool = ManagedChannelPool.create(1, new RetryPolicy(1, Duration.ofMillis(10), Duration.ofMillis(10), 1),
+      () -> InProcessChannelBuilder.forName(name).directExecutor().defaultServiceConfig(serviceConfig).enableRetry().build());
+    // Each chunk holds its own byte value, so that a chunk replayed with the bytes of another shows
+    var payload = new byte[UPLOAD_CHUNK_SIZE * 3 + 7];
+    IntStream.range(0, payload.length).forEach(i -> payload[i] = (byte) (i / UPLOAD_CHUNK_SIZE + 1));
+    var handle = new BlobHandle(sessionId(), completedFuture(blobInfo("BlobId")), retryingPool);
+
+    try {
+      // When
+      handle.uploadData(InMemoryBlobData.from(payload)).toCompletableFuture().get(10, SECONDS);
+
+      // Then: the retried attempt carried the same bytes as the first one
+      assertThat(attempts).hasSize(2);
+      assertThat(attempts.get(0)).isEqualTo(payload);
+      assertThat(attempts.get(1)).isEqualTo(payload);
+    } finally {
+      retryingPool.close();
+      server.shutdownNow();
+    }
   }
 
   @Test

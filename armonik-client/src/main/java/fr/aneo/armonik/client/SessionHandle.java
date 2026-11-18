@@ -103,8 +103,17 @@ public final class SessionHandle {
                 ChannelPool channelPool,
                 TaskSubmissionBatching batching,
                 ResultsServiceConfiguration resultsServiceConfiguration) {
+    this(sessionInfo, outputListener, channelPool, batching, resultsServiceConfiguration, channelPool);
+  }
+
+  SessionHandle(SessionInfo sessionInfo,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool) {
     this(sessionInfo, channelPool, new TaskSubmitter(requireNonNull(sessionInfo, "sessionInfo must not be null").id(),
-      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration));
+      sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration, eventChannelPool));
   }
 
   SessionHandle(SessionInfo sessionInfo, ChannelPool channelPool, TaskSubmitter taskSubmitter) {

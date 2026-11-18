@@ -38,11 +38,17 @@ public final class ArmoniKConfig {
   private final RetryPolicy retryPolicy;
   private final TaskSubmissionBatching taskSubmissionBatching;
   private final int channelPoolSize;
+  private final int eventChannelPoolSize;
 
   /**
    * Default number of channels, that is of calls in flight, per client.
    */
   public static final int DEFAULT_CHANNEL_POOL_SIZE = 50;
+
+  /**
+   * Default number of event channels, that is of output event streams open at once, per client.
+   */
+  public static final int DEFAULT_EVENT_CHANNEL_POOL_SIZE = 50;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -55,6 +61,7 @@ public final class ArmoniKConfig {
     this.retryPolicy = builder.retryPolicy;
     this.taskSubmissionBatching = builder.taskSubmissionBatching;
     this.channelPoolSize = builder.channelPoolSize;
+    this.eventChannelPoolSize = builder.eventChannelPoolSize;
   }
 
   /**
@@ -154,6 +161,17 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the number of event channels of the client, which is also the number of output event
+   * streams it keeps open at once.
+   *
+   * @return the event channel pool size, at least 1
+   * @see Builder#withEventChannelPoolSize(int)
+   */
+  public int eventChannelPoolSize() {
+    return eventChannelPoolSize;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -172,6 +190,7 @@ public final class ArmoniKConfig {
     private RetryPolicy retryPolicy = DEFAULT;
     private TaskSubmissionBatching taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
     private int channelPoolSize = DEFAULT_CHANNEL_POOL_SIZE;
+    private int eventChannelPoolSize = DEFAULT_EVENT_CHANNEL_POOL_SIZE;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -313,6 +332,23 @@ public final class ArmoniKConfig {
     }
 
     /**
+     * Sets the number of event channels of the client, kept apart from its other channels.
+     * <p>
+     * Outputs are watched through {@code GetEvents} streams, one per session for up to 1000 pending
+     * outputs. Each stream holds one event channel, that is one HTTP/2 connection, for as long as it
+     * is open, so that waiting for outputs never takes a channel from the other calls. Beyond this
+     * number of open streams, further streams wait for one to close: their outputs are reported
+     * later, never lost.
+     *
+     * @param eventChannelPoolSize the number of event channels, at least 1; defaults to {@link ArmoniKConfig#DEFAULT_EVENT_CHANNEL_POOL_SIZE}
+     * @return this builder
+     */
+    public Builder withEventChannelPoolSize(int eventChannelPoolSize) {
+      this.eventChannelPoolSize = eventChannelPoolSize;
+      return this;
+    }
+
+    /**
      * Builds the immutable {@link ArmoniKConfig} instance.
      * <p>
      * Validates that the configuration is consistent and all required fields are set.
@@ -331,6 +367,9 @@ public final class ArmoniKConfig {
 
       if (channelPoolSize < 1)
         throw new IllegalArgumentException("channelPoolSize must be at least 1, got: " + channelPoolSize);
+
+      if (eventChannelPoolSize < 1)
+        throw new IllegalArgumentException("eventChannelPoolSize must be at least 1, got: " + eventChannelPoolSize);
 
       if (clientCertPem != null && clientKeyPem == null)
         throw new IllegalArgumentException("clientKeyPem is required when clientCertPem is specified");

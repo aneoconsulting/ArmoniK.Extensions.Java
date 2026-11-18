@@ -37,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TaskSubmissionBufferingTest extends InProcessGrpcTestBase {
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
+  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock(resultsGrpcMock);
   private final TasksGrpcMock tasksGrpcMock = new TasksGrpcMock();
   private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
   private DeterministicScheduler scheduler;
@@ -44,7 +45,7 @@ class TaskSubmissionBufferingTest extends InProcessGrpcTestBase {
 
   @Override
   protected List<BindableService> services() {
-    return List.of(resultsGrpcMock, tasksGrpcMock, sessionsGrpcMock);
+    return List.of(resultsGrpcMock, tasksGrpcMock, sessionsGrpcMock, eventsGrpcMock);
   }
 
   @BeforeEach

@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.testutils;
 
 import com.google.protobuf.Timestamp;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.*;
+import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.BlobId;
 import io.grpc.stub.StreamObserver;
@@ -61,10 +62,23 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public final AtomicInteger failingCreateResults = new AtomicInteger();
   /** When set, a CreateResults call holding a result of this name fails with INVALID_ARGUMENT. */
   public volatile String rejectedCreateResultsName;
+  /** Status of each result, as the event streams report it; results not set are CREATED. */
+  public final Map<String, ResultStatusOuterClass.ResultStatus> statuses = new ConcurrentHashMap<>();
+  /** Notified of every status set through {@link #setStatus}; kept across {@link #reset()}. */
+  private final List<java.util.function.BiConsumer<String, ResultStatusOuterClass.ResultStatus>> statusListeners = new CopyOnWriteArrayList<>();
 
 
   public void failDownloadFor(BlobId id) {
     this.downloadFailedId = id;
+  }
+
+  public void addStatusListener(java.util.function.BiConsumer<String, ResultStatusOuterClass.ResultStatus> statusListener) {
+    statusListeners.add(statusListener);
+  }
+
+  public void setStatus(BlobId id, ResultStatusOuterClass.ResultStatus status) {
+    statuses.put(id.asString(), status);
+    statusListeners.forEach(statusListener -> statusListener.accept(id.asString(), status));
   }
 
   public void setDownloadContentFor(BlobId id, byte[] bytes) {
@@ -91,6 +105,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.createdData.clear();
     this.failingCreateResults.set(0);
     this.rejectedCreateResultsName = null;
+    this.statuses.clear();
   }
 
   @Override

@@ -18,6 +18,7 @@ package fr.aneo.armonik.client;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
+import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
 import fr.aneo.armonik.client.testutils.TasksGrpcMock;
@@ -50,13 +51,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class InlineBlobCreationTest extends InProcessGrpcTestBase {
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
+  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock(resultsGrpcMock);
   private final TasksGrpcMock tasksGrpcMock = new TasksGrpcMock();
   private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
   private SessionInfo sessionInfo;
 
   @Override
   protected List<BindableService> services() {
-    return List.of(resultsGrpcMock, tasksGrpcMock, sessionsGrpcMock);
+    return List.of(resultsGrpcMock, tasksGrpcMock, sessionsGrpcMock, eventsGrpcMock);
   }
 
   @BeforeEach

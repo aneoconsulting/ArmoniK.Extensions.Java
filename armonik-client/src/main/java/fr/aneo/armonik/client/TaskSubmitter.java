@@ -98,7 +98,7 @@ import static java.util.stream.Collectors.toMap;
  *
  * @see SessionHandle#submitTask(TaskDefinition)
  * @see TaskHandle
- * @see BlobCompletionCoordinator
+ * @see BlobCompletionEventWatcher
  */
 final class TaskSubmitter {
   private static final Logger logger = LoggerFactory.getLogger(TaskSubmitter.class);
@@ -137,7 +137,7 @@ final class TaskSubmitter {
   };
 
   private final BlobCompletionListener outputListener;
-  private final BlobCompletionCoordinator blobCompletionCoordinator;
+  private final BlobCompletionEventWatcher outputWatcher;
 
   private final Object lock = new Object();
   private final List<PendingTask> buffer = new ArrayList<>();
@@ -165,7 +165,7 @@ final class TaskSubmitter {
    * @see SessionHandle
    * @see TaskConfiguration
    * @see BlobCompletionListener
-   * @see BlobCompletionCoordinator
+   * @see BlobCompletionEventWatcher
    */
   TaskSubmitter(SessionId sessionId,
                 TaskConfiguration taskConfiguration,
@@ -203,7 +203,7 @@ final class TaskSubmitter {
                 TaskSubmissionBatching batching,
                 ScheduledExecutorService scheduler,
                 Executor flushExecutor) {
-    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, new ResultsServiceConfiguration(channelPool));
+    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, new ResultsServiceConfiguration(channelPool), channelPool);
   }
 
   /**
@@ -217,6 +217,8 @@ final class TaskSubmitter {
    * @param batching          how submitted tasks are grouped into batched calls
    * @param scheduler         the scheduler running the batching window timer
    * @param flushExecutor     the executor sending the buffer when the batching window elapses
+   * @param resultsServiceConfiguration the configuration of the results service, read once per client
+   * @param eventChannelPool  the channel pool of the event streams watching the outputs
    * @throws NullPointerException if any parameter other than {@code taskConfiguration} and
    *                              {@code outputListener} is {@code null}
    */
@@ -227,7 +229,8 @@ final class TaskSubmitter {
                 TaskSubmissionBatching batching,
                 ScheduledExecutorService scheduler,
                 Executor flushExecutor,
-                ResultsServiceConfiguration resultsServiceConfiguration) {
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool) {
 
     this.sessionId = requireNonNull(sessionId);
     this.resultsServiceConfiguration = requireNonNull(resultsServiceConfiguration, "resultsServiceConfiguration must not be null");
@@ -237,7 +240,7 @@ final class TaskSubmitter {
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.blobCompletionCoordinator = new BlobCompletionCoordinator(sessionId, channelPool, this.outputListener, outputListener != null);
+    this.outputWatcher = new BlobCompletionEventWatcher(sessionId, requireNonNull(eventChannelPool, "eventChannelPool must not be null"), this.outputListener, outputListener != null, Runnable::run, scheduler);
   }
 
   /**
@@ -250,7 +253,7 @@ final class TaskSubmitter {
    *       batched {@code CreateResults} calls, the others through an upload stream</li>
    *   <li><strong>Payload Creation:</strong> Creates the JSON payload containing input/output mappings, the same way</li>
    *   <li><strong>Task Creation:</strong> Submits the task to ArmoniK with proper dependencies</li>
-   *   <li><strong>Output Monitoring:</strong> Registers output blobs with the completion coordinator</li>
+   *   <li><strong>Output Monitoring:</strong> Registers output blobs with the output watcher</li>
    * </ol>
    * The returned {@link TaskHandle} provides immediate access to task metadata and blob handles,
    * while the actual submission continues asynchronously in the background.
@@ -324,17 +327,17 @@ final class TaskSubmitter {
   /**
    * Returns a completion stage that completes when all currently tracked output operations finish.
    * <p>
-   * This method provides access to the underlying blob completion coordinator's synchronization
+   * This method provides access to the underlying output watcher's synchronization
    * mechanism, allowing callers to wait for all pending output processing to complete. This is
    * useful for ensuring that all task outputs have been processed before proceeding with
    * dependent operations.
    *
    * @return a completion stage that completes when all current output operations finish
-   * @see BlobCompletionCoordinator#waitUntilIdle()
+   * @see BlobCompletionEventWatcher#waitUntilIdle()
    * @see SessionHandle#awaitOutputsProcessed()
    */
   CompletionStage<Void> waitUntilFinished() {
-    return blobCompletionCoordinator.waitUntilIdle();
+    return outputWatcher.waitUntilIdle();
   }
 
   /**
@@ -400,16 +403,16 @@ final class TaskSubmitter {
   /**
    * Watches the outputs of a task once the cluster has accepted the task. If the submission fails,
    * no task will ever produce the outputs, so they are reported to the listener as failed instead
-   * of being watched. Until then, the coordinator counts them as in flight, so
+   * of being watched. Until then, the output watcher counts them as in flight, so
    * {@link #waitUntilFinished()} waits for the submission.
    */
   private void watchOutputsOnceSubmitted(CompletionStage<TaskInfo> taskInfo, Collection<BlobHandle> outputHandles) {
     if (outputHandles.isEmpty()) return;
 
     var outputs = List.copyOf(outputHandles);
-    blobCompletionCoordinator.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
+    outputWatcher.track(taskInfo.handle((info, ex) -> ex).thenCompose(ex -> {
       if (ex != null) return reportFailedOutputs(outputs, ex instanceof CompletionException ? ex.getCause() : ex);
-      blobCompletionCoordinator.enqueue(outputs);
+      outputWatcher.enqueue(outputs);
       return completedFuture(null);
     }));
   }

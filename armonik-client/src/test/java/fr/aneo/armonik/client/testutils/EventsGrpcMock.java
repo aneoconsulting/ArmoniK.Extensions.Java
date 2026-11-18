@@ -17,105 +17,115 @@ package fr.aneo.armonik.client.testutils;
 
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionRequest;
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse;
-import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse.NewResult;
-import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse.ResultStatusUpdate;
 import fr.aneo.armonik.api.grpc.v1.events.EventsGrpc;
-import fr.aneo.armonik.client.BlobId;
+import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
+import io.grpc.Status;
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
-import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
-
+/**
+ * Serves {@code GetEvents} as the control plane does for a subscription filtered on result ids: it
+ * registers the subscription, sends the current status of every filtered result as a new-result
+ * event, then every status set on {@link ResultsGrpcMock} as a status update. Like the control plane,
+ * it never ends a subscription on its own.
+ */
 public class EventsGrpcMock extends EventsGrpc.EventsImplBase {
-  private final List<StreamObserver<EventSubscriptionResponse>> observers = new CopyOnWriteArrayList<>();
-  private final List<EventSubscriptionResponse> backlog = new CopyOnWriteArrayList<>();
-  private volatile boolean completed = false;
-  private volatile Throwable terminalError = null;
+  private final ResultsGrpcMock results;
+  public final List<EventSubscriptionRequest> requests = new CopyOnWriteArrayList<>();
+  private final List<Subscription> subscriptions = new CopyOnWriteArrayList<>();
+  /** Number of the next subscriptions that fail at once with {@link #failingStatus}. */
+  public final AtomicInteger failingSubscriptions = new AtomicInteger();
+  public volatile Status failingStatus = Status.UNAVAILABLE;
+  public final AtomicInteger cancelledSubscriptions = new AtomicInteger();
+
+  public EventsGrpcMock(ResultsGrpcMock results) {
+    this.results = results;
+    results.addStatusListener(this::publish);
+  }
+
+  public void reset() {
+    requests.clear();
+    subscriptions.clear();
+    failingSubscriptions.set(0);
+    failingStatus = Status.UNAVAILABLE;
+    cancelledSubscriptions.set(0);
+  }
+
+  /** Number of subscriptions still open. */
+  public int openSubscriptions() {
+    return subscriptions.size();
+  }
+
+  /** Result ids of the filter of a request. */
+  public static Set<String> ids(EventSubscriptionRequest request) {
+    return request.getResultsFilters().getOrList().stream()
+                  .flatMap(and -> and.getAndList().stream())
+                  .map(field -> field.getFilterString().getValue())
+                  .collect(Collectors.toSet());
+  }
+
+  /** Ends every open subscription with {@code status}, as a control plane restart would. */
+  public void failOpenSubscriptions(Status status) {
+    for (var subscription : subscriptions) {
+      subscriptions.remove(subscription);
+      synchronized (subscription.observer) {
+        try {
+          subscription.observer.onError(status.asRuntimeException());
+        } catch (RuntimeException ignored) {
+          // Already cancelled by the client
+        }
+      }
+    }
+  }
 
   @Override
-  public void getEvents(EventSubscriptionRequest request,
-                        StreamObserver<EventSubscriptionResponse> responseObserver) {
-    final var snapshot = List.copyOf(backlog);
-    final var error = terminalError;
-    final var isCompleted = completed;
-
-    if (error != null) {
-      snapshot.forEach(responseObserver::onNext);
-      try {
-        responseObserver.onError(error);
-      } catch (Throwable ignored) {
-      }
+  public void getEvents(EventSubscriptionRequest request, StreamObserver<EventSubscriptionResponse> responseObserver) {
+    requests.add(request);
+    if (failingSubscriptions.getAndUpdate(remaining -> Math.max(remaining - 1, 0)) > 0) {
+      responseObserver.onError(failingStatus.asRuntimeException());
       return;
     }
-
-    if (isCompleted) {
-      snapshot.forEach(responseObserver::onNext);
-      try {
-        responseObserver.onCompleted();
-      } catch (Throwable ignored) {
-      }
-      return;
+    var observer = (ServerCallStreamObserver<EventSubscriptionResponse>) responseObserver;
+    var subscription = new Subscription(ids(request), observer);
+    observer.setOnCancelHandler(() -> {
+      if (subscriptions.remove(subscription)) cancelledSubscriptions.incrementAndGet();
+    });
+    // Registered before the current statuses are read, as the control plane does, so that no change is missed
+    subscriptions.add(subscription);
+    for (var id : subscription.ids) {
+      var status = results.statuses.getOrDefault(id, ResultStatus.RESULT_STATUS_CREATED);
+      send(subscription, EventSubscriptionResponse.newBuilder()
+                                                  .setSessionId(request.getSessionId())
+                                                  .setNewResult(EventSubscriptionResponse.NewResult.newBuilder().setResultId(id).setStatus(status))
+                                                  .build());
     }
-    observers.add(responseObserver);
-    snapshot.forEach(responseObserver::onNext);
   }
 
-  /**
-   * Broadcast a NEW_RESULT event to all subscribers.
-   */
-  public void emitNewResult(BlobId blobId, ResultStatus status) {
-    final var response = EventSubscriptionResponse.newBuilder()
-                                                  .setNewResult(NewResult.newBuilder()
-                                                                         .setResultId(blobId.asString())
-                                                                         .setStatus(status))
-                                                  .build();
-    broadcast(response);
+  private void publish(String id, ResultStatus status) {
+    for (var subscription : subscriptions) {
+      if (!subscription.ids.contains(id)) continue;
+      send(subscription, EventSubscriptionResponse.newBuilder()
+                                                  .setResultStatusUpdate(EventSubscriptionResponse.ResultStatusUpdate.newBuilder().setResultId(id).setStatus(status))
+                                                  .build());
+    }
   }
 
-  public void emitStatusUpdate(BlobId blobId, ResultStatus status) {
-    final var response = EventSubscriptionResponse.newBuilder()
-                                                  .setResultStatusUpdate(ResultStatusUpdate.newBuilder()
-                                                                                           .setResultId(blobId.asString())
-                                                                                           .setStatus(status))
-                                                  .build();
-    broadcast(response);
-  }
-
-  public void complete() {
-    completed = true;
-    terminalError = null;
-    observers.forEach(observer -> {
+  private static void send(Subscription subscription, EventSubscriptionResponse response) {
+    synchronized (subscription.observer) {
       try {
-        observer.onCompleted();
-      } catch (Throwable ignored) {
+        subscription.observer.onNext(response);
+      } catch (RuntimeException ignored) {
+        // Cancelled by the client meanwhile
       }
-    });
-
-    observers.clear();
+    }
   }
 
-  public void error(RuntimeException exception) {
-    terminalError = exception;
-    observers.forEach(observer -> {
-      try {
-        observer.onError(exception);
-      } catch (Throwable ignored) {
-      }
-    });
-
-    observers.clear();
-  }
-
-  private void broadcast(EventSubscriptionResponse resp) {
-    backlog.add(resp);
-    observers.forEach(observer -> {
-      try {
-        observer.onNext(resp);
-      } catch (Throwable t) {
-        // Don't let one bad observer stop others from receiving events
-      }
-    });
+  private record Subscription(Set<String> ids, ServerCallStreamObserver<EventSubscriptionResponse> observer) {
   }
 }

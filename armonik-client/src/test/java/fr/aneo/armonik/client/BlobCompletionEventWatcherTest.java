@@ -19,261 +19,359 @@ import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import io.grpc.BindableService;
+import io.grpc.Status;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_ABORTED;
 import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED;
-import static fr.aneo.armonik.client.TestDataFactory.*;
+import static fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_DELETED;
+import static fr.aneo.armonik.client.TestDataFactory.blobInfo;
+import static fr.aneo.armonik.client.TestDataFactory.sessionId;
+import static fr.aneo.armonik.client.testutils.EventsGrpcMock.ids;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 
 class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
+  private static final Duration OPEN_DELAY = Duration.ofMillis(10);
+  private static final Duration REOPEN_DELAY = Duration.ofMillis(100);
+  private static final Duration MIN_BACKOFF = Duration.ofMillis(20);
+  private static final Duration MAX_BACKOFF = Duration.ofMillis(80);
 
   private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
-  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock();
-  private BlobHandle blobHandle;
+  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock(resultsGrpcMock);
+  private ScheduledExecutorService scheduler;
   private SessionId sessionId;
-  private BlobInfo blobInfo;
-  private BlobCompletionEventWatcher watcher;
-
-  @BeforeEach
-  void setUp() {
-    sessionId = sessionId();
-    blobInfo = blobInfo("BlobId");
-    blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channelPool);
-    resultsGrpcMock.reset();
-  }
-
-
-  @Test
-  @DisplayName("should call listener onSuccess when blob status update is COMPLETED")
-  void should_call_observer_on_success_when_blob_update_status_is_completed() {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-    resultsGrpcMock.setDownloadContentFor(blobId("BlobId"), "Hello World !!".getBytes(UTF_8));
-
-    // when
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-    done.completion().toCompletableFuture().join();
-
-    // then
-    assertThat(listenerMock.blobErrors).isEmpty();
-    assertThat(listenerMock.blobs).hasSize(1);
-    assertThat(listenerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
-    assertThat(listenerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
-  }
-
-  @Test
-  @DisplayName("should call listener onError when blob status update is ABORTED")
-  void should_call_observer_on_error_when_blob_update_status_is_aborted() {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-
-    // when
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_ABORTED);
-    eventsGrpcMock.complete();
-    done.completion().toCompletableFuture().join();
-
-    // then
-    assertThat(listenerMock.blobs).isEmpty();
-    assertThat(listenerMock.blobErrors).hasSize(1);
-    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
-  }
-
-  @Test
-  @DisplayName("should call listener onSuccess when new result status is COMPLETED")
-  void should_call_observer_on_success_when_new_blob_status_is_completed() {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-    resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello World !!".getBytes(UTF_8));
-
-    // when
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-    done.completion().toCompletableFuture().join();
-
-    // then
-    assertThat(listenerMock.blobErrors).isEmpty();
-    assertThat(listenerMock.blobs).hasSize(1);
-    assertThat(listenerMock.blobs.get(0).data()).isEqualTo("Hello World !!".getBytes(UTF_8));
-    assertThat(listenerMock.blobs.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
-  }
-
-  @Test
-  @DisplayName("should call listener onError when new result status is ABORTED")
-  void should_call_observer_on_error_when_new_blob_update_status_is_aborted() {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-
-    // when
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_ABORTED);
-    eventsGrpcMock.complete();
-    done.completion().toCompletableFuture().join();
-
-    // then
-    assertThat(listenerMock.blobs).isEmpty();
-    assertThat(listenerMock.blobErrors).hasSize(1);
-    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
-  }
-
-  @Test
-  @DisplayName("should call listener onError when blob download fails")
-  void should_call_observer_on_error_when_downloading_blob_failed() {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-    resultsGrpcMock.failDownloadFor(blobInfo.id());
-
-    // when
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-    done.completion().toCompletableFuture().join();
-
-    // then
-    assertThat(listenerMock.blobs).isEmpty();
-    assertThat(listenerMock.blobErrors).hasSize(1);
-    assertThat(listenerMock.blobErrors.get(0).blobInfo().id()).isEqualTo(blobInfo.id());
-  }
-
-  @Test
-  @DisplayName("should complete watch even if listener throws exception in onSuccess")
-  void should_complete_even_if_blob_listener_throws_on_success() {
-    // Given
-    var failingListenerMock = new FailingListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, failingListenerMock);
-    resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "OK".getBytes(UTF_8));
-
-    // When
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-
-    // Then
-    assertThatCode(() -> done.completion().toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
-    assertThat(done.completion().toCompletableFuture()).isDone();
-    assertThat(done.completion().toCompletableFuture()).isNotCompletedExceptionally();
-    assertThat(failingListenerMock.successCalls.get()).isEqualTo(1);
-    assertThat(failingListenerMock.errorCalls.get()).isEqualTo(0);
-  }
-
-  @Test
-  @DisplayName("should complete watch even if listener throws exception in onError")
-  void should_complete_even_if_blob_listener_throws_on_error() {
-    // Given
-    var failingListenerMock = new FailingListenerMock();
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, failingListenerMock);
-
-    // When
-    var done = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitNewResult(blobInfo.id(), RESULT_STATUS_ABORTED);
-    eventsGrpcMock.complete();
-
-    // Then
-    assertThatCode(() -> done.completion().toCompletableFuture().get(2, SECONDS)).doesNotThrowAnyException();
-    assertThat(done.completion().toCompletableFuture()).isDone();
-    assertThat(done.completion().toCompletableFuture()).isNotCompletedExceptionally();
-    assertThat(failingListenerMock.successCalls.get()).isEqualTo(0);
-    assertThat(failingListenerMock.errorCalls.get()).isEqualTo(1);
-  }
-
-  @Test
-  @DisplayName("should publish leftover blobs when event stream completes before all blobs finish")
-  void should_publish_leftovers_on_completed_stream() throws Exception {
-    // Given
-    var sessionId = sessionId();
-    var blobHandleA = blobHandle(sessionId.asString(), "A");
-    var blobHandleB = blobHandle(sessionId.asString(), "B");
-    var blobHandleC = blobHandle(sessionId.asString(), "C");
-    var listener = new BlobCompletionListenerMock();
-    var watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listener);
-
-    // When
-    var ticket = watcher.watch(List.of(blobHandleA, blobHandleB, blobHandleC));
-    eventsGrpcMock.emitStatusUpdate(blobId("A"), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.emitStatusUpdate(blobId("B"), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-
-    // Then
-    ticket.completion().toCompletableFuture().get(2, SECONDS);
-    var leftovers = ticket.leftoversAfterCompletion().toCompletableFuture().get(2, SECONDS);
-    assertThat(leftovers).containsExactly(blobHandleC);
-  }
-
-  @Test
-  @DisplayName("should publish leftover blobs when event stream fails before all blobs finish")
-  void should_publish_leftovers_on_error_stream() throws Exception {
-    //Given
-    var sessionId = sessionId();
-    var blobHandleA = blobHandle(sessionId.asString(), "A");
-    var blobHandleB = blobHandle(sessionId.asString(), "B");
-    var listener = new BlobCompletionListenerMock();
-    var watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listener);
-
-    // When
-    var ticket = watcher.watch(List.of(blobHandleA, blobHandleB));
-    eventsGrpcMock.emitStatusUpdate(blobId("A"), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.error(new RuntimeException("boom"));
-
-    // Then
-    ticket.completion().toCompletableFuture().get(2, SECONDS);
-    var leftovers = ticket.leftoversAfterCompletion().toCompletableFuture().get(2, SECONDS);
-    assertThat(leftovers).containsExactly(blobHandleB);
-  }
-
-  @Test
-  @DisplayName("leftoversAfterCompletion should complete when all blobs complete successfully")
-  void should_complete_leftovers_future_when_all_blobs_complete_successfully() throws Exception {
-    // Given
-    var listenerMock = new BlobCompletionListenerMock();
-    var blobInfo = blobInfo("BlobId");
-    var blobHandle = new BlobHandle(sessionId, completedFuture(blobInfo), channelPool);
-    resultsGrpcMock.setDownloadContentFor(blobInfo.id(), "Hello".getBytes(UTF_8));
-    watcher = new BlobCompletionEventWatcher(sessionId, channelPool, listenerMock);
-
-    // When
-    var ticket = watcher.watch(List.of(blobHandle));
-    eventsGrpcMock.emitStatusUpdate(blobInfo.id(), RESULT_STATUS_COMPLETED);
-    eventsGrpcMock.complete();
-    ticket.completion().toCompletableFuture().get(2, TimeUnit.SECONDS);
-
-    // Then
-    var leftovers = ticket.leftoversAfterCompletion()
-                          .toCompletableFuture()
-                          .get(2, TimeUnit.SECONDS);
-
-    assertThat(leftovers).isEmpty();
-    assertThat(listenerMock.blobs).hasSize(1);
-  }
-
+  private RecordingListener listener;
 
   @Override
   protected List<BindableService> services() {
-    return List.of(eventsGrpcMock, resultsGrpcMock);
+    return List.of(resultsGrpcMock, eventsGrpcMock);
   }
 
-  static class BlobCompletionListenerMock implements BlobCompletionListener {
-    List<Blob> blobs = new CopyOnWriteArrayList<>();
-    List<BlobError> blobErrors = new CopyOnWriteArrayList<>();
+  @BeforeEach
+  void setUp() {
+    resultsGrpcMock.reset();
+    eventsGrpcMock.reset();
+    scheduler = Executors.newSingleThreadScheduledExecutor();
+    sessionId = sessionId();
+    listener = new RecordingListener();
+  }
+
+  @AfterEach
+  void tearDown() {
+    scheduler.shutdownNow();
+  }
+
+  @Test
+  @DisplayName("should download an output that completes while watched and hand it to the listener")
+  @Timeout(5)
+  void should_download_output_completed_while_watched() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    resultsGrpcMock.setDownloadContentFor(info.id(), "Hello".getBytes(UTF_8));
+    var watcher = watcher(listener, true, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.blobs).hasSize(1);
+    assertThat(new String(listener.blobs.get(0).data(), UTF_8)).isEqualTo("Hello");
+    assertThat(listener.errors).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should report an output that completed before its subscription opened")
+  @Timeout(5)
+  void should_report_output_completed_before_subscription() throws Exception {
+    // Given: the output is already completed when it starts being watched
+    var info = blobInfo("out");
+    resultsGrpcMock.setDownloadContentFor(info.id(), "early".getBytes(UTF_8));
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = watcher(listener, true, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.blobs).extracting(blob -> new String(blob.data(), UTF_8)).containsExactly("early");
+  }
+
+  @Test
+  @DisplayName("should report aborted and deleted outputs as failed without downloading them")
+  @Timeout(5)
+  void should_report_aborted_and_deleted_outputs() throws Exception {
+    // Given
+    var aborted = blobInfo("aborted");
+    var deleted = blobInfo("deleted");
+    var watcher = watcher(listener, true, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(aborted), handle(deleted)));
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+    resultsGrpcMock.setStatus(aborted.id(), RESULT_STATUS_ABORTED);
+    resultsGrpcMock.setStatus(deleted.id(), RESULT_STATUS_DELETED);
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.blobs).isEmpty();
+    assertThat(listener.errors).extracting(error -> error.blobInfo().id()).containsExactlyInAnyOrder(aborted.id(), deleted.id());
+    assertThat(resultsGrpcMock.downloadCalls.get()).isZero();
+  }
+
+  @Test
+  @DisplayName("should report a failed download as an error")
+  @Timeout(5)
+  void should_report_failed_download() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    resultsGrpcMock.failDownloadFor(info.id());
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = watcher(listener, true, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.blobs).isEmpty();
+    assertThat(listener.errors).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should not download outputs when nobody reads them")
+  @Timeout(5)
+  void should_not_download_without_listener() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(resultsGrpcMock.downloadCalls.get()).isZero();
+    assertThat(listener.blobs).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should call the listener on the listener executor and wait for it")
+  @Timeout(5)
+  void should_call_listener_on_listener_executor() throws Exception {
+    // Given: an executor that only queues the listener calls
+    var queued = new LinkedBlockingQueue<Runnable>();
+    var info = blobInfo("out");
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = watcher(listener, true, queued::add, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    var call = queued.poll(3, SECONDS);
+
+    // Then: the output is not processed until the call runs
+    assertThat(call).isNotNull();
+    var idle = watcher.waitUntilIdle().toCompletableFuture();
+    assertThat(idle).isNotDone();
+    call.run();
+    idle.get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should add new outputs to the open subscription with one reopening, then cancel the old one")
+  @Timeout(5)
+  void should_group_new_outputs_into_one_reopening() throws Exception {
+    // Given: one output watched
+    var first = blobInfo("first");
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+    watcher.enqueue(List.of(handle(first)));
+    waitFor(() -> eventsGrpcMock.requests.size() == 1);
+
+    // When: two more outputs arrive within the reopening delay
+    var second = blobInfo("second");
+    var third = blobInfo("third");
+    watcher.enqueue(List.of(handle(second)));
+    watcher.enqueue(List.of(handle(third)));
+    waitFor(() -> eventsGrpcMock.requests.size() == 2 && eventsGrpcMock.cancelledSubscriptions.get() == 1);
+
+    // Then: one subscription watches the three outputs, the first one is cancelled
+    assertThat(ids(eventsGrpcMock.requests.get(1))).containsExactlyInAnyOrder(first.id().asString(), second.id().asString(), third.id().asString());
+    assertThat(eventsGrpcMock.openSubscriptions()).isEqualTo(1);
+    assertThat(watcher.openSubscriptions()).isEqualTo(1);
+
+    // And: they are all reported through it
+    List.of(first, second, third).forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(eventsGrpcMock.requests).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("should cancel a subscription as soon as none of its outputs is pending")
+  @Timeout(5)
+  void should_cancel_subscription_once_nothing_is_pending() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+
+    // When
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 0);
+    assertThat(eventsGrpcMock.cancelledSubscriptions.get()).isEqualTo(1);
+    assertThat(watcher.openSubscriptions()).isZero();
+  }
+
+  @Test
+  @DisplayName("should cap the outputs of a subscription and reopen only the last one")
+  @Timeout(5)
+  void should_cap_outputs_per_subscription() throws Exception {
+    // Given: at most 3 outputs per subscription, and 5 outputs
+    var infos = IntStream.range(0, 5).mapToObj(i -> blobInfo("out-" + i)).toList();
+    var watcher = watcher(listener, false, Runnable::run, 3);
+    watcher.enqueue(infos.stream().map(this::handle).toList());
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 2);
+    assertThat(eventsGrpcMock.requests).extracting(request -> ids(request).size()).containsExactlyInAnyOrder(3, 2);
+
+    // When: one more output arrives
+    var late = blobInfo("late");
+    watcher.enqueue(List.of(handle(late)));
+    waitFor(() -> eventsGrpcMock.requests.size() == 3 && eventsGrpcMock.cancelledSubscriptions.get() == 1);
+
+    // Then: only the subscription that was not full is reopened, with the new output
+    var reopened = ids(eventsGrpcMock.requests.get(2));
+    assertThat(reopened).hasSize(3).contains(late.id().asString());
+    assertThat(eventsGrpcMock.openSubscriptions()).isEqualTo(2);
+
+    // And: every output is reported
+    infos.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+    resultsGrpcMock.setStatus(late.id(), RESULT_STATUS_COMPLETED);
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 0);
+  }
+
+  @Test
+  @DisplayName("should reopen a subscription that fails, and report what changed meanwhile")
+  @Timeout(5)
+  void should_reopen_failed_subscription() throws Exception {
+    // Given: the first subscription fails at once, the second is cut once open
+    var info = blobInfo("out");
+    eventsGrpcMock.failingSubscriptions.set(1);
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+    eventsGrpcMock.failOpenSubscriptions(Status.UNAVAILABLE);
+
+    // When: the output completes while no subscription is open
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then: a third subscription reported it
+    assertThat(eventsGrpcMock.requests).hasSize(3);
+    assertThat(listener.errors).isEmpty();
+  }
+
+  @Test
+  @DisplayName("should report outputs as failed when their subscription cannot succeed")
+  @Timeout(5)
+  void should_report_outputs_when_subscription_fails_for_good() throws Exception {
+    // Given
+    var info = blobInfo("out");
+    eventsGrpcMock.failingSubscriptions.set(1);
+    eventsGrpcMock.failingStatus = Status.PERMISSION_DENIED;
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+
+    // When
+    watcher.enqueue(List.of(handle(info)));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+
+    // Then
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("PERMISSION_DENIED");
+    assertThat(eventsGrpcMock.requests).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should be idle at once with nothing to watch")
+  void should_be_idle_with_nothing_to_watch() {
+    var watcher = watcher(listener, true, Runnable::run, 1000);
+
+    assertThat(watcher.waitUntilIdle().toCompletableFuture()).isDone();
+  }
+
+  @Test
+  @DisplayName("should report pending outputs as failed once the pool is closed, and outputs enqueued afterwards")
+  @Timeout(5)
+  void should_stop_once_pool_is_closed() throws Exception {
+    // Given: an output that never completes
+    var info = blobInfo("out");
+    var watcher = watcher(listener, false, Runnable::run, 1000);
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> eventsGrpcMock.openSubscriptions() == 1);
+    var idle = watcher.waitUntilIdle().toCompletableFuture();
+
+    // When
+    channelPool.close();
+
+    // Then
+    idle.get(3, SECONDS);
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
+
+    // And: an output enqueued afterwards is reported instead of awaited
+    var late = blobInfo("late");
+    watcher.enqueue(List.of(handle(late)));
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.errors).hasSize(2);
+    assertThat(listener.errors.get(1).blobInfo().id()).isEqualTo(late.id());
+  }
+
+  private BlobCompletionEventWatcher watcher(BlobCompletionListener listener, boolean downloadData, Executor listenerExecutor, int maxIdsPerStream) {
+    return new BlobCompletionEventWatcher(sessionId, channelPool, listener, downloadData, listenerExecutor, scheduler,
+      maxIdsPerStream, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF);
+  }
+
+  private BlobHandle handle(BlobInfo info) {
+    return new BlobHandle(sessionId, completedFuture(info), channelPool);
+  }
+
+  /** Waits up to 3 seconds for a condition set by the watcher's threads. */
+  private static void waitFor(BooleanSupplier condition) throws InterruptedException {
+    var deadline = System.nanoTime() + SECONDS.toNanos(3);
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() - deadline > 0) throw new AssertionError("condition not met within 3 s");
+      Thread.sleep(5);
+    }
+  }
+
+  static class RecordingListener implements BlobCompletionListener {
+    final List<Blob> blobs = new CopyOnWriteArrayList<>();
+    final List<BlobError> errors = new CopyOnWriteArrayList<>();
 
     @Override
     public void onSuccess(Blob blob) {
@@ -282,24 +380,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
 
     @Override
     public void onError(BlobError blobError) {
-      blobErrors.add(blobError);
-    }
-  }
-
-  static class FailingListenerMock implements BlobCompletionListener {
-    AtomicInteger successCalls = new AtomicInteger();
-    AtomicInteger errorCalls = new  AtomicInteger();
-
-    @Override
-    public void onSuccess(Blob blob) {
-      successCalls.incrementAndGet();
-      throw new RuntimeException("boom in success");
-    }
-
-    @Override
-    public void onError(BlobError blobError) {
-      errorCalls.incrementAndGet();
-      throw new RuntimeException("boom in failure");
+      errors.add(blobError);
     }
   }
 }

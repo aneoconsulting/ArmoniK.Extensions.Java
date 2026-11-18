@@ -293,8 +293,10 @@ public class ArmoniKClient implements AutoCloseable {
                                            .withIdleTimeout(ManagedChannelPool.DEFAULT_MAX_IDLE)
                                            .withKeepAlive(Duration.ofSeconds(30), Duration.ofSeconds(30));
 
-    if (!armoniKConfig.sslValidation()) {
+    if (!armoniKConfig.usesTls()) {
       channelBuilder.withUnsecureConnection();
+    } else if (!armoniKConfig.sslValidation()) {
+      channelBuilder.withoutServerCertificateValidation();
     }
 
     if (armoniKConfig.caCertPem() != null && !armoniKConfig.caCertPem().isBlank()) {

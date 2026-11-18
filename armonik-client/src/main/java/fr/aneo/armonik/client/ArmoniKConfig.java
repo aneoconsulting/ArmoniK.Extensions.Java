@@ -15,6 +15,8 @@
  */
 package fr.aneo.armonik.client;
 
+import java.net.URI;
+
 import static fr.aneo.armonik.client.RetryPolicy.DEFAULT;
 import static java.util.Objects.requireNonNullElse;
 
@@ -23,6 +25,10 @@ import static java.util.Objects.requireNonNullElse;
  * <p>
  * This configuration specifies connection parameters including endpoint, security settings,
  * and retry behavior. Create instances using the builder pattern.
+ * <p>
+ * The scheme of the endpoint chooses the transport: {@code https://} connects over TLS and validates
+ * the server certificate, unless {@link Builder#withoutSslValidation()} is set; {@code http://}
+ * connects without TLS.
  *
  * @see ArmoniKClient
  */
@@ -67,12 +73,41 @@ public final class ArmoniKConfig {
   }
 
   /**
-   * Returns whether SSL validation is enabled.
+   * Returns whether the server certificate of an {@code https://} endpoint is validated.
    *
-   * @return true if SSL certificates should be validated, false otherwise
+   * @return true if the server certificate is validated, false if any certificate is accepted
+   * @see Builder#withoutSslValidation()
    */
   public boolean sslValidation() {
     return sslValidation;
+  }
+
+  /**
+   * Returns whether the endpoint connects over TLS, that is whether its scheme is {@code https}.
+   */
+  boolean usesTls() {
+    return usesTls(endpoint);
+  }
+
+  /**
+   * Returns whether {@code endpoint} connects over TLS: {@code https} does, {@code http} does not.
+   *
+   * @throws IllegalArgumentException if the endpoint is not a URL or its scheme is neither
+   */
+  private static boolean usesTls(String endpoint) {
+    String scheme;
+    try {
+      scheme = URI.create(endpoint).getScheme();
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("endpoint is not a valid URL: " + endpoint, e);
+    }
+    if ("https".equalsIgnoreCase(scheme)) return true;
+    if ("http".equalsIgnoreCase(scheme)) return false;
+    throw new IllegalArgumentException("endpoint must start with http:// or https://, got: " + endpoint);
+  }
+
+  private static boolean isSet(String value) {
+    return value != null && !value.isBlank();
   }
 
   /**
@@ -186,7 +221,9 @@ public final class ArmoniKConfig {
     /**
      * Sets the ArmoniK cluster endpoint (required).
      * <p>
-     * The endpoint must be a complete URL including protocol and port.
+     * The endpoint must be a complete URL including scheme and port. Its scheme chooses the
+     * transport: {@code https://} connects over TLS, {@code http://} connects without TLS and
+     * accepts no certificate setting.
      *
      * @param endpoint the endpoint URL (e.g., "https://armonik.example.com:443")
      * @return this builder
@@ -198,10 +235,19 @@ public final class ArmoniKConfig {
     }
 
     /**
-     * Disables SSL certificate validation.
+     * Disables the validation of the server certificate, while keeping TLS.
      * <p>
-     * <strong>Security Warning:</strong> This disables certificate validation and should
-     * only be used in development environments with self-signed certificates.
+     * The connection to an {@code https://} endpoint stays encrypted, but any server certificate is
+     * accepted, without validating the chain that issued it nor the host name it was issued for.
+     * A client certificate is still sent for mutual TLS. To connect without TLS, use an
+     * {@code http://} endpoint instead.
+     * <p>
+     * <strong>Security Warning:</strong> the server is not authenticated: anyone able to intercept
+     * the connection can impersonate it. Use this only in development, for instance against a
+     * control plane with a self-signed certificate.
+     * <p>
+     * {@link #build()} rejects it with an {@code http://} endpoint, which has no certificate to
+     * validate, and with {@link #withCaCert(String)}, whose CA would not be used.
      *
      * @return this builder
      */
@@ -328,6 +374,19 @@ public final class ArmoniKConfig {
     private void validate() {
       if (endpoint == null || endpoint.isBlank())
         throw new IllegalArgumentException("endpoint is required");
+
+      var plaintext = !usesTls(endpoint);
+      if (plaintext && !sslValidation)
+        throw new IllegalArgumentException("withoutSslValidation() cannot be used with an http:// endpoint, which connects without TLS: " +
+          "use an https:// endpoint to keep TLS without validating the server certificate, or remove withoutSslValidation(). Endpoint: " + endpoint);
+
+      if (plaintext && (isSet(caCertPem) || clientCertPem != null || clientKeyPem != null || clientP12 != null))
+        throw new IllegalArgumentException("Certificates cannot be used with an http:// endpoint, which connects without TLS: " +
+          "use an https:// endpoint. Endpoint: " + endpoint);
+
+      if (!sslValidation && isSet(caCertPem))
+        throw new IllegalArgumentException("withCaCert(" + caCertPem + ") cannot be used with withoutSslValidation(), " +
+          "since the CA certificate would not be used: remove one of them");
 
       if (channelPoolSize < 1)
         throw new IllegalArgumentException("channelPoolSize must be at least 1, got: " + channelPoolSize);

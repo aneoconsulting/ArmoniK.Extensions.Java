@@ -241,6 +241,83 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should give up awaiting outputs after the timeout, and wait for them again later")
+  void should_give_up_awaiting_outputs_after_timeout() throws Exception {
+    // Given: an output that does not complete
+    var task = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                            .withOutput("output"));
+
+    // When
+    var start = System.nanoTime();
+    var processed = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed(Duration.ofMillis(200)));
+
+    // Then: the wait gives up after the timeout, and checks at once with a zero or very negative timeout
+    assertThat(processed).isFalse();
+    assertThat(System.nanoTime() - start).isGreaterThanOrEqualTo(MILLISECONDS.toNanos(200));
+    assertThat(assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed(Duration.ZERO))).isFalse();
+    assertThat(assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed(Duration.ofSeconds(Long.MIN_VALUE)))).isFalse();
+
+    // And: once the output completes, a later call returns true
+    resultsGrpcMock.setStatus(idFrom(task.outputs().get("output")), RESULT_STATUS_COMPLETED);
+    assertThat(assertTimeoutPreemptively(Duration.ofSeconds(5), () -> sessionHandle.awaitOutputsProcessed(Duration.ofSeconds(3)))).isTrue();
+    assertThat(outputTaskListener.blobs).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("should wait without limit for a timeout too large to count in nanoseconds")
+  void should_wait_without_limit_for_huge_timeout() throws Exception {
+    // Given: an output that does not complete yet
+    var task = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
+                                                            .withOutput("output"));
+
+    // When
+    var waiting = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+      try {
+        return sessionHandle.awaitOutputsProcessed(java.time.temporal.ChronoUnit.FOREVER.getDuration());
+      } catch (InterruptedException e) {
+        throw new IllegalStateException(e);
+      }
+    });
+
+    // Then: it waits instead of failing, and returns once the output completes
+    Thread.sleep(200);
+    assertThat(waiting).isNotDone();
+    resultsGrpcMock.setStatus(idFrom(task.outputs().get("output")), RESULT_STATUS_COMPLETED);
+    assertThat(waiting.get(5, SECONDS)).isTrue();
+  }
+
+  @Test
+  @DisplayName("should stop a timed wait when the waiting thread is interrupted")
+  void should_stop_timed_wait_when_interrupted() throws Exception {
+    // Given: an output that does not complete, and a thread waiting for it
+    sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes())).withOutput("output"));
+    var outcome = new java.util.concurrent.CompletableFuture<Throwable>();
+    var waiter = new Thread(() -> {
+      try {
+        sessionHandle.awaitOutputsProcessed(Duration.ofSeconds(30));
+        outcome.complete(null);
+      } catch (Throwable t) {
+        outcome.complete(t);
+      }
+    });
+    waiter.start();
+    Thread.sleep(100);
+
+    // When
+    waiter.interrupt();
+
+    // Then
+    assertThat(outcome.get(5, SECONDS)).isInstanceOf(InterruptedException.class);
+  }
+
+  @Test
+  @DisplayName("should return at once from a timed wait when nothing is pending")
+  void should_return_at_once_from_timed_wait_when_nothing_pending() throws Exception {
+    assertThat(sessionHandle.awaitOutputsProcessed(Duration.ZERO)).isTrue();
+    assertThatThrownBy(() -> sessionHandle.awaitOutputsProcessed(null)).isInstanceOf(NullPointerException.class);
+  }
+
+  @Test
   @DisplayName("should report outputs as failed and stop waiting when the task submission fails")
   void should_report_outputs_as_failed_when_submission_fails() {
     // Given

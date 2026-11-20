@@ -25,9 +25,13 @@ import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import io.grpc.ManagedChannel;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.BlobMapper.toResultMetaDataRequest;
@@ -242,10 +246,42 @@ public final class SessionHandle {
    * of that specific invocation.
    *
    * @see BlobCompletionListener
+   * @see #awaitOutputsProcessed(Duration)
    */
   public void awaitOutputsProcessed() {
     taskSubmitter.flush();
     taskSubmitter.waitUntilFinished().toCompletableFuture().join();
+  }
+
+  /**
+   * Waits, at most {@code timeout}, until no output of this session is watched or being handed to
+   * the listener.
+   * <p>
+   * Buffered task submissions are sent first, as by {@link #awaitOutputsProcessed()}, and the wait
+   * also covers outputs submitted while it runs. It gives up after {@code timeout}, for instance
+   * when an output is never reported. Giving up stops only this wait: the outputs are still
+   * watched, and a later call waits for them again. A zero or negative timeout checks without
+   * waiting; a timeout too large to count in nanoseconds waits without limit, until interrupted.
+   *
+   * @param timeout the maximum time to wait
+   * @return {@code true} if no output was left to process, {@code false} if the timeout elapsed first
+   * @throws NullPointerException if {@code timeout} is {@code null}
+   * @throws InterruptedException if the calling thread is interrupted while waiting
+   * @see #awaitOutputsProcessed()
+   */
+  public boolean awaitOutputsProcessed(Duration timeout) throws InterruptedException {
+    requireNonNull(timeout, "timeout must not be null");
+    taskSubmitter.flush();
+    var finished = taskSubmitter.waitUntilFinished().toCompletableFuture();
+    try {
+      // convert saturates where Duration.toNanos would overflow
+      finished.get(TimeUnit.NANOSECONDS.convert(timeout), TimeUnit.NANOSECONDS);
+      return true;
+    } catch (TimeoutException e) {
+      return false;
+    } catch (ExecutionException e) {
+      throw Futures.asRuntimeException(e.getCause());
+    }
   }
 
   @Override

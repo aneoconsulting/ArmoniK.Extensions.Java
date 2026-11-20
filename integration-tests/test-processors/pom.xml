@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>fr.aneo</groupId>
+    <artifactId>armonik-integration-tests</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>armonik-it-processors</artifactId>
+  <name>TaskProcessors used by the integration tests</name>
+  <description>Loaded by the dynamic Java worker as a WorkerLibrary; the worker provides the ArmoniK worker classes.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>fr.aneo</groupId>
+      <artifactId>armonik-worker-domain</artifactId>
+      <version>${armonik-worker.version}</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>

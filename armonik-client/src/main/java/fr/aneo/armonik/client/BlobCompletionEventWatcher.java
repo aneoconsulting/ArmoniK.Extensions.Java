@@ -590,7 +590,7 @@ final class BlobCompletionEventWatcher {
       listenerExecutor.execute(counted);
     } catch (RejectedExecutionException rejected) {
       // A shut down or saturated executor must neither lose the output nor leave waiters hanging
-      logger.warn("The listener executor rejected a call, running it on the current thread. SessionId: {}", sessionId.asString(), rejected);
+      logger.warn("The listener executor rejected a call, running it on the current thread. SessionId: {}, cause: {}", sessionId.asString(), rejected.getMessage());
       counted.run();
     }
   }

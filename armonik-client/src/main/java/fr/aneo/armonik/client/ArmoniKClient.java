@@ -20,6 +20,8 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.HashSet;
@@ -27,6 +29,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static fr.aneo.armonik.client.internal.grpc.mappers.SessionMapper.*;
@@ -61,6 +64,9 @@ import static java.util.Objects.requireNonNull;
  * @see ArmoniKConfig
  */
 public class ArmoniKClient implements AutoCloseable {
+  private static final Logger logger = LoggerFactory.getLogger(ArmoniKClient.class);
+  /** How long {@link #close()} waits for the listener calls already queued on the client's own executor. */
+  static final Duration LISTENER_SHUTDOWN_TIMEOUT = Duration.ofSeconds(10);
   private final ChannelPool channelPool;
   private final ChannelPool eventChannelPool;
   /** The event channel pool this client created and closes at once; null when events share the client's pool. */
@@ -121,6 +127,17 @@ public class ArmoniKClient implements AutoCloseable {
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
     this.listenerExecutor = Runnable::run;
     this.ownedListenerExecutor = null;
+  }
+
+  /** A client running its listener calls on {@code listenerExecutor}, which it owns and shuts down on close. */
+  ArmoniKClient(ChannelPool channelPool, ExecutorService listenerExecutor) {
+    this.channelPool = channelPool;
+    this.eventChannelPool = channelPool;
+    this.ownedEventChannelPool = null;
+    this.taskSubmissionBatching = TaskSubmissionBatching.DEFAULT;
+    this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
+    this.listenerExecutor = requireNonNull(listenerExecutor, "listenerExecutor must not be null");
+    this.ownedListenerExecutor = listenerExecutor;
   }
 
 
@@ -293,6 +310,13 @@ public class ArmoniKClient implements AutoCloseable {
    * closed, and any in-flight operations will be allowed to complete within the shutdown
    * timeout period. If interrupted during shutdown, immediate shutdown is forced.
    * <p>
+   * Outputs still awaited are reported to their listener as failed. When the client runs its
+   * listener calls on its own executor, this method then waits, up to 10 seconds, for the listener
+   * calls already queued, those failures included, so that they are not lost when the application
+   * exits right after; it does not wait when called from a listener call. An executor supplied with
+   * {@link ArmoniKConfig.Builder#withListenerExecutor} is neither shut down nor waited for: the
+   * application drains it.
+   * <p>
    * After calling this method, the client should not be used for any operations.
    */
   @Override
@@ -301,20 +325,41 @@ public class ArmoniKClient implements AutoCloseable {
     // which also reports the outputs still awaited as failed
     if (ownedEventChannelPool != null) ownedEventChannelPool.closeNow();
     channelPool.close();
-    if (ownedListenerExecutor != null) ownedListenerExecutor.shutdown();
+    if (ownedListenerExecutor != null) shutDownListenerExecutor(ownedListenerExecutor);
+  }
+
+  /** Shuts the client's own listener executor down, waiting for the calls already queued unless called from one of them. */
+  private static void shutDownListenerExecutor(ExecutorService executor) {
+    executor.shutdown();
+    if (Thread.currentThread() instanceof ListenerThread) return;
+    try {
+      if (!executor.awaitTermination(LISTENER_SHUTDOWN_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
+        logger.warn("Listener calls still running or queued {} after the client was closed; they go on in the background",
+          LISTENER_SHUTDOWN_TIMEOUT);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
    * Creates the executor running this client's listener calls: one daemon thread per available
    * processor, separate from the threads that complete gRPC calls.
    */
-  private static ExecutorService newListenerExecutor() {
+  static ExecutorService newListenerExecutor() {
     var counter = new AtomicInteger();
     return Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors(), runnable -> {
-      var thread = new Thread(runnable, "ArmoniK-Listener-" + counter.getAndIncrement());
+      var thread = new ListenerThread(runnable, "ArmoniK-Listener-" + counter.getAndIncrement());
       thread.setDaemon(true);
       return thread;
     });
+  }
+
+  /** A thread of a client's own listener executor, so that {@link #close()} called from a listener call does not wait for itself. */
+  private static final class ListenerThread extends Thread {
+    ListenerThread(Runnable runnable, String name) {
+      super(runnable, name);
+    }
   }
 
   private SessionInfo createSession(SessionDefinition definition) {

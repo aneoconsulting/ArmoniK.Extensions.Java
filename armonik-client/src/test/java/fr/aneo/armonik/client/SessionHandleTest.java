@@ -241,6 +241,38 @@ class SessionHandleTest extends InProcessGrpcTestBase {
   }
 
   @Test
+  @DisplayName("should report the outputs of a failed submission on the listener executor")
+  void should_report_failed_submission_on_listener_executor() throws Exception {
+    // Given
+    taskGrpcMock.submissionError = UNAVAILABLE.withDescription("Control plane is shutting down").asRuntimeException();
+    var threads = new java.util.concurrent.CopyOnWriteArrayList<String>();
+    var listener = new BlobCompletionListener() {
+      @Override
+      public void onSuccess(Blob blob) {
+        threads.add(Thread.currentThread().getName());
+      }
+
+      @Override
+      public void onError(BlobError blobError) {
+        threads.add(Thread.currentThread().getName());
+      }
+    };
+    var executor = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "test-listener"));
+    try {
+      var session = new SessionHandle(sessionInfo, listener, channelPool, TaskSubmissionBatching.DEFAULT, new ResultsServiceConfiguration(channelPool), channelPool, executor);
+
+      // When
+      session.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes())).withOutput("output"));
+      assertTimeoutPreemptively(Duration.ofSeconds(5), () -> session.awaitOutputsProcessed());
+
+      // Then
+      assertThat(threads).containsExactly("test-listener");
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
   @DisplayName("should report outputs as failed and stop waiting when the task submission fails")
   void should_report_outputs_as_failed_when_submission_fails() {
     // Given

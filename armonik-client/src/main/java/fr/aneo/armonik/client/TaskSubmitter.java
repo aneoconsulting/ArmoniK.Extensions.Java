@@ -1079,7 +1079,7 @@ final class TaskSubmitter {
       try {
         executor.execute(task);
       } catch (RejectedExecutionException rejected) {
-        logger.warn("The listener executor rejected a call, running it on the current thread. Session id: {}", sessionId.asString(), rejected);
+        logger.warn("The listener executor rejected a call, running it on the current thread. Session id: {}, cause: {}", sessionId.asString(), rejected.getMessage());
         task.run();
       }
     };

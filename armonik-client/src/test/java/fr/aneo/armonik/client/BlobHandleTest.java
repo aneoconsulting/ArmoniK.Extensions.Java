@@ -120,26 +120,29 @@ class BlobHandleTest extends InProcessGrpcTestBase {
         };
       }
     }).build().start();
-    var retryPolicy = Map.of("maxAttempts", 2.0, "initialBackoff", "0.01s", "maxBackoff", "0.01s", "backoffMultiplier", 1.0,
-      "retryableStatusCodes", List.of("UNAVAILABLE"));
-    var serviceConfig = Map.of("methodConfig", List.of(Map.of("name", List.of(Map.of()), "retryPolicy", retryPolicy)));
-    var retryingPool = ManagedChannelPool.create(1, new RetryPolicy(1, Duration.ofMillis(10), Duration.ofMillis(10), 1),
-      () -> InProcessChannelBuilder.forName(name).directExecutor().defaultServiceConfig(serviceConfig).enableRetry().build());
-    // Each chunk holds its own byte value, so that a chunk replayed with the bytes of another shows
-    var payload = new byte[UPLOAD_CHUNK_SIZE * 3 + 7];
-    IntStream.range(0, payload.length).forEach(i -> payload[i] = (byte) (i / UPLOAD_CHUNK_SIZE + 1));
-    var handle = new BlobHandle(sessionId(), completedFuture(blobInfo("BlobId")), retryingPool);
-
     try {
-      // When
-      handle.uploadData(InMemoryBlobData.from(payload)).toCompletableFuture().get(10, SECONDS);
+      var retryPolicy = Map.of("maxAttempts", 2.0, "initialBackoff", "0.01s", "maxBackoff", "0.01s", "backoffMultiplier", 1.0,
+        "retryableStatusCodes", List.of("UNAVAILABLE"));
+      var serviceConfig = Map.of("methodConfig", List.of(Map.of("name", List.of(Map.of()), "retryPolicy", retryPolicy)));
+      var retryingPool = ManagedChannelPool.create(1, new RetryPolicy(1, Duration.ofMillis(10), Duration.ofMillis(10), 1),
+        () -> InProcessChannelBuilder.forName(name).directExecutor().defaultServiceConfig(serviceConfig).enableRetry().build());
+      // Each chunk holds its own byte value, so that a chunk replayed with the bytes of another shows
+      var payload = new byte[UPLOAD_CHUNK_SIZE * 3 + 7];
+      IntStream.range(0, payload.length).forEach(i -> payload[i] = (byte) (i / UPLOAD_CHUNK_SIZE + 1));
+      var handle = new BlobHandle(sessionId(), completedFuture(blobInfo("BlobId")), retryingPool);
 
-      // Then: the retried attempt carried the same bytes as the first one
-      assertThat(attempts).hasSize(2);
-      assertThat(attempts.get(0)).isEqualTo(payload);
-      assertThat(attempts.get(1)).isEqualTo(payload);
+      try {
+        // When
+        handle.uploadData(InMemoryBlobData.from(payload)).toCompletableFuture().get(10, SECONDS);
+
+        // Then: the retried attempt carried the same bytes as the first one
+        assertThat(attempts).hasSize(2);
+        assertThat(attempts.get(0)).isEqualTo(payload);
+        assertThat(attempts.get(1)).isEqualTo(payload);
+      } finally {
+        retryingPool.close();
+      }
     } finally {
-      retryingPool.close();
       server.shutdownNow();
     }
   }

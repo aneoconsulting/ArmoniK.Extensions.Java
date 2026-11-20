@@ -266,15 +266,17 @@ public final class SessionHandle {
   }
 
   /**
-   * Waits, at most {@code timeout}, until the outputs being watched have been processed.
+   * Waits, at most {@code timeout}, until no output of this session is watched or being handed to
+   * the listener.
    * <p>
-   * Same as {@link #awaitOutputsProcessed()}, but gives up after {@code timeout}, for instance
+   * Buffered task submissions are sent first, as by {@link #awaitOutputsProcessed()}, and the wait
+   * also covers outputs submitted while it runs. It gives up after {@code timeout}, for instance
    * when an output is never reported. Giving up stops only this wait: the outputs are still
    * watched, and a later call waits for them again. A zero or negative timeout checks without
-   * waiting.
+   * waiting; a timeout too large to count in nanoseconds waits without limit, until interrupted.
    *
    * @param timeout the maximum time to wait
-   * @return {@code true} if every output was processed, {@code false} if the timeout elapsed first
+   * @return {@code true} if no output was left to process, {@code false} if the timeout elapsed first
    * @throws NullPointerException if {@code timeout} is {@code null}
    * @throws InterruptedException if the calling thread is interrupted while waiting
    * @see #awaitOutputsProcessed()
@@ -284,7 +286,8 @@ public final class SessionHandle {
     taskSubmitter.flush();
     var finished = taskSubmitter.waitUntilFinished().toCompletableFuture();
     try {
-      finished.get(Math.max(0, timeout.toNanos()), TimeUnit.NANOSECONDS);
+      // convert saturates where Duration.toNanos would overflow
+      finished.get(TimeUnit.NANOSECONDS.convert(timeout), TimeUnit.NANOSECONDS);
       return true;
     } catch (TimeoutException e) {
       return false;

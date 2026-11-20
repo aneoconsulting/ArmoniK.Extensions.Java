@@ -162,6 +162,7 @@ class FailureIT {
     var roundFailures = new AtomicInteger();
     var firstFailure = new AtomicReference<Throwable>();
     var lastProgress = new AtomicLong(System.nanoTime());
+    var awaited = ConcurrentHashMap.<String>newKeySet();
     try (var client = newClient()) {
       var threads = new ArrayList<Thread>();
       for (int s = 0; s < 4; s++) {
@@ -175,7 +176,10 @@ class FailureIT {
               super.onSuccess(blob);
               delivered.incrementAndGet();
               var want = expected.get(blob.blobInfo().id().asString());
-              if (want != null && !java.util.Arrays.equals(want, blob.data())) corrupted.incrementAndGet();
+              if (want != null && !java.util.Arrays.equals(want, blob.data())) {
+                corrupted.incrementAndGet();
+                metric("FailureIT", "restart_corruption", describeCorruption(want, blob.data()));
+              }
             }
 
             @Override
@@ -198,11 +202,21 @@ class FailureIT {
                                                     .withWorkerLibrary(library(session)));
               }
               List<TaskHandle> handles = session.submitTasks(definitions);
+              var roundIds = new ArrayList<String>();
               for (int i = 0; i < handles.size(); i++) {
                 var index = i;
-                output(handles.get(i)).deferredBlobInfo().thenAccept(info -> expected.put(info.id().asString(), inputs.get(index)));
+                output(handles.get(i)).deferredBlobInfo().thenAccept(info -> {
+                  expected.put(info.id().asString(), inputs.get(index));
+                  synchronized (roundIds) {
+                    roundIds.add(info.id().asString());
+                  }
+                  awaited.add(info.id().asString());
+                });
               }
               session.awaitOutputsProcessed();
+              synchronized (roundIds) {
+                roundIds.forEach(awaited::remove);
+              }
               rounds.incrementAndGet();
               if (restarted.get()) roundsAfterRestart.incrementAndGet();
               lastProgress.set(System.nanoTime());
@@ -227,6 +241,12 @@ class FailureIT {
       // Run until 20 rounds completed after the restart, or 3 minutes
       await(Duration.ofMinutes(3), () -> roundsAfterRestart.get() >= 20);
       var recoveryMillis = millisSince(restartedAt);
+      if (roundsAfterRestart.get() < 20) {
+        // Stalled: are the awaited outputs still pending on the server, or did the client miss them?
+        metric("FailureIT", "restart_stalled_outputs_server_status", fr.aneo.armonik.client.ItTestAccess.serverStatuses(ENDPOINT, List.copyOf(awaited)));
+        metric("FailureIT", "restart_stalled_event_channels_in_use", channelsInUse(client, "eventChannelPool"));
+        metric("FailureIT", "restart_stalled_sdk_threads", sdkThreads().replace('\n', ' '));
+      }
       stop.set(true);
       for (var thread : threads) thread.join(60_000);
       var stuck = threads.stream().filter(Thread::isAlive).count();
@@ -244,5 +264,37 @@ class FailureIT {
       assertThat(roundsAfterRestart.get()).as("rounds completed in 3 min after the restart. %s", sdkThreads()).isGreaterThanOrEqualTo(20);
       assertThat(stuck).as("round threads still blocked 60 s after the end. %s", sdkThreads()).isZero();
     }
+  }
+
+  /**
+   * Where an output differs from its input, in upload chunks (BlobHandle.UPLOAD_CHUNK_SIZE): which chunks
+   * differ, and whether each differing chunk holds the bytes of another chunk of the same input, the
+   * signature of a retry that replays requests wrapping a reused buffer.
+   */
+  static String describeCorruption(byte[] want, byte[] got) {
+    var chunk = fr.aneo.armonik.client.BlobHandle.UPLOAD_CHUNK_SIZE;
+    var description = new StringBuilder("input " + want.length + " B, output " + got.length + " B");
+    var chunks = (Math.max(want.length, got.length) + chunk - 1) / chunk;
+    var differing = new ArrayList<String>();
+    for (int c = 0; c < chunks; c++) {
+      var from = c * chunk;
+      var wantPart = java.util.Arrays.copyOfRange(want, Math.min(from, want.length), Math.min(from + chunk, want.length));
+      var gotPart = java.util.Arrays.copyOfRange(got, Math.min(from, got.length), Math.min(from + chunk, got.length));
+      if (java.util.Arrays.equals(wantPart, gotPart)) continue;
+      var source = "?";
+      for (int other = 0; other < chunks; other++) {
+        var otherFrom = other * chunk;
+        if (otherFrom >= want.length) break;
+        var otherPart = java.util.Arrays.copyOfRange(want, otherFrom, Math.min(otherFrom + chunk, want.length));
+        if (gotPart.length > 0 && java.util.Arrays.equals(java.util.Arrays.copyOf(otherPart, Math.min(otherPart.length, gotPart.length)),
+          java.util.Arrays.copyOf(gotPart, Math.min(otherPart.length, gotPart.length)))) {
+          source = "chunk " + other;
+          break;
+        }
+      }
+      differing.add(c + "<-" + source);
+    }
+    return description.append(", ").append(differing.size()).append("/").append(chunks).append(" chunks differ: ")
+                      .append(differing.size() > 12 ? differing.subList(0, 12) + "..." : differing).toString();
   }
 }

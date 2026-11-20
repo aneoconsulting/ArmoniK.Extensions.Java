@@ -49,4 +49,35 @@ public final class ItTestAccess {
     var info = new BlobInfo(BlobId.from(raw.getResultId()), sessionId, raw.getName(), false, null, Instant.now());
     return new BlobHandle(sessionId, java.util.concurrent.CompletableFuture.completedFuture(info), pool);
   }
+
+  /**
+   * The server-side status of blobs and of the tasks owning them, for diagnosing a client that waits
+   * for outputs: "resultStatus/taskStatus" counted over the given blob ids. Uses a fresh channel.
+   */
+  public static java.util.Map<String, Long> serverStatuses(String endpoint, java.util.Collection<String> blobIds) {
+    var uri = java.net.URI.create(endpoint);
+    var channel = io.grpc.ManagedChannelBuilder.forAddress(uri.getHost(), uri.getPort()).usePlaintext().build();
+    try {
+      var counts = new java.util.TreeMap<String, Long>();
+      for (var id : blobIds) {
+        String key;
+        try {
+          var result = ResultsGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS)
+                                  .getResult(fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.GetResultRequest.newBuilder().setResultId(id).build())
+                                  .getResult();
+          var task = fr.aneo.armonik.api.grpc.v1.tasks.TasksGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS)
+                                                               .getTask(fr.aneo.armonik.api.grpc.v1.tasks.TasksCommon.GetTaskRequest.newBuilder()
+                                                                                                                                 .setTaskId(result.getOwnerTaskId()).build())
+                                                               .getTask();
+          key = result.getStatus().name() + "/" + task.getStatus().name();
+        } catch (RuntimeException e) {
+          key = "lookup failed: " + e.getMessage();
+        }
+        counts.merge(key, 1L, Long::sum);
+      }
+      return counts;
+    } finally {
+      channel.shutdownNow();
+    }
+  }
 }

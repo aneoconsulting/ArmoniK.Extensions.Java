@@ -415,13 +415,18 @@ public final class ArmoniKConfig {
     /**
      * Sets the executor running the {@link BlobCompletionListener} calls.
      * <p>
-     * Listener calls are application code and may take time: they never run on the threads that
-     * complete the client's gRPC calls, so a slow listener only delays other listener calls, never
-     * submissions, uploads or downloads. By default each client runs them on its own pool of one
-     * daemon thread per available processor, shut down with the client. An executor supplied here
-     * is used as is, and left running when the client closes; it must not run tasks on the calling
-     * thread, or the listener calls run on the gRPC threads again. A call the executor rejects runs
-     * on the current thread, so that no output is lost.
+     * Listener calls are application code and may take time: they run on this executor rather than
+     * on the threads that complete the client's gRPC calls, so a slow listener delays other listener
+     * calls, not submissions, uploads or downloads. By default each client runs them on its own pool
+     * of one daemon thread per available processor, shut down with the client. An executor supplied
+     * here is used as is, and left running when the client closes; it must not run tasks on the
+     * calling thread, or the listener calls run on the gRPC threads again.
+     * <p>
+     * A call the executor rejects runs on the current thread, usually one that completes a gRPC call,
+     * so that no output is lost. This happens to the calls made after the client is closed, which
+     * report the outputs still awaited as failed, and to every call while a supplied executor rejects
+     * work, for instance a bounded one that is saturated: such an executor holds back the gRPC
+     * threads while it is saturated.
      *
      * @param listenerExecutor the executor, or null for the client's own
      * @return this builder

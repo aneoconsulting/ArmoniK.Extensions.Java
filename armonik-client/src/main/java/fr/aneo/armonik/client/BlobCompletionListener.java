@@ -34,9 +34,11 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
  * Implementations of this interface must be thread-safe, as callback methods may be invoked
  * concurrently from multiple threads.
  * <p>
- * The callbacks run on the client's listener executor (see {@link ArmoniKConfig.Builder#withListenerExecutor}),
- * by default never on the threads that complete the client's gRPC calls: a callback may take time without
- * delaying submissions, uploads or downloads, only the other callbacks. An output counts as processed,
+ * The callbacks run on the client's listener executor (see {@link ArmoniKConfig.Builder#withListenerExecutor})
+ * rather than on the threads that complete the client's gRPC calls: a callback may take time without
+ * delaying submissions, uploads or downloads, only the other callbacks. A callback the executor rejects,
+ * after the client is closed or while a supplied executor is saturated, runs on the current thread
+ * instead, so that no output is lost. An output counts as processed,
  * for {@link SessionHandle#awaitOutputsProcessed()}, once its callback has returned.
  *
  * @see BlobCompletionEventWatcher

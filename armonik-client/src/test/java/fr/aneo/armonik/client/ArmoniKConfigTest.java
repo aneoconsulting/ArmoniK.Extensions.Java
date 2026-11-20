@@ -102,17 +102,63 @@ class ArmoniKConfigTest {
   }
 
   @Test
-  @DisplayName("should build config without SSL validation")
+  @DisplayName("should build config without SSL validation for an https endpoint")
   void should_build_config_without_ssl_validation() {
     // When
     var config = ArmoniKConfig.builder()
-                              .endpoint("http://localhost:4312")
+                              .endpoint("https://localhost:4312")
                               .withoutSslValidation()
                               .build();
 
     // Then
-    assertThat(config.endpoint()).isEqualTo("http://localhost:4312");
+    assertThat(config.endpoint()).isEqualTo("https://localhost:4312");
     assertThat(config.sslValidation()).isFalse();
+    assertThat(config.usesTls()).isTrue();
+  }
+
+  @Test
+  @DisplayName("should connect without TLS to an http endpoint and over TLS to an https one")
+  void should_choose_the_transport_from_the_scheme() {
+    assertThat(ArmoniKConfig.builder().endpoint("http://localhost:4312").build().usesTls()).isFalse();
+    assertThat(ArmoniKConfig.builder().endpoint("HTTPS://armonik.example.com:443").build().usesTls()).isTrue();
+  }
+
+  @Test
+  @DisplayName("should reject an endpoint whose scheme is neither http nor https")
+  void should_reject_endpoint_without_http_scheme() {
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("localhost:4312").build())
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("localhost:4312");
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("grpc://localhost:4312").build())
+      .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("should reject withoutSslValidation with an http endpoint, which has no TLS")
+  void should_reject_without_ssl_validation_on_http_endpoint() {
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("http://localhost:4312").withoutSslValidation().build())
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("https://");
+  }
+
+  @Test
+  @DisplayName("should reject certificates with an http endpoint, which has no TLS")
+  void should_reject_certificates_on_http_endpoint() {
+    var builder = ArmoniKConfig.builder().endpoint("http://localhost:4312");
+
+    assertThatThrownBy(() -> builder.withCaCert("/path/to/ca.pem").build()).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("http://localhost:4312").withClientCert("/cert.pem", "/key.pem").build())
+      .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("http://localhost:4312").withClientP12("/client.p12", "secret").build())
+      .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("should reject a CA certificate with withoutSslValidation, since it would not be used")
+  void should_reject_ca_cert_without_ssl_validation() {
+    assertThatThrownBy(() -> ArmoniKConfig.builder().endpoint("https://localhost:4312").withCaCert("/path/to/ca.pem").withoutSslValidation().build())
+      .isInstanceOf(IllegalArgumentException.class)
+      .hasMessageContaining("/path/to/ca.pem");
   }
 
   @Test

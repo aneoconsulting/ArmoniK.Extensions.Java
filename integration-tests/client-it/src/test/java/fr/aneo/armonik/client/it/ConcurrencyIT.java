@@ -155,8 +155,20 @@ class ConcurrencyIT {
    */
   @Test
   void a_slow_listener_of_one_session_does_not_delay_another_session() {
-    try (var client = newClient()) {
-      var alone = timeSession(client, "alone-", 20);
+    slowListenerNextTo(false);
+  }
+
+  /** Same, with session B in another client of the same JVM. */
+  @Test
+  void a_slow_listener_of_one_client_does_not_delay_the_listener_of_another_client() {
+    slowListenerNextTo(true);
+  }
+
+  private static void slowListenerNextTo(boolean otherClient) {
+    var label = otherClient ? "other_client" : "same_client";
+    try (var client = newClient(); var second = newClient()) {
+      var fastClient = otherClient ? second : client;
+      var alone = timeSession(fastClient, "alone-", 20);
 
       var slowCalls = new AtomicInteger();
       var slow = new BlobCompletionListener() {
@@ -174,9 +186,9 @@ class ConcurrencyIT {
       slowSession.submitTasks(copyTasks(slowSession, 40, "slow-"));
       // let the slow session's outputs start to arrive
       await(Duration.ofSeconds(60), () -> slowCalls.get() > 0);
-      var busy = timeSession(client, "busy-", 20);
-      metric("ConcurrencyIT", "fast_session_alone_ms", alone);
-      metric("ConcurrencyIT", "fast_session_next_to_slow_listener_ms", busy);
+      var busy = timeSession(fastClient, "busy-", 20);
+      metric("ConcurrencyIT", "fast_session_alone_ms_" + label, alone);
+      metric("ConcurrencyIT", "fast_session_next_to_slow_listener_ms_" + label, busy);
       run(Duration.ofMinutes(3), "slow session", slowSession::awaitOutputsProcessed);
       assertThat(busy).as("session B next to a slow listener, alone it took %d ms", alone).isLessThan(alone + 5_000);
     }

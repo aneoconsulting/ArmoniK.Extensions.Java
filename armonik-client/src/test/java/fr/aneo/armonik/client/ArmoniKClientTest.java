@@ -18,7 +18,12 @@ package fr.aneo.armonik.client;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
+import fr.aneo.armonik.client.definition.TaskDefinition;
+import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.client.testutils.EventsGrpcMock;
+import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
+import fr.aneo.armonik.client.testutils.TasksGrpcMock;
 import io.grpc.BindableService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +33,11 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,6 +45,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ArmoniKClientTest extends InProcessGrpcTestBase {
 
   private final SessionsGrpcMock sessionsGrpcMock = new SessionsGrpcMock();
+  private final ResultsGrpcMock resultsGrpcMock = new ResultsGrpcMock();
+  private final EventsGrpcMock eventsGrpcMock = new EventsGrpcMock(resultsGrpcMock);
+  private final TasksGrpcMock tasksGrpcMock = new TasksGrpcMock();
   private ArmoniKClient client;
   private SessionDefinition sessionDefinition;
   private TaskConfiguration taskConfiguration;
@@ -150,8 +163,88 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
     assertThatThrownBy(() -> new ArmoniKClient((ArmoniKConfig) null)).isInstanceOf(NullPointerException.class);
   }
 
+  @Test
+  @DisplayName("should run the listener calls of its sessions on the client's listener executor")
+  void should_run_listener_calls_on_listener_executor() throws Exception {
+    // Given
+    var threads = new CopyOnWriteArrayList<String>();
+    var listener = new BlobCompletionListener() {
+      @Override
+      public void onSuccess(Blob blob) {
+        threads.add(Thread.currentThread().getName());
+      }
+
+      @Override
+      public void onError(BlobError blobError) {
+        threads.add(Thread.currentThread().getName());
+      }
+    };
+    var executor = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "test-listener"));
+    var listened = new ArmoniKClient(channelPool, executor);
+    var session = listened.openSession(new SessionDefinition(Set.of("partition_1"), taskConfiguration, listener));
+
+    // When
+    var task = session.submitTask(new TaskDefinition().withInput("in", InputBlobDefinition.from("data".getBytes())).withOutput("out"));
+    session.flushSubmissions().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    var output = task.outputs().get("out").deferredBlobInfo().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    resultsGrpcMock.setStatus(output.id(), fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus.RESULT_STATUS_COMPLETED);
+    session.awaitOutputsProcessed();
+
+    // Then
+    assertThat(threads).containsExactly("test-listener");
+    listened.close();
+    assertThat(executor.isTerminated()).isTrue();
+  }
+
+  @Test
+  @DisplayName("close should wait for the listener calls already queued on the client's own executor")
+  void close_should_wait_for_queued_listener_calls() {
+    // Given: a listener call still running when the client closes
+    var executor = ArmoniKClient.newListenerExecutor();
+    var listened = new ArmoniKClient(channelPool, executor);
+    var finished = new AtomicBoolean();
+    executor.execute(() -> {
+      sleep(300);
+      finished.set(true);
+    });
+
+    // When
+    listened.close();
+
+    // Then
+    assertThat(finished).isTrue();
+    assertThat(executor.isTerminated()).isTrue();
+  }
+
+  @Test
+  @DisplayName("close called from a listener call should not wait for itself")
+  void close_from_listener_call_should_not_wait_for_itself() throws Exception {
+    // Given
+    var executor = ArmoniKClient.newListenerExecutor();
+    var listened = new ArmoniKClient(channelPool, executor);
+    var closed = new CompletableFuture<Long>();
+
+    // When
+    executor.execute(() -> {
+      var start = System.nanoTime();
+      listened.close();
+      closed.complete(System.nanoTime() - start);
+    });
+
+    // Then: it returns well before the 10 s it waits for queued calls
+    assertThat(closed.get(5, TimeUnit.SECONDS)).isLessThan(TimeUnit.SECONDS.toNanos(2));
+  }
+
+  private static void sleep(long millis) {
+    try {
+      Thread.sleep(millis);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   @Override
   protected List<BindableService> services() {
-    return List.of(sessionsGrpcMock);
+    return List.of(sessionsGrpcMock, resultsGrpcMock, eventsGrpcMock, tasksGrpcMock);
   }
 }

@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -272,5 +273,15 @@ class ArmoniKConfigTest {
     assertThat(builder.build().eventChannelPoolSize()).isEqualTo(ArmoniKConfig.DEFAULT_EVENT_CHANNEL_POOL_SIZE).isEqualTo(50);
     assertThat(builder.withEventChannelPoolSize(8).build().eventChannelPoolSize()).isEqualTo(8);
     assertThatThrownBy(() -> builder.withEventChannelPoolSize(0).build()).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("should keep the listener executor supplied by the application")
+  void should_keep_the_listener_executor() {
+    Executor executor = Runnable::run;
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    assertThat(builder.build().listenerExecutor()).isNull();
+    assertThat(builder.withListenerExecutor(executor).build().listenerExecutor()).isSameAs(executor);
   }
 }

@@ -46,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Function;
@@ -120,6 +121,7 @@ final class TaskSubmitter {
   private final TaskSubmissionBatching batching;
   private final ScheduledExecutorService scheduler;
   private final Executor flushExecutor;
+  private final Executor listenerExecutor;
   private final ResultsServiceConfiguration resultsServiceConfiguration;
   private final Gson gson = new Gson();
   /**
@@ -231,7 +233,37 @@ final class TaskSubmitter {
                 Executor flushExecutor,
                 ResultsServiceConfiguration resultsServiceConfiguration,
                 ChannelPool eventChannelPool) {
+    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, resultsServiceConfiguration,
+      eventChannelPool, Runnable::run);
+  }
 
+  /**
+   * Creates a new task submitter whose listener calls run on {@code listenerExecutor}.
+   *
+   * @param sessionId         the identifier of the session context for task submission
+   * @param taskConfiguration the default task configuration of the session; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
+   * @param channelPool       the gRPC channel pool for cluster communication
+   * @param batching          how submitted tasks are grouped into batched calls
+   * @param scheduler         the scheduler running the batching window timer
+   * @param flushExecutor     the executor sending the buffer when the batching window elapses
+   * @param resultsServiceConfiguration the configuration of the results service, read once per client
+   * @param eventChannelPool  the channel pool of the event streams watching the outputs
+   * @param listenerExecutor  the executor running the listener calls
+   * @throws NullPointerException if any parameter other than {@code taskConfiguration} and
+   *                              {@code outputListener} is {@code null}
+   */
+  TaskSubmitter(SessionId sessionId,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ScheduledExecutorService scheduler,
+                Executor flushExecutor,
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool,
+                Executor listenerExecutor) {
     this.sessionId = requireNonNull(sessionId);
     this.resultsServiceConfiguration = requireNonNull(resultsServiceConfiguration, "resultsServiceConfiguration must not be null");
     this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
@@ -239,8 +271,9 @@ final class TaskSubmitter {
     this.batching = requireNonNull(batching, "batching must not be null");
     this.scheduler = requireNonNull(scheduler, "scheduler must not be null");
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
+    this.listenerExecutor = runInlineWhenRejected(requireNonNull(listenerExecutor, "listenerExecutor must not be null"));
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.outputWatcher = new BlobCompletionEventWatcher(sessionId, requireNonNull(eventChannelPool, "eventChannelPool must not be null"), this.outputListener, outputListener != null, Runnable::run, scheduler);
+    this.outputWatcher = new BlobCompletionEventWatcher(sessionId, requireNonNull(eventChannelPool, "eventChannelPool must not be null"), this.outputListener, outputListener != null, this.listenerExecutor, scheduler);
   }
 
   /**
@@ -425,7 +458,7 @@ final class TaskSubmitter {
   private CompletionStage<Void> reportFailedOutputs(List<BlobHandle> outputs, Throwable cause) {
     return CompletableFuture.allOf(outputs.stream()
                                           .map(output -> output.deferredBlobInfo()
-                                                               .thenAccept(blobInfo -> notifyFailedOutput(blobInfo, cause))
+                                                               .thenAcceptAsync(blobInfo -> notifyFailedOutput(blobInfo, cause), listenerExecutor)
                                                                .exceptionally(ex -> null)
                                                                .toCompletableFuture())
                                           .toArray(CompletableFuture[]::new));
@@ -1034,5 +1067,21 @@ final class TaskSubmitter {
 
       return TaskMapper.toTaskCreation(dataDependencies, outputBlobIds, payloadId, effectiveTaskConfig);
     }
+  }
+
+  /**
+   * Wraps the listener executor so that a call it rejects, because it is shut down or saturated,
+   * runs on the current thread instead of being lost: the listener is still notified, and
+   * {@link #waitUntilFinished()} still completes.
+   */
+  private Executor runInlineWhenRejected(Executor executor) {
+    return task -> {
+      try {
+        executor.execute(task);
+      } catch (RejectedExecutionException rejected) {
+        logger.warn("The listener executor rejected a call, running it on the current thread. Session id: {}, cause: {}", sessionId.asString(), rejected.getMessage());
+        task.run();
+      }
+    };
   }
 }

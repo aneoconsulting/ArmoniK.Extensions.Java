@@ -21,6 +21,7 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
+import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import io.grpc.ManagedChannel;
@@ -123,9 +124,20 @@ public final class SessionHandle {
                 ResultsServiceConfiguration resultsServiceConfiguration,
                 ChannelPool eventChannelPool,
                 Executor listenerExecutor) {
+    this(sessionInfo, outputListener, channelPool, batching, resultsServiceConfiguration, eventChannelPool, listenerExecutor, DownloadBudget.unlimited());
+  }
+
+  SessionHandle(SessionInfo sessionInfo,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool,
+                Executor listenerExecutor,
+                DownloadBudget downloadBudget) {
     this(sessionInfo, channelPool, new TaskSubmitter(requireNonNull(sessionInfo, "sessionInfo must not be null").id(),
       sessionInfo.taskConfiguration(), outputListener, channelPool, batching, Schedulers.shared(), defaultExecutor(), resultsServiceConfiguration,
-      eventChannelPool, listenerExecutor));
+      eventChannelPool, listenerExecutor, downloadBudget));
   }
 
   SessionHandle(SessionInfo sessionInfo, ChannelPool channelPool, TaskSubmitter taskSubmitter) {

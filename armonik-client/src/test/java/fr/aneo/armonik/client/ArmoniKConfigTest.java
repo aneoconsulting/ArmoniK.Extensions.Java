@@ -284,4 +284,27 @@ class ArmoniKConfigTest {
     assertThat(builder.build().listenerExecutor()).isNull();
     assertThat(builder.withListenerExecutor(executor).build().listenerExecutor()).isSameAs(executor);
   }
+
+  @Test
+  @DisplayName("should default the download budget to 512 MiB, half of it per session, and validate it")
+  void should_configure_download_budget() {
+    var builder = ArmoniKConfig.builder().endpoint("https://armonik.example.com:443");
+
+    var defaults = builder.build();
+    assertThat(defaults.downloadBudget()).isEqualTo(ArmoniKConfig.DEFAULT_DOWNLOAD_BUDGET).isEqualTo(512L * 1024 * 1024);
+    assertThat(defaults.sessionDownloadBudget()).isEqualTo(256L * 1024 * 1024);
+
+    var custom = builder.withDownloadBudget(1000, 300).build();
+    assertThat(custom.downloadBudget()).isEqualTo(1000);
+    assertThat(custom.sessionDownloadBudget()).isEqualTo(300);
+
+    assertThat(builder.withDownloadBudget(1000, 5000).build().sessionDownloadBudget()).isEqualTo(1000);
+    assertThat(builder.withDownloadBudget(1000).build().sessionDownloadBudget()).isEqualTo(500);
+    assertThat(builder.withDownloadBudget(Long.MAX_VALUE).build().downloadBudget()).isEqualTo(Long.MAX_VALUE);
+    assertThat(builder.withDownloadBudget(Long.MAX_VALUE).build().sessionDownloadBudget()).isEqualTo(Long.MAX_VALUE);
+    assertThat(builder.withDownloadBudget(Long.MAX_VALUE, 1000).build().sessionDownloadBudget()).isEqualTo(1000);
+
+    assertThatThrownBy(() -> builder.withDownloadBudget(0).build()).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> builder.withDownloadBudget(1000, -1).build()).isInstanceOf(IllegalArgumentException.class);
+  }
 }

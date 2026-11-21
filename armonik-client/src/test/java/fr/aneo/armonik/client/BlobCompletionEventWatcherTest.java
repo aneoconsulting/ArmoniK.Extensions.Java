@@ -15,6 +15,7 @@
  */
 package fr.aneo.armonik.client;
 
+import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
 import fr.aneo.armonik.client.testutils.EventsGrpcMock;
 import fr.aneo.armonik.client.testutils.InProcessGrpcTestBase;
 import fr.aneo.armonik.client.testutils.ResultsGrpcMock;
@@ -513,6 +514,238 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
       logger.setLevel(level);
       pool.close();
     }
+  }
+
+  @Test
+  @DisplayName("with a budget, should read the sizes of outputs completing together with one ListResults call")
+  @Timeout(10)
+  void should_read_sizes_of_outputs_completing_together_in_one_call() throws Exception {
+    // Given
+    var outputs = IntStream.range(0, 3).mapToObj(i -> blobInfo("out-" + i)).toList();
+    outputs.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(100));
+
+    // When
+    watcher.enqueue(outputs.stream().map(this::handle).toList());
+
+    // Then
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(3);
+    assertThat(resultsGrpcMock.listResultsRequests).hasSize(1);
+    assertThat(resultsGrpcMock.listResultsRequests.get(0).getFilters().getOrCount()).isEqualTo(3);
+  }
+
+  @Test
+  @DisplayName("with a budget, should read sizes as soon as a group is full, without waiting for the window")
+  @Timeout(10)
+  void should_read_sizes_when_group_is_full() throws Exception {
+    // Given: groups of 2 and a window of 30 s
+    var outputs = List.of(blobInfo("a"), blobInfo("b"));
+    outputs.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 2, Duration.ofSeconds(30));
+
+    // When
+    watcher.enqueue(outputs.stream().map(this::handle).toList());
+
+    // Then
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(2);
+  }
+
+  @Test
+  @DisplayName("with a budget, should download an output only once the data held before it has been handed over")
+  @Timeout(10)
+  void should_bound_downloads_by_the_budget() throws Exception {
+    // Given: a budget of 100 bytes, two outputs of 60, and listener calls that only run when asked
+    var first = blobInfo("first");
+    var second = blobInfo("second");
+    resultsGrpcMock.sizes.put(first.id().asString(), 60L);
+    resultsGrpcMock.sizes.put(second.id().asString(), 60L);
+    var queued = new LinkedBlockingQueue<Runnable>();
+    var budget = new DownloadBudget(100, 100);
+    var watcher = budgeted(sessionId, budget, queued::add, 100, Duration.ofMillis(10));
+
+    // When
+    watcher.enqueue(List.of(handle(first), handle(second)));
+    resultsGrpcMock.setStatus(first.id(), RESULT_STATUS_COMPLETED);
+    resultsGrpcMock.setStatus(second.id(), RESULT_STATUS_COMPLETED);
+    var firstCall = queued.poll(3, SECONDS);
+
+    // Then: the second output waits for the first listener call
+    assertThat(firstCall).isNotNull();
+    waitFor(() -> budget.waiting() == 1);
+    assertThat(resultsGrpcMock.downloadCalls.get()).isEqualTo(1);
+    assertThat(budget.used()).isEqualTo(60);
+
+    firstCall.run();
+    var secondCall = queued.poll(3, SECONDS);
+    assertThat(secondCall).isNotNull();
+    assertThat(resultsGrpcMock.downloadCalls.get()).isEqualTo(2);
+    secondCall.run();
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(2);
+    assertThat(budget.used()).isZero();
+  }
+
+  @Test
+  @DisplayName("with a budget, should keep downloading for a session while another one holds its share")
+  @Timeout(10)
+  void should_not_let_one_session_take_the_whole_budget() throws Exception {
+    // Given: a budget of 100 bytes, 50 per session; session A's listener does not return
+    var budget = new DownloadBudget(100, 50);
+    var heldCalls = new LinkedBlockingQueue<Runnable>();
+    var a = budgeted(sessionId("session-a"), budget, heldCalls::add, 100, Duration.ofMillis(10));
+    var b = budgeted(sessionId("session-b"), budget, Runnable::run, 100, Duration.ofMillis(10));
+    var a1 = blobInfo("a1");
+    var a2 = blobInfo("a2");
+    var b1 = blobInfo("b1");
+    resultsGrpcMock.sizes.put(a1.id().asString(), 50L);
+    resultsGrpcMock.sizes.put(a2.id().asString(), 50L);
+    resultsGrpcMock.sizes.put(b1.id().asString(), 40L);
+    List.of(a1, a2, b1).forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+
+    // When
+    a.enqueue(List.of(handle(a1), handle(a2)));
+    var heldCall = heldCalls.poll(3, SECONDS);
+    b.enqueue(List.of(handle(b1)));
+
+    // Then: B is served while A waits for its own share
+    b.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(heldCall).isNotNull();
+    assertThat(listener.blobs).extracting(blob -> blob.blobInfo().id()).containsExactly(b1.id());
+    assertThat(heldCalls).isEmpty();
+
+    heldCall.run();
+    heldCalls.poll(3, SECONDS).run();
+    a.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(3);
+    assertThat(budget.used()).isZero();
+  }
+
+  @Test
+  @DisplayName("with a budget, should report an output waiting for the budget as failed when the client closes")
+  @Timeout(10)
+  void should_report_output_waiting_for_budget_when_closed() throws Exception {
+    // Given: the first output holds the whole budget, the second one waits
+    var first = blobInfo("first");
+    var second = blobInfo("second");
+    resultsGrpcMock.sizes.put(first.id().asString(), 60L);
+    resultsGrpcMock.sizes.put(second.id().asString(), 60L);
+    var queued = new LinkedBlockingQueue<Runnable>();
+    var budget = new DownloadBudget(100, 100);
+    var watcher = budgeted(sessionId, budget, queued::add, 100, Duration.ofMillis(10));
+    watcher.enqueue(List.of(handle(first), handle(second)));
+    resultsGrpcMock.setStatus(first.id(), RESULT_STATUS_COMPLETED);
+    resultsGrpcMock.setStatus(second.id(), RESULT_STATUS_COMPLETED);
+    var firstCall = queued.poll(3, SECONDS);
+    waitFor(() -> budget.waiting() == 1);
+
+    // When
+    channelPool.closeNow();
+
+    // Then
+    var secondCall = queued.poll(3, SECONDS);
+    assertThat(secondCall).isNotNull();
+    secondCall.run();
+    firstCall.run();
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).extracting(blob -> blob.blobInfo().id()).containsExactly(first.id());
+    assertThat(listener.errors).extracting(error -> error.blobInfo().id()).containsExactly(second.id());
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
+    assertThat(budget.used()).isZero();
+  }
+
+  @Test
+  @DisplayName("with a budget, should report an output missing from the listing as failed, and retry a failed listing")
+  @Timeout(10)
+  void should_handle_missing_results_and_retry_failed_listing() throws Exception {
+    // Given: the first listing fails, and one result is no longer known
+    var kept = blobInfo("kept");
+    var gone = blobInfo("gone");
+    resultsGrpcMock.failingListResults.set(1);
+    resultsGrpcMock.missingResults.add(gone.id().asString());
+    List.of(kept, gone).forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10));
+
+    // When
+    watcher.enqueue(List.of(handle(kept), handle(gone)));
+
+    // Then
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(resultsGrpcMock.listResultsRequests).hasSize(2);
+    assertThat(listener.blobs).extracting(blob -> blob.blobInfo().id()).containsExactly(kept.id());
+    assertThat(listener.errors).extracting(error -> error.blobInfo().id()).containsExactly(gone.id());
+  }
+
+  @Test
+  @DisplayName("without a budget, should not read sizes")
+  @Timeout(10)
+  void should_not_read_sizes_without_budget() throws Exception {
+    var info = blobInfo("out");
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = budgeted(sessionId, DownloadBudget.unlimited(), Runnable::run, 100, Duration.ofMillis(10));
+
+    watcher.enqueue(List.of(handle(info)));
+
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).hasSize(1);
+    assertThat(resultsGrpcMock.listResultsRequests).isEmpty();
+  }
+
+  @Test
+  @DisplayName("with a budget, should report outputs as failed when their size lookup fails permanently")
+  @Timeout(10)
+  void should_report_outputs_when_size_lookup_fails_permanently() throws Exception {
+    var info = blobInfo("out");
+    resultsGrpcMock.failingListResults.set(1);
+    resultsGrpcMock.failingListResultsStatus = Status.PERMISSION_DENIED;
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10));
+
+    watcher.enqueue(List.of(handle(info)));
+
+    watcher.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
+    assertThat(listener.blobs).isEmpty();
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("Could not read the size");
+    assertThat(resultsGrpcMock.listResultsRequests).hasSize(1);
+  }
+
+  @Test
+  @DisplayName("with a budget, should report outputs whose size lookup waits out a backoff at once when the client closes")
+  @Timeout(10)
+  void should_report_outputs_in_size_backoff_when_closed() throws Exception {
+    // Given: the size lookup failed and waits out a 5 s backoff
+    var info = blobInfo("out");
+    resultsGrpcMock.failingListResults.set(1000);
+    resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10), Duration.ofSeconds(5));
+    watcher.enqueue(List.of(handle(info)));
+    waitFor(() -> resultsGrpcMock.listResultsRequests.size() == 1);
+    Thread.sleep(50);
+    var idle = watcher.waitUntilIdle().toCompletableFuture();
+
+    // When
+    var closing = System.nanoTime();
+    channelPool.closeNow();
+
+    // Then: reported without waiting for the backoff
+    idle.get(3, SECONDS);
+    assertThat(System.nanoTime() - closing).isLessThan(SECONDS.toNanos(1));
+    assertThat(listener.errors).hasSize(1);
+    assertThat(listener.errors.get(0).cause()).hasMessageContaining("closed");
+    assertThat(resultsGrpcMock.listResultsRequests).hasSize(1);
+  }
+
+  private BlobCompletionEventWatcher budgeted(SessionId session, DownloadBudget budget, Executor listenerExecutor, int sizeBatch, Duration sizeWindow) {
+    return budgeted(session, budget, listenerExecutor, sizeBatch, sizeWindow, MIN_BACKOFF);
+  }
+
+  private BlobCompletionEventWatcher budgeted(SessionId session, DownloadBudget budget, Executor listenerExecutor, int sizeBatch, Duration sizeWindow,
+                                              Duration minBackoff) {
+    var maxBackoff = minBackoff.compareTo(MAX_BACKOFF) > 0 ? minBackoff : MAX_BACKOFF;
+    return new BlobCompletionEventWatcher(session, channelPool, listener, true, listenerExecutor, scheduler,
+      1000, OPEN_DELAY, REOPEN_DELAY, minBackoff, maxBackoff, WAIT_WARNING, channelPool, budget, sizeBatch, sizeWindow);
   }
 
   private BlobCompletionEventWatcher watcher(BlobCompletionListener listener, boolean downloadData, Executor listenerExecutor, int maxIdsPerStream) {

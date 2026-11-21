@@ -243,6 +243,22 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
     }
   }
 
+  @Test
+  @DisplayName("should create the download budget its configuration describes")
+  void should_create_download_budget_from_configuration() {
+    var builder = ArmoniKConfig.builder().endpoint("http://localhost:1");
+
+    try (var byDefault = new ArmoniKClient(builder.build());
+         var sessionOnly = new ArmoniKClient(builder.withDownloadBudget(Long.MAX_VALUE, 1000).build());
+         var unlimited = new ArmoniKClient(builder.withDownloadBudget(Long.MAX_VALUE).build())) {
+      assertThat(byDefault.downloadBudget().capacity()).isEqualTo(ArmoniKConfig.DEFAULT_DOWNLOAD_BUDGET);
+      assertThat(byDefault.downloadBudget().sessionCapacity()).isEqualTo(ArmoniKConfig.DEFAULT_DOWNLOAD_BUDGET / 2);
+      assertThat(sessionOnly.downloadBudget().isUnlimited()).isFalse();
+      assertThat(sessionOnly.downloadBudget().sessionCapacity()).isEqualTo(1000);
+      assertThat(unlimited.downloadBudget().isUnlimited()).isTrue();
+    }
+  }
+
   @Override
   protected List<BindableService> services() {
     return List.of(sessionsGrpcMock, resultsGrpcMock, eventsGrpcMock, tasksGrpcMock);

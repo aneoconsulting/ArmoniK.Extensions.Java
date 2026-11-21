@@ -47,6 +47,8 @@ public final class ArmoniKConfig {
   private final int channelPoolSize;
   private final int eventChannelPoolSize;
   private final Executor listenerExecutor;
+  private final long downloadBudget;
+  private final long sessionDownloadBudget;
 
   /**
    * Default number of channels, that is of calls in flight, per client.
@@ -57,6 +59,11 @@ public final class ArmoniKConfig {
    * Default number of event channels, that is of output event streams open at once, per client.
    */
   public static final int DEFAULT_EVENT_CHANNEL_POOL_SIZE = 50;
+
+  /**
+   * Default number of bytes of downloaded outputs a client holds at once: 512 MiB.
+   */
+  public static final long DEFAULT_DOWNLOAD_BUDGET = 512L * 1024 * 1024;
 
   private ArmoniKConfig(Builder builder) {
     this.endpoint = builder.endpoint;
@@ -71,6 +78,13 @@ public final class ArmoniKConfig {
     this.channelPoolSize = builder.channelPoolSize;
     this.eventChannelPoolSize = builder.eventChannelPoolSize;
     this.listenerExecutor = builder.listenerExecutor;
+    this.downloadBudget = builder.downloadBudget;
+    if (builder.sessionDownloadBudget > 0) {
+      this.sessionDownloadBudget = Math.min(builder.sessionDownloadBudget, builder.downloadBudget);
+    } else {
+      // No limit overall and no session limit given: no session limit either
+      this.sessionDownloadBudget = builder.downloadBudget == Long.MAX_VALUE ? Long.MAX_VALUE : Math.max(1, builder.downloadBudget / 2);
+    }
   }
 
   /**
@@ -221,6 +235,26 @@ public final class ArmoniKConfig {
   }
 
   /**
+   * Returns the number of bytes of downloaded outputs the client holds at once, all sessions together.
+   *
+   * @return the download budget in bytes, {@link Long#MAX_VALUE} when unlimited
+   * @see Builder#withDownloadBudget(long, long)
+   */
+  public long downloadBudget() {
+    return downloadBudget;
+  }
+
+  /**
+   * Returns the number of bytes of downloaded outputs one session holds at once.
+   *
+   * @return the per-session download budget in bytes, at most {@link #downloadBudget()}
+   * @see Builder#withDownloadBudget(long, long)
+   */
+  public long sessionDownloadBudget() {
+    return sessionDownloadBudget;
+  }
+
+  /**
    * Creates a new builder for constructing an {@link ArmoniKConfig}.
    *
    * @return a new builder instance
@@ -241,6 +275,8 @@ public final class ArmoniKConfig {
     private int channelPoolSize = DEFAULT_CHANNEL_POOL_SIZE;
     private int eventChannelPoolSize = DEFAULT_EVENT_CHANNEL_POOL_SIZE;
     private Executor listenerExecutor;
+    private long downloadBudget = DEFAULT_DOWNLOAD_BUDGET;
+    private long sessionDownloadBudget;
     private String endpoint;
     private boolean sslValidation = true;
     private String caCertPem;
@@ -437,6 +473,52 @@ public final class ArmoniKConfig {
     }
 
     /**
+     * Bounds the data of downloaded outputs that the client holds at once, with a session getting
+     * half of it at most.
+     *
+     * @param bytes the bytes all sessions may hold at once, at least 1, or {@link Long#MAX_VALUE} for no limit
+     * @return this builder
+     * @see #withDownloadBudget(long, long)
+     */
+    public Builder withDownloadBudget(long bytes) {
+      return withDownloadBudget(bytes, 0);
+    }
+
+    /**
+     * Bounds the data of downloaded outputs that the client holds at once.
+     * <p>
+     * When a session has a {@link BlobCompletionListener}, each completed output is downloaded and handed
+     * to it. Before downloading an output, the client reserves its size in this budget, and releases it
+     * once the listener call has returned, so that the outputs it holds stay below {@code bytes}, plus at
+     * most one output larger than the budget, which is downloaded alone. While an output is being
+     * downloaded, its received chunks and the array they are assembled into coexist, so the heap
+     * briefly holds up to about twice the budget. An output whose size does not
+     * fit waits, without holding a thread, until enough data is released: a listener that cannot keep up
+     * slows the downloads of the outputs, never the other calls. Since the events do not carry the
+     * size of an output, the sizes are read with one {@code ListResults} call per group of completed
+     * outputs, sent once 100 are waiting or 50 ms after the first: with a limited budget, the client
+     * must be allowed to call {@code Results.ListResults}.
+     * <p>
+     * A session holds at most {@code sessionBytes}, so that a session whose listener is slow does not
+     * take the whole budget from the others. Outputs wait in order, but a session that has reached its
+     * own limit only holds back its own outputs.
+     * <p>
+     * The budget does not cover {@link BlobHandle#downloadData()}, called by the application, nor the
+     * data the application keeps after its listener call returns.
+     *
+     * @param bytes        the bytes all sessions may hold at once, at least 1, or {@link Long#MAX_VALUE}
+     *                     for no limit, without reading sizes; defaults to {@link ArmoniKConfig#DEFAULT_DOWNLOAD_BUDGET}
+     * @param sessionBytes the bytes one session may hold at once, at least 1 and capped at {@code bytes},
+     *                     or 0 for half of {@code bytes} (no limit when {@code bytes} is {@link Long#MAX_VALUE})
+     * @return this builder
+     */
+    public Builder withDownloadBudget(long bytes, long sessionBytes) {
+      this.downloadBudget = bytes;
+      this.sessionDownloadBudget = sessionBytes;
+      return this;
+    }
+
+    /**
      * Builds the immutable {@link ArmoniKConfig} instance.
      * <p>
      * Validates that the configuration is consistent and all required fields are set.
@@ -471,6 +553,12 @@ public final class ArmoniKConfig {
 
       if (eventChannelPoolSize < 1)
         throw new IllegalArgumentException("eventChannelPoolSize must be at least 1, got: " + eventChannelPoolSize);
+
+      if (downloadBudget < 1)
+        throw new IllegalArgumentException("downloadBudget must be at least 1, got: " + downloadBudget);
+
+      if (sessionDownloadBudget < 0)
+        throw new IllegalArgumentException("sessionDownloadBudget must be 0 or more, got: " + sessionDownloadBudget);
 
       if (clientCertPem != null && clientKeyPem == null)
         throw new IllegalArgumentException("clientKeyPem is required when clientCertPem is specified");

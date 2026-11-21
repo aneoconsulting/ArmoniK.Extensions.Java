@@ -87,6 +87,7 @@ public final class UploadBlobDataObserver implements ClientResponseObserver<Uplo
     this.sessionId = sessionId;
     this.blobId = blobId;
     this.blobData = blobData;
+    if (chunkSize <= 0) throw new IllegalArgumentException("chunkSize must be positive, got: " + chunkSize);
     this.buffer = new byte[chunkSize];
   }
 

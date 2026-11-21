@@ -15,7 +15,7 @@
  */
 package fr.aneo.armonik.client.internal.grpc.mappers;
 
-import com.google.protobuf.UnsafeByteOperations;
+import com.google.protobuf.ByteString;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.CreateResultsMetaDataRequest.ResultCreate;
 import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.BlobId;
@@ -49,9 +49,15 @@ public final class BlobMapper {
                                     .build();
   }
 
+  /**
+   * Builds the request carrying a chunk of upload data, copied from {@code data}.
+   * <p>
+   * The copy lets callers reuse their buffer: gRPC keeps sent requests to replay them on a retry, so
+   * a request wrapping a buffer refilled since would replay the bytes of a later chunk.
+   */
   public static UploadResultDataRequest toUploadResultDataRequest(byte[] data, int offset, int size) {
     return UploadResultDataRequest.newBuilder()
-                                  .setDataChunk(UnsafeByteOperations.unsafeWrap(data, offset, size))
+                                  .setDataChunk(ByteString.copyFrom(data, offset, size))
                                   .build();
   }
 

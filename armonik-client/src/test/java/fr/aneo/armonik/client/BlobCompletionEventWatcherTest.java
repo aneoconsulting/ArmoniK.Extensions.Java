@@ -523,7 +523,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     // Given
     var outputs = IntStream.range(0, 3).mapToObj(i -> blobInfo("out-" + i)).toList();
     outputs.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
-    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(100));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000), Runnable::run, 100, Duration.ofMillis(100));
 
     // When
     watcher.enqueue(outputs.stream().map(this::handle).toList());
@@ -542,7 +542,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     // Given: groups of 2 and a window of 30 s
     var outputs = List.of(blobInfo("a"), blobInfo("b"));
     outputs.forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
-    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 2, Duration.ofSeconds(30));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000), Runnable::run, 2, Duration.ofSeconds(30));
 
     // When
     watcher.enqueue(outputs.stream().map(this::handle).toList());
@@ -562,7 +562,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     resultsGrpcMock.sizes.put(first.id().asString(), 60L);
     resultsGrpcMock.sizes.put(second.id().asString(), 60L);
     var queued = new LinkedBlockingQueue<Runnable>();
-    var budget = new DownloadBudget(100, 100);
+    var budget = new DownloadBudget(100);
     var watcher = budgeted(sessionId, budget, queued::add, 100, Duration.ofMillis(10));
 
     // When
@@ -588,41 +588,6 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
   }
 
   @Test
-  @DisplayName("with a budget, should keep downloading for a session while another one holds its share")
-  @Timeout(10)
-  void should_not_let_one_session_take_the_whole_budget() throws Exception {
-    // Given: a budget of 100 bytes, 50 per session; session A's listener does not return
-    var budget = new DownloadBudget(100, 50);
-    var heldCalls = new LinkedBlockingQueue<Runnable>();
-    var a = budgeted(sessionId("session-a"), budget, heldCalls::add, 100, Duration.ofMillis(10));
-    var b = budgeted(sessionId("session-b"), budget, Runnable::run, 100, Duration.ofMillis(10));
-    var a1 = blobInfo("a1");
-    var a2 = blobInfo("a2");
-    var b1 = blobInfo("b1");
-    resultsGrpcMock.sizes.put(a1.id().asString(), 50L);
-    resultsGrpcMock.sizes.put(a2.id().asString(), 50L);
-    resultsGrpcMock.sizes.put(b1.id().asString(), 40L);
-    List.of(a1, a2, b1).forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
-
-    // When
-    a.enqueue(List.of(handle(a1), handle(a2)));
-    var heldCall = heldCalls.poll(3, SECONDS);
-    b.enqueue(List.of(handle(b1)));
-
-    // Then: B is served while A waits for its own share
-    b.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
-    assertThat(heldCall).isNotNull();
-    assertThat(listener.blobs).extracting(blob -> blob.blobInfo().id()).containsExactly(b1.id());
-    assertThat(heldCalls).isEmpty();
-
-    heldCall.run();
-    heldCalls.poll(3, SECONDS).run();
-    a.waitUntilIdle().toCompletableFuture().get(3, SECONDS);
-    assertThat(listener.blobs).hasSize(3);
-    assertThat(budget.used()).isZero();
-  }
-
-  @Test
   @DisplayName("with a budget, should report an output waiting for the budget as failed when the client closes")
   @Timeout(10)
   void should_report_output_waiting_for_budget_when_closed() throws Exception {
@@ -632,7 +597,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     resultsGrpcMock.sizes.put(first.id().asString(), 60L);
     resultsGrpcMock.sizes.put(second.id().asString(), 60L);
     var queued = new LinkedBlockingQueue<Runnable>();
-    var budget = new DownloadBudget(100, 100);
+    var budget = new DownloadBudget(100);
     var watcher = budgeted(sessionId, budget, queued::add, 100, Duration.ofMillis(10));
     watcher.enqueue(List.of(handle(first), handle(second)));
     resultsGrpcMock.setStatus(first.id(), RESULT_STATUS_COMPLETED);
@@ -665,7 +630,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     resultsGrpcMock.failingListResults.set(1);
     resultsGrpcMock.missingResults.add(gone.id().asString());
     List.of(kept, gone).forEach(info -> resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED));
-    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000), Runnable::run, 100, Duration.ofMillis(10));
 
     // When
     watcher.enqueue(List.of(handle(kept), handle(gone)));
@@ -700,7 +665,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     resultsGrpcMock.failingListResults.set(1);
     resultsGrpcMock.failingListResultsStatus = Status.PERMISSION_DENIED;
     resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
-    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000), Runnable::run, 100, Duration.ofMillis(10));
 
     watcher.enqueue(List.of(handle(info)));
 
@@ -719,7 +684,7 @@ class BlobCompletionEventWatcherTest extends InProcessGrpcTestBase {
     var info = blobInfo("out");
     resultsGrpcMock.failingListResults.set(1000);
     resultsGrpcMock.setStatus(info.id(), RESULT_STATUS_COMPLETED);
-    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000, 1_000_000), Runnable::run, 100, Duration.ofMillis(10), Duration.ofSeconds(5));
+    var watcher = budgeted(sessionId, new DownloadBudget(1_000_000), Runnable::run, 100, Duration.ofMillis(10), Duration.ofSeconds(5));
     watcher.enqueue(List.of(handle(info)));
     waitFor(() -> resultsGrpcMock.listResultsRequests.size() == 1);
     Thread.sleep(50);

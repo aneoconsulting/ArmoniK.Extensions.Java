@@ -115,9 +115,9 @@ public class ArmoniKClient implements AutoCloseable {
       this.ownedListenerExecutor = newListenerExecutor();
       this.listenerExecutor = ownedListenerExecutor;
     }
-    this.downloadBudget = armoniKConfig.downloadBudget() == Long.MAX_VALUE && armoniKConfig.sessionDownloadBudget() == Long.MAX_VALUE
+    this.downloadBudget = armoniKConfig.downloadBudget() == Long.MAX_VALUE
       ? DownloadBudget.unlimited()
-      : new DownloadBudget(armoniKConfig.downloadBudget(), armoniKConfig.sessionDownloadBudget());
+      : new DownloadBudget(armoniKConfig.downloadBudget());
   }
 
   ArmoniKClient(ChannelPool channelPool) {

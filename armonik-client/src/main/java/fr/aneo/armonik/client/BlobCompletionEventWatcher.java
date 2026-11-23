@@ -847,7 +847,7 @@ final class BlobCompletionEventWatcher {
         notifyError(sizing.info(), unwrap(refused));
         return;
       }
-      Runnable release = () -> downloadBudget.release(budgetKey, size);
+      Runnable release = () -> downloadBudget.release(size);
       CompletionStage<byte[]> data;
       try {
         data = sizing.handle().downloadData();

@@ -302,20 +302,27 @@ class SessionHandleTest extends InProcessGrpcTestBase {
     var task = sessionHandle.submitTask(new TaskDefinition().withInput("input", InputBlobDefinition.from("data".getBytes()))
                                                             .withOutput("output"));
 
-    // When
-    var waiting = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+    // When: a dedicated thread waits, so that a failed assertion cannot leave a shared thread blocked
+    var waiting = new java.util.concurrent.CompletableFuture<Object>();
+    var waiter = new Thread(() -> {
       try {
-        return sessionHandle.awaitOutputsProcessed(java.time.temporal.ChronoUnit.FOREVER.getDuration());
-      } catch (InterruptedException e) {
-        throw new IllegalStateException(e);
+        waiting.complete(sessionHandle.awaitOutputsProcessed(java.time.temporal.ChronoUnit.FOREVER.getDuration()));
+      } catch (Throwable t) {
+        waiting.complete(t);
       }
     });
+    waiter.start();
 
-    // Then: it waits instead of failing, and returns once the output completes
-    Thread.sleep(200);
-    assertThat(waiting).isNotDone();
-    resultsGrpcMock.setStatus(idFrom(task.outputs().get("output")), RESULT_STATUS_COMPLETED);
-    assertThat(waiting.get(5, SECONDS)).isTrue();
+    try {
+      // Then: it waits instead of failing, and returns once the output completes
+      Thread.sleep(200);
+      assertThat(waiting).isNotDone();
+      resultsGrpcMock.setStatus(idFrom(task.outputs().get("output")), RESULT_STATUS_COMPLETED);
+      assertThat(waiting.get(5, SECONDS)).isEqualTo(true);
+    } finally {
+      waiter.interrupt();
+      waiter.join(SECONDS.toMillis(5));
+    }
   }
 
   @Test
@@ -333,13 +340,18 @@ class SessionHandleTest extends InProcessGrpcTestBase {
       }
     });
     waiter.start();
-    Thread.sleep(100);
+    try {
+      Thread.sleep(100);
 
-    // When
-    waiter.interrupt();
+      // When
+      waiter.interrupt();
 
-    // Then
-    assertThat(outcome.get(5, SECONDS)).isInstanceOf(InterruptedException.class);
+      // Then
+      assertThat(outcome.get(5, SECONDS)).isInstanceOf(InterruptedException.class);
+    } finally {
+      waiter.join(SECONDS.toMillis(5));
+      assertThat(waiter.isAlive()).isFalse();
+    }
   }
 
   @Test

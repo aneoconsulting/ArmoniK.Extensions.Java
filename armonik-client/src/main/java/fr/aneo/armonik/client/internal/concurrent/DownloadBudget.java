@@ -39,7 +39,8 @@ import static java.util.Objects.requireNonNull;
  *       large output is not overtaken indefinitely by smaller ones.</li>
  * </ul>
  * A reservation larger than a cap is admitted alone, once nothing else is reserved under that cap,
- * so that it never waits forever.
+ * so that it never waits forever. A reservation whose future the caller completes or cancels while it
+ * waits leaves the queue without reserving anything.
  */
 public final class DownloadBudget {
   private static final DownloadBudget UNLIMITED = new DownloadBudget(Long.MAX_VALUE, Long.MAX_VALUE);
@@ -88,7 +89,8 @@ public final class DownloadBudget {
    * @param session the session the reservation belongs to, compared by equality
    * @param bytes   the bytes to reserve; negative values count as 0
    * @return a future completed once the bytes are reserved, or completed exceptionally by
-   *         {@link #cancel(Object, Throwable)}
+   *         {@link #cancel(Object, Throwable)}; cancelling it, or completing it otherwise, while it
+   *         waits withdraws the reservation
    */
   public CompletableFuture<Void> acquire(Object session, long bytes) {
     requireNonNull(session, "session must not be null");
@@ -99,7 +101,11 @@ public final class DownloadBudget {
       waiters.add(waiter);
       admitted = admit();
     }
-    admitted.forEach(admittedWaiter -> admittedWaiter.admitted().complete(null));
+    complete(admitted);
+    // A reservation abandoned by its caller may hold back the following ones: withdraw it at once
+    waiter.admitted().whenComplete((ignored, abandoned) -> {
+      if (abandoned != null) withdraw(waiter);
+    });
     return waiter.admitted();
   }
 
@@ -121,8 +127,7 @@ public final class DownloadBudget {
       else sessionUsed.remove(session);
       admitted = admit();
     }
-    // Outside the lock: completing a future runs its dependent stages
-    admitted.forEach(waiter -> waiter.admitted().complete(null));
+    complete(admitted);
   }
 
   /**
@@ -145,7 +150,7 @@ public final class DownloadBudget {
       admitted = admit();
     }
     cancelled.forEach(waiter -> waiter.admitted().completeExceptionally(cause));
-    admitted.forEach(waiter -> waiter.admitted().complete(null));
+    complete(admitted);
   }
 
   /**
@@ -200,6 +205,11 @@ public final class DownloadBudget {
     var heldBack = new HashSet<>();
     for (var iterator = waiters.iterator(); iterator.hasNext(); ) {
       var waiter = iterator.next();
+      // Abandoned by its caller, and not yet withdrawn by its completion stage
+      if (waiter.admitted().isDone()) {
+        iterator.remove();
+        continue;
+      }
       if (heldBack.contains(waiter.session())) continue;
       var reservedBySession = sessionUsed.getOrDefault(waiter.session(), 0L);
       if (!fits(reservedBySession, waiter.bytes(), sessionCapacity)) {
@@ -215,6 +225,26 @@ public final class DownloadBudget {
       admitted.add(waiter);
     }
     return admitted;
+  }
+
+  /**
+   * Completes the futures of admitted reservations, outside the lock since completing a future runs its
+   * dependent stages; a future its caller completed or cancelled in the meantime gives its bytes back.
+   */
+  private void complete(List<Waiter> admitted) {
+    for (var waiter : admitted) {
+      if (!waiter.admitted().complete(null)) release(waiter.session(), waiter.bytes());
+    }
+  }
+
+  /** Removes a reservation abandoned while it waited, which may let the following ones in. */
+  private void withdraw(Waiter waiter) {
+    List<Waiter> admitted;
+    synchronized (this) {
+      if (!waiters.remove(waiter)) return;
+      admitted = admit();
+    }
+    complete(admitted);
   }
 
   private static boolean fits(long reserved, long bytes, long cap) {

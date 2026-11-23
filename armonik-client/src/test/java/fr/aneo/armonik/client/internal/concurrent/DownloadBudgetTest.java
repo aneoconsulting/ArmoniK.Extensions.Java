@@ -19,6 +19,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -135,5 +137,49 @@ class DownloadBudgetTest {
   void should_reject_capacities_below_one() {
     assertThatThrownBy(() -> new DownloadBudget(0, 1)).isInstanceOf(IllegalArgumentException.class);
     assertThatThrownBy(() -> new DownloadBudget(1, 0)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  @DisplayName("should not keep the bytes of a reservation cancelled while it waits")
+  void should_not_keep_bytes_of_cancelled_reservation() {
+    var budget = new DownloadBudget(10, 10);
+    budget.acquire("a", 10);
+    var waiting = budget.acquire("a", 5);
+
+    waiting.cancel(false);
+    budget.release("a", 10);
+
+    assertThat(budget.used()).isZero();
+    assertThat(budget.used("a")).isZero();
+    assertThat(budget.waiting()).isZero();
+  }
+
+  @Test
+  @DisplayName("should not keep the bytes of a reservation timed out while it waits")
+  void should_not_keep_bytes_of_timed_out_reservation() {
+    var budget = new DownloadBudget(10, 10);
+    budget.acquire("a", 10);
+    var waiting = budget.acquire("a", 5).orTimeout(1, TimeUnit.MILLISECONDS);
+
+    assertThatThrownBy(waiting::join).hasCauseInstanceOf(TimeoutException.class);
+    budget.release("a", 10);
+
+    assertThat(budget.used()).isZero();
+    assertThat(budget.waiting()).isZero();
+  }
+
+  @Test
+  @DisplayName("should let later reservations in at once when the one holding them back is cancelled")
+  void should_admit_later_reservations_when_blocking_one_is_cancelled() {
+    var budget = new DownloadBudget(100, 100);
+    budget.acquire("a", 60);
+    var large = budget.acquire("b", 60);
+    var small = budget.acquire("c", 10);
+    assertThat(small).isNotDone();
+
+    large.cancel(false);
+
+    assertThat(small).isCompleted();
+    assertThat(budget.used()).isEqualTo(70);
   }
 }

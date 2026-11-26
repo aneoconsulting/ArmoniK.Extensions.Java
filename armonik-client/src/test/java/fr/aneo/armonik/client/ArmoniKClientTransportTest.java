@@ -18,6 +18,7 @@ package fr.aneo.armonik.client;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.testutils.SessionsGrpcMock;
 import io.grpc.Server;
+import io.grpc.Status;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.util.SelfSignedCertificate;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.time.Duration;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -80,12 +82,15 @@ class ArmoniKClientTransportTest {
   @DisplayName("should refuse the same server when its certificate is validated")
   @Timeout(30)
   void should_refuse_untrusted_server_certificate_by_default() {
+    // Two attempts with the shortest backoff the channel accepts: the refusal is the same at every attempt
     var config = ArmoniKConfig.builder()
                               .endpoint("https://localhost:" + tlsServer.getPort())
+                              .withRetryPolicy(new RetryPolicy(2, Duration.ofSeconds(1), Duration.ofSeconds(1), 1))
                               .build();
 
     try (var client = new ArmoniKClient(config)) {
-      assertThatThrownBy(() -> client.openSession(sessionDefinition())).isInstanceOf(RuntimeException.class);
+      assertThatThrownBy(() -> client.openSession(sessionDefinition()))
+        .satisfies(error -> assertThat(Status.fromThrowable(error).getCode()).isEqualTo(Status.Code.UNAVAILABLE));
     }
   }
 

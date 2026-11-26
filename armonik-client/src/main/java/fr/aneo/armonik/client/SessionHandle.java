@@ -248,26 +248,20 @@ public final class SessionHandle {
   }
 
   /**
-   * Blocks until all currently pending task outputs are completed and the configured
-   * task output listener has been invoked for each of them.
+   * Blocks until no output of this session is watched or being handed to the listener.
    * <p>
-   * This method acts as a synchronization barrier for output processing. It takes a
-   * snapshot of the outputs being watched at the moment of invocation and blocks the
-   * calling thread until:
-   * <ul>
-   *   <li>each output has reached a terminal state (completed or failed), and</li>
-   *   <li>the task output listener has been applied for each terminal output.</li>
-   * </ul>
-   * Buffered task submissions are sent first, so their outputs are included.
+   * Buffered task submissions are sent first, so their outputs are included. The method then
+   * blocks the calling thread until every output of the session has reached a terminal state
+   * (completed or failed) and the task output listener has returned for each of them. The wait
+   * covers the whole session, not a snapshot taken at the call: outputs submitted while it runs,
+   * from this thread or another one, are waited for too, so a session that keeps receiving tasks
+   * keeps this method waiting. If no output is pending, the method returns immediately.
    * <p>
    * Without a listener, the method still waits for every output to reach a terminal state, but
    * their data is not downloaded; use {@link BlobHandle#downloadData()} to fetch an output.
-   * Outputs submitted or started after this method is called are not included in this wait.
-   * If there are no pending outputs at call time, the method returns immediately.
    * <p>
-   * This method does not cancel any ongoing operations and is safe to call concurrently.
-   * Each concurrent call waits for the set of outputs that were in-flight at the time
-   * of that specific invocation.
+   * This method does not cancel any ongoing operations and is safe to call concurrently: every
+   * call returns once the session has no output left to process.
    *
    * @see BlobCompletionListener
    * @see #awaitOutputsProcessed(Duration)

@@ -314,6 +314,9 @@ public final class ArmoniKConfig {
      * Use this to trust a custom CA instead of the system trust store.
      * If not specified, the system trust store will be used.
      *
+     * {@link #build()} rejects it with an {@code http://} endpoint, which connects without TLS, and
+     * with {@link #withoutSslValidation()}, which validates no certificate.
+     *
      * @param caCertPath path to the CA certificate PEM file
      * @return this builder
      */
@@ -326,6 +329,7 @@ public final class ArmoniKConfig {
      * Sets client certificate for mutual TLS authentication using PEM format.
      * <p>
      * Both certificate and private key files must be provided for PEM-based mTLS.
+     * {@link #build()} rejects them with an {@code http://} endpoint, which connects without TLS.
      *
      * @param certPath path to the client certificate PEM file
      * @param keyPath  path to the client private key PEM file
@@ -341,6 +345,7 @@ public final class ArmoniKConfig {
      * Sets client certificate for mutual TLS authentication using PKCS#12 format.
      * <p>
      * PKCS#12 files (.p12 or .pfx) bundle the certificate and private key together.
+     * {@link #build()} rejects them with an {@code http://} endpoint, which connects without TLS.
      *
      * @param p12Path  path to the PKCS#12 certificate file
      * @param password password for the PKCS#12 file, or null if passwordless
@@ -356,6 +361,7 @@ public final class ArmoniKConfig {
      * Sets client certificate for mutual TLS authentication using PKCS#12 format.
      * <p>
      * PKCS#12 files (.p12 or .pfx) bundle the certificate and private key together.
+     * {@link #build()} rejects them with an {@code http://} endpoint, which connects without TLS.
      *
      * @param p12Path  path to the PKCS#12 certificate file
      * @return this builder

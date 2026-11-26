@@ -26,6 +26,7 @@ import fr.aneo.armonik.client.definition.blob.BlobDefinition;
 import fr.aneo.armonik.client.definition.blob.InMemoryBlobData;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import fr.aneo.armonik.client.internal.concurrent.Schedulers;
 import fr.aneo.armonik.client.internal.grpc.mappers.TaskMapper;
@@ -264,6 +265,40 @@ final class TaskSubmitter {
                 ResultsServiceConfiguration resultsServiceConfiguration,
                 ChannelPool eventChannelPool,
                 Executor listenerExecutor) {
+    this(sessionId, taskConfiguration, outputListener, channelPool, batching, scheduler, flushExecutor, resultsServiceConfiguration,
+      eventChannelPool, listenerExecutor, DownloadBudget.unlimited());
+  }
+
+  /**
+   * Creates a new task submitter whose listener calls run on {@code listenerExecutor} and whose
+   * downloads of outputs are bounded by {@code downloadBudget}.
+   *
+   * @param sessionId         the identifier of the session context for task submission
+   * @param taskConfiguration the default task configuration of the session; may be {@code null}
+   * @param outputListener    optional listener for output blob completion events;
+   *                          may be {@code null}
+   * @param channelPool       the gRPC channel pool for cluster communication
+   * @param batching          how submitted tasks are grouped into batched calls
+   * @param scheduler         the scheduler running the batching window timer
+   * @param flushExecutor     the executor sending the buffer when the batching window elapses
+   * @param resultsServiceConfiguration the configuration of the results service, read once per client
+   * @param eventChannelPool  the channel pool of the event streams watching the outputs
+   * @param listenerExecutor  the executor running the listener calls
+   * @param downloadBudget    the budget bounding the data of downloaded outputs held at once
+   * @throws NullPointerException if any parameter other than {@code taskConfiguration} and
+   *                              {@code outputListener} is {@code null}
+   */
+  TaskSubmitter(SessionId sessionId,
+                TaskConfiguration taskConfiguration,
+                BlobCompletionListener outputListener,
+                ChannelPool channelPool,
+                TaskSubmissionBatching batching,
+                ScheduledExecutorService scheduler,
+                Executor flushExecutor,
+                ResultsServiceConfiguration resultsServiceConfiguration,
+                ChannelPool eventChannelPool,
+                Executor listenerExecutor,
+                DownloadBudget downloadBudget) {
     this.sessionId = requireNonNull(sessionId);
     this.resultsServiceConfiguration = requireNonNull(resultsServiceConfiguration, "resultsServiceConfiguration must not be null");
     this.defaultTaskConfiguration = requireNonNullElse(taskConfiguration, defaultConfiguration());
@@ -273,7 +308,8 @@ final class TaskSubmitter {
     this.flushExecutor = requireNonNull(flushExecutor, "flushExecutor must not be null");
     this.listenerExecutor = runInlineWhenRejected(requireNonNull(listenerExecutor, "listenerExecutor must not be null"));
     this.outputListener = requireNonNullElse(outputListener, NO_LISTENER);
-    this.outputWatcher = new BlobCompletionEventWatcher(sessionId, requireNonNull(eventChannelPool, "eventChannelPool must not be null"), this.outputListener, outputListener != null, this.listenerExecutor, scheduler);
+    this.outputWatcher = new BlobCompletionEventWatcher(sessionId, requireNonNull(eventChannelPool, "eventChannelPool must not be null"), this.outputListener, outputListener != null, this.listenerExecutor, scheduler,
+      this.channelPool, requireNonNull(downloadBudget, "downloadBudget must not be null"));
   }
 
   /**

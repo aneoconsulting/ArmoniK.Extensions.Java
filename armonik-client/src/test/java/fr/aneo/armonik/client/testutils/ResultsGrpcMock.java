@@ -64,6 +64,16 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
   public volatile String rejectedCreateResultsName;
   /** Status of each result, as the event streams report it; results not set are CREATED. */
   public final Map<String, ResultStatusOuterClass.ResultStatus> statuses = new ConcurrentHashMap<>();
+  /** Size ListResults reports for each result; results not set report the size of their download content. */
+  public final Map<String, Long> sizes = new ConcurrentHashMap<>();
+  /** Every ListResults request received, in order. */
+  public final List<ListResultsRequest> listResultsRequests = new CopyOnWriteArrayList<>();
+  /** Number of the next ListResults calls that fail with {@link #failingListResultsStatus}. */
+  public final AtomicInteger failingListResults = new AtomicInteger();
+  /** Status of the failing ListResults calls; UNAVAILABLE by default. */
+  public volatile io.grpc.Status failingListResultsStatus = io.grpc.Status.UNAVAILABLE;
+  /** Results ListResults omits, as if their record had been removed. */
+  public final java.util.Set<String> missingResults = ConcurrentHashMap.newKeySet();
   /** Notified of every status set through {@link #setStatus}; kept across {@link #reset()}. */
   private final List<java.util.function.BiConsumer<String, ResultStatusOuterClass.ResultStatus>> statusListeners = new CopyOnWriteArrayList<>();
 
@@ -106,6 +116,41 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
     this.failingCreateResults.set(0);
     this.rejectedCreateResultsName = null;
     this.statuses.clear();
+    this.sizes.clear();
+    this.listResultsRequests.clear();
+    this.failingListResults.set(0);
+    this.failingListResultsStatus = io.grpc.Status.UNAVAILABLE;
+    this.missingResults.clear();
+  }
+
+  /** Lists the results whose ids the filter names, as the watcher asks for their sizes. */
+  @Override
+  public void listResults(ListResultsRequest request, StreamObserver<ListResultsResponse> responseObserver) {
+    listResultsRequests.add(request);
+    if (failingListResults.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+      responseObserver.onError(failingListResultsStatus.asRuntimeException());
+      return;
+    }
+    var response = ListResultsResponse.newBuilder();
+    for (var and : request.getFilters().getOrList()) {
+      for (var field : and.getAndList()) {
+        if (!field.hasFilterString()) continue;
+        var id = field.getFilterString().getValue();
+        if (missingResults.contains(id)) continue;
+        var status = statuses.getOrDefault(id, ResultStatusOuterClass.ResultStatus.RESULT_STATUS_CREATED);
+        var size = sizes.getOrDefault(id, (long) contentFor(blobId(id)).length);
+        response.addResults(ResultRaw.newBuilder().setResultId(id).setStatus(status).setSize(size));
+      }
+    }
+    response.setTotal(response.getResultsCount());
+    responseObserver.onNext(response.build());
+    responseObserver.onCompleted();
+  }
+
+  private byte[] contentFor(BlobId id) {
+    return ((downloadSuccessId != null) && downloadSuccessId.equals(id))
+      ? downloadContent
+      : ("data-" + id).getBytes(StandardCharsets.UTF_8);
   }
 
   @Override
@@ -190,9 +235,7 @@ public class ResultsGrpcMock extends ResultsGrpc.ResultsImplBase {
       return;
     }
 
-    byte[] bytes = ((downloadSuccessId != null) && downloadSuccessId.equals(id))
-      ? downloadContent
-      : ("data-" + id).getBytes(StandardCharsets.UTF_8);
+    byte[] bytes = contentFor(id);
     responseObserver.onNext(DownloadResultDataResponse.newBuilder()
                                                       .setDataChunk(copyFrom(bytes))
                                                       .build());

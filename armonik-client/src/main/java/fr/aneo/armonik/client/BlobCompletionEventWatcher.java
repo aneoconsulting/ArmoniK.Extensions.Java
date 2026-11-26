@@ -21,12 +21,19 @@ import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionRequest;
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventSubscriptionResponse;
 import fr.aneo.armonik.api.grpc.v1.events.EventsCommon.EventsEnum;
 import fr.aneo.armonik.api.grpc.v1.events.EventsGrpc;
+import fr.aneo.armonik.api.grpc.v1.sortdirection.SortDirectionOuterClass.SortDirection;
 import fr.aneo.armonik.api.grpc.v1.results.ResultStatusOuterClass.ResultStatus;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ListResultsRequest;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ListResultsResponse;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsCommon.ResultRaw;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultRawEnumField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFields.ResultRawField;
 import fr.aneo.armonik.api.grpc.v1.results.ResultsFilters;
+import fr.aneo.armonik.api.grpc.v1.results.ResultsGrpc;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
+import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
@@ -52,6 +59,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 /**
@@ -86,6 +94,13 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
  * channel is held, a subscription waits for one, possibly indefinitely if the streams holding them
  * wait for outputs that do not progress, such as those of paused sessions; a warning is logged once it
  * has waited {@link #WAIT_WARNING}.
+ * <p>
+ * With a limited {@link DownloadBudget}, a completed output is downloaded only once its size is
+ * reserved in the budget, and the reservation is released once its listener call has returned, so
+ * that the data the client holds stays bounded. The events do not carry the size of an output: the
+ * sizes of completed outputs are read with one {@code ListResults} call per group, sent once
+ * {@link #SIZE_BATCH} outputs are waiting or {@link #SIZE_WINDOW} after the first one. With the
+ * unlimited budget, outputs are downloaded as soon as they complete, without reading their size.
  */
 final class BlobCompletionEventWatcher {
   private static final Logger logger = LoggerFactory.getLogger(BlobCompletionEventWatcher.class);
@@ -96,6 +111,10 @@ final class BlobCompletionEventWatcher {
   static final Duration MIN_BACKOFF = Duration.ofSeconds(1);
   static final Duration MAX_BACKOFF = Duration.ofSeconds(30);
   static final Duration WAIT_WARNING = Duration.ofSeconds(5);
+  static final int SIZE_BATCH = 100;
+  static final Duration SIZE_WINDOW = Duration.ofMillis(50);
+  /** Deadline of a size lookup; a lookup that exceeds it is retried like any transient failure. */
+  static final Duration SIZE_CALL_DEADLINE = Duration.ofSeconds(30);
 
   private final SessionId sessionId;
   private final ChannelPool eventChannelPool;
@@ -109,6 +128,12 @@ final class BlobCompletionEventWatcher {
   private final long minBackoffNanos;
   private final long maxBackoffNanos;
   private final long waitWarningNanos;
+  private final ChannelPool channelPool;
+  private final DownloadBudget downloadBudget;
+  /** The key of this session's reservations in the budget. */
+  private final String budgetKey;
+  private final int sizeBatch;
+  private final long sizeWindowNanos;
 
   private final Map<String, BlobHandle> pending = new ConcurrentHashMap<>();
   private final AtomicInteger inFlight = new AtomicInteger();
@@ -130,6 +155,13 @@ final class BlobCompletionEventWatcher {
   private boolean registering;
   private boolean stopped;
   private CompletableFuture<Void> idleFuture;
+  /** Completed outputs waiting for their size to be read. */
+  private final List<Sizing> toSize = new ArrayList<>();
+  private ScheduledFuture<?> sizeFlush;
+  /** Groups whose size lookup failed and waits out a backoff before it is retried. */
+  private final Map<List<Sizing>, ScheduledFuture<?>> sizeRetries = new HashMap<>();
+  /** Completed outputs whose size is being read or whose download waits for the budget. */
+  private int awaitingDownload;
 
   BlobCompletionEventWatcher(SessionId sessionId,
                              ChannelPool eventChannelPool,
@@ -137,8 +169,20 @@ final class BlobCompletionEventWatcher {
                              boolean downloadData,
                              Executor listenerExecutor,
                              ScheduledExecutorService scheduler) {
+    this(sessionId, eventChannelPool, listener, downloadData, listenerExecutor, scheduler, eventChannelPool, DownloadBudget.unlimited());
+  }
+
+  BlobCompletionEventWatcher(SessionId sessionId,
+                             ChannelPool eventChannelPool,
+                             BlobCompletionListener listener,
+                             boolean downloadData,
+                             Executor listenerExecutor,
+                             ScheduledExecutorService scheduler,
+                             ChannelPool channelPool,
+                             DownloadBudget downloadBudget) {
     this(sessionId, eventChannelPool, listener, downloadData, listenerExecutor, scheduler,
-      MAX_IDS_PER_STREAM, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF, WAIT_WARNING);
+      MAX_IDS_PER_STREAM, OPEN_DELAY, REOPEN_DELAY, MIN_BACKOFF, MAX_BACKOFF, WAIT_WARNING,
+      channelPool, downloadBudget, SIZE_BATCH, SIZE_WINDOW);
   }
 
   BlobCompletionEventWatcher(SessionId sessionId,
@@ -153,6 +197,26 @@ final class BlobCompletionEventWatcher {
                              Duration minBackoff,
                              Duration maxBackoff,
                              Duration waitWarning) {
+    this(sessionId, eventChannelPool, listener, downloadData, listenerExecutor, scheduler, maxIdsPerStream, openDelay,
+      reopenDelay, minBackoff, maxBackoff, waitWarning, eventChannelPool, DownloadBudget.unlimited(), SIZE_BATCH, SIZE_WINDOW);
+  }
+
+  BlobCompletionEventWatcher(SessionId sessionId,
+                             ChannelPool eventChannelPool,
+                             BlobCompletionListener listener,
+                             boolean downloadData,
+                             Executor listenerExecutor,
+                             ScheduledExecutorService scheduler,
+                             int maxIdsPerStream,
+                             Duration openDelay,
+                             Duration reopenDelay,
+                             Duration minBackoff,
+                             Duration maxBackoff,
+                             Duration waitWarning,
+                             ChannelPool channelPool,
+                             DownloadBudget downloadBudget,
+                             int sizeBatch,
+                             Duration sizeWindow) {
     this.sessionId = requireNonNull(sessionId, "sessionId must not be null");
     this.eventChannelPool = requireNonNull(eventChannelPool, "eventChannelPool must not be null");
     this.listener = requireNonNull(listener, "listener must not be null");
@@ -167,6 +231,12 @@ final class BlobCompletionEventWatcher {
     this.maxBackoffNanos = maxBackoff.toNanos();
     this.waitWarningNanos = waitWarning.toNanos();
     this.backoffNanos = minBackoffNanos;
+    this.channelPool = requireNonNull(channelPool, "channelPool must not be null");
+    this.downloadBudget = requireNonNull(downloadBudget, "downloadBudget must not be null");
+    this.budgetKey = sessionId.asString();
+    if (sizeBatch < 1) throw new IllegalArgumentException("sizeBatch must be at least 1, got: " + sizeBatch);
+    this.sizeBatch = sizeBatch;
+    this.sizeWindowNanos = sizeWindow.toNanos();
   }
 
   /**
@@ -258,7 +328,7 @@ final class BlobCompletionEventWatcher {
     Runnable toRemove = null;
     synchronized (lock) {
       registering = false;
-      if (pending.isEmpty() || stopped) toRemove = registration;
+      if ((pending.isEmpty() && awaitingDownload == 0) || stopped) toRemove = registration;
       else closeRegistration = registration;
     }
     if (toRemove != null) toRemove.run();
@@ -455,12 +525,19 @@ final class BlobCompletionEventWatcher {
 
   /** Stops watching, once the client is closed: every pending output is reported as failed. */
   private void stop() {
+    List<Sizing> sizing;
     List<Subscription> toFinish;
     Runnable registration;
     synchronized (lock) {
       if (stopped) return;
       stopped = true;
       if (refresh != null) refresh.cancel(false);
+      sizing = takeSizeBatch();
+      sizeRetries.forEach((batch, retry) -> {
+        retry.cancel(false);
+        sizing.addAll(batch);
+      });
+      sizeRetries.clear();
       toFinish = new ArrayList<>(subscriptions);
       subscriptions.clear();
       owners.clear();
@@ -470,6 +547,8 @@ final class BlobCompletionEventWatcher {
       toFinish.forEach(Subscription::finish);
     }
     if (registration != null) registration.run();
+    failSizing(sizing, clientClosed());
+    downloadBudget.cancel(budgetKey, clientClosed());
     if (!pending.isEmpty()) {
       logger.info("Client closed: stopped watching {} outputs of session {}", pending.size(), sessionId.asString());
     }
@@ -503,7 +582,7 @@ final class BlobCompletionEventWatcher {
   private void onStatus(String id, ResultStatus status) {
     switch (status) {
       case RESULT_STATUS_COMPLETED, RESULT_STATUS_ABORTED, RESULT_STATUS_DELETED, RESULT_STATUS_NOTFOUND -> {
-        var handle = take(id);
+        var handle = take(id, status == ResultStatus.RESULT_STATUS_COMPLETED && sizesNeeded());
         if (handle == null) return;
         if (status == ResultStatus.RESULT_STATUS_COMPLETED) {
           completed(handle);
@@ -525,19 +604,28 @@ final class BlobCompletionEventWatcher {
    * gives its channel back, and the watcher leaves the pool's close notification once nothing is pending.
    */
   private BlobHandle take(String id) {
+    return take(id, false);
+  }
+
+  /**
+   * Same as {@link #take(String)}; with {@code awaitDownload}, the output then counts as waiting for
+   * its download, which keeps the watcher registered for the pool's close notification.
+   */
+  private BlobHandle take(String id, boolean awaitDownload) {
     inFlight.incrementAndGet();
     BlobHandle handle;
     Subscription finished = null;
     Runnable registration = null;
     synchronized (lock) {
       handle = pending.remove(id);
+      if (handle != null && awaitDownload) awaitingDownload++;
       unwatched.remove(id);
       var owner = owners.remove(id);
       if (handle != null && owner != null) {
         owner.ids.remove(id);
         if (owner.ids.isEmpty() && subscriptions.remove(owner)) finished = owner;
       }
-      if (pending.isEmpty()) {
+      if (pending.isEmpty() && awaitingDownload == 0) {
         registration = closeRegistration;
         closeRegistration = null;
       }
@@ -548,9 +636,24 @@ final class BlobCompletionEventWatcher {
     return handle;
   }
 
+  private boolean sizesNeeded() {
+    return downloadData && !downloadBudget.isUnlimited();
+  }
+
   private void completed(BlobHandle handle) {
     if (!downloadData) {
       done();
+      return;
+    }
+    if (sizesNeeded()) {
+      handle.deferredBlobInfo()
+            .thenAccept(info -> toSize(new Sizing(handle, info)))
+            .exceptionally(error -> {
+              logger.error("Could not hand a completed output to the listener. SessionId: {}", sessionId.asString(), error);
+              downloadStarted();
+              done();
+              return null;
+            });
       return;
     }
     handle.deferredBlobInfo()
@@ -576,13 +679,220 @@ final class BlobCompletionEventWatcher {
           });
   }
 
+  /** Buffers a completed output until its size is read, with the next group. */
+  private void toSize(Sizing sizing) {
+    List<Sizing> batch = null;
+    boolean closed;
+    synchronized (lock) {
+      closed = stopped;
+      if (!closed) {
+        toSize.add(sizing);
+        if (toSize.size() >= sizeBatch) {
+          batch = takeSizeBatch();
+        } else if (sizeFlush == null) {
+          try {
+            sizeFlush = scheduler.schedule(this::flushSizes, sizeWindowNanos, NANOSECONDS);
+          } catch (RejectedExecutionException e) {
+            batch = takeSizeBatch();
+          }
+        }
+      }
+    }
+    if (closed) {
+      downloadStarted();
+      notifyError(sizing.info(), clientClosed());
+    } else if (batch != null) {
+      readSizes(batch, minBackoffNanos);
+    }
+  }
+
+  /** Takes the outputs waiting for their size; called with the lock held. */
+  private List<Sizing> takeSizeBatch() {
+    var batch = new ArrayList<>(toSize);
+    toSize.clear();
+    if (sizeFlush != null) sizeFlush.cancel(false);
+    sizeFlush = null;
+    return batch;
+  }
+
+  private void flushSizes() {
+    List<Sizing> batch;
+    synchronized (lock) {
+      batch = takeSizeBatch();
+    }
+    if (!batch.isEmpty()) readSizes(batch, minBackoffNanos);
+  }
+
+  /**
+   * Reads the sizes of a group of completed outputs with one {@code ListResults} call, then starts
+   * their downloads; a failed call is retried after {@code backoffNanos}, doubled at each failure.
+   */
+  private void readSizes(List<Sizing> batch, long backoffNanos) {
+    synchronized (lock) {
+      if (stopped) {
+        failSizing(batch, clientClosed());
+        return;
+      }
+    }
+    var ids = batch.stream().map(sizing -> sizing.info().id().asString()).toList();
+    var request = ListResultsRequest.newBuilder()
+                                    .setPage(0)
+                                    .setPageSize(ids.size())
+                                    .setFilters(idsFilter(ids))
+                                    // The control plane rejects a listing without sort
+                                    .setSort(ListResultsRequest.Sort.newBuilder()
+                                                                    .setField(ResultField.newBuilder().setResultRawField(ResultRawField.newBuilder().setField(ResultRawEnumField.RESULT_RAW_ENUM_FIELD_RESULT_ID)))
+                                                                    .setDirection(SortDirection.SORT_DIRECTION_ASC))
+                                    .build();
+    CompletionStage<List<ResultRaw>> listing;
+    try {
+      listing = channelPool.executeAsync(channel -> Futures.toCompletionStage(ResultsGrpc.newFutureStub(channel)
+                                                                                         .withDeadlineAfter(SIZE_CALL_DEADLINE.toMillis(), MILLISECONDS)
+                                                                                         .listResults(request)))
+                           .thenApply(ListResultsResponse::getResultsList);
+    } catch (RuntimeException e) {
+      listing = CompletableFuture.failedFuture(e);
+    }
+    listing.whenComplete((results, failure) -> {
+      if (failure == null) {
+        var sizes = new HashMap<String, Long>();
+        results.forEach(result -> sizes.put(result.getResultId(), result.getSize()));
+        for (var sizing : batch) {
+          var size = sizes.get(sizing.info().id().asString());
+          if (size != null) {
+            download(sizing, size);
+          } else {
+            downloadStarted();
+            notifyError(sizing.info(), new ArmoniKException("Blob is no longer available, its result was not found"));
+          }
+        }
+        return;
+      }
+      var cause = unwrap(failure);
+      boolean closed;
+      synchronized (lock) {
+        closed = stopped;
+      }
+      if (closed || cause instanceof IllegalStateException || channelPool.isClosed()) {
+        failSizing(batch, clientClosed());
+        return;
+      }
+      if (isPermanent(cause)) {
+        logger.error("Could not read the size of {} outputs of session {}, reporting them as failed", batch.size(), sessionId.asString(), cause);
+        failSizing(batch, new ArmoniKException("Could not read the size of the output: " + cause, cause));
+        return;
+      }
+      logger.warn("Could not read the size of {} outputs of session {}, retrying in {} ms: {}",
+        batch.size(), sessionId.asString(), NANOSECONDS.toMillis(backoffNanos), cause.toString());
+      boolean rescheduled = false;
+      synchronized (lock) {
+        // Tracked, so that stop() reports the group at once rather than when the retry fires
+        if (!stopped) {
+          try {
+            sizeRetries.put(batch, scheduler.schedule(() -> retrySizes(batch, Math.min(backoffNanos * 2, maxBackoffNanos)), backoffNanos, NANOSECONDS));
+            rescheduled = true;
+          } catch (RejectedExecutionException e) {
+            // Reported below
+          }
+        }
+      }
+      if (!rescheduled) failSizing(batch, clientClosed());
+    });
+  }
+
+  private void retrySizes(List<Sizing> batch, long backoffNanos) {
+    synchronized (lock) {
+      // Already reported by stop()
+      if (sizeRetries.remove(batch) == null) return;
+    }
+    readSizes(batch, backoffNanos);
+  }
+
+  private void failSizing(List<Sizing> batch, Throwable cause) {
+    for (var sizing : batch) {
+      downloadStarted();
+      notifyError(sizing.info(), cause);
+    }
+  }
+
+  private static ResultsFilters.Filters idsFilter(List<String> ids) {
+    var filters = ResultsFilters.Filters.newBuilder();
+    for (var id : ids) {
+      var isId = ResultsFilters.FilterField.newBuilder()
+                                           .setField(ResultField.newBuilder().setResultRawField(ResultRawField.newBuilder().setField(ResultRawEnumField.RESULT_RAW_ENUM_FIELD_RESULT_ID)))
+                                           .setFilterString(FilterString.newBuilder().setOperator(FilterStringOperator.FILTER_STRING_OPERATOR_EQUAL).setValue(id));
+      filters.addOr(ResultsFilters.FiltersAnd.newBuilder().addAnd(isId));
+    }
+    return filters.build();
+  }
+
+  /**
+   * Reserves the size of an output in the budget, then downloads it and hands it to the listener,
+   * releasing the reservation once the listener call has returned.
+   */
+  private void download(Sizing sizing, long size) {
+    CompletableFuture<Void> admission = null;
+    synchronized (lock) {
+      // Under the lock, so that stop() cancels every reservation made before it, and none is made after
+      if (!stopped) admission = downloadBudget.acquire(budgetKey, size);
+    }
+    if (admission == null) {
+      downloadStarted();
+      notifyError(sizing.info(), clientClosed());
+      return;
+    }
+    admission.whenComplete((admitted, refused) -> {
+      downloadStarted();
+      if (refused != null) {
+        notifyError(sizing.info(), unwrap(refused));
+        return;
+      }
+      Runnable release = () -> downloadBudget.release(size);
+      CompletionStage<byte[]> data;
+      try {
+        data = sizing.handle().downloadData();
+      } catch (RuntimeException e) {
+        data = CompletableFuture.failedFuture(e);
+      }
+      data.whenComplete((bytes, error) -> notify(error == null
+        ? () -> listener.onSuccess(new BlobCompletionListener.Blob(sizing.info(), bytes))
+        : () -> listener.onError(new BlobCompletionListener.BlobError(sizing.info(), error)), release));
+    });
+  }
+
+  /**
+   * Counts a completed output as no longer waiting for its download, and leaves the pool's close
+   * notification once nothing is pending or waiting.
+   */
+  private void downloadStarted() {
+    Runnable registration = null;
+    synchronized (lock) {
+      awaitingDownload--;
+      if (awaitingDownload == 0 && pending.isEmpty()) {
+        registration = closeRegistration;
+        closeRegistration = null;
+      }
+    }
+    if (registration != null) registration.run();
+  }
+
+  private void notifyError(BlobInfo info, Throwable cause) {
+    notify(() -> listener.onError(new BlobCompletionListener.BlobError(info, cause)));
+  }
+
   private void notify(Runnable call) {
+    notify(call, null);
+  }
+
+  /** Runs a listener call on the listener executor, then {@code after}, if any, then counts the output as processed. */
+  private void notify(Runnable call, Runnable after) {
     Runnable counted = () -> {
       try {
         call.run();
       } catch (Throwable throwable) {
         logger.error("Listener threw an exception. SessionId: {}", sessionId.asString(), throwable);
       } finally {
+        if (after != null) after.run();
         done();
       }
     };
@@ -593,6 +903,10 @@ final class BlobCompletionEventWatcher {
       logger.warn("The listener executor rejected a call, running it on the current thread. SessionId: {}, cause: {}", sessionId.asString(), rejected.getMessage());
       counted.run();
     }
+  }
+
+  /** A completed output waiting for its size. */
+  private record Sizing(BlobHandle handle, BlobInfo info) {
   }
 
   private void done() {

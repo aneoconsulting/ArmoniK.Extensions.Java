@@ -18,6 +18,7 @@ package fr.aneo.armonik.client;
 import fr.aneo.armonik.api.grpc.v1.sessions.SessionsGrpc;
 import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.exception.ArmoniKException;
+import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
@@ -76,6 +77,7 @@ public class ArmoniKClient implements AutoCloseable {
   private final Executor listenerExecutor;
   /** The listener executor this client created, and shuts down on close; null when the application supplied it. */
   private final ExecutorService ownedListenerExecutor;
+  private final DownloadBudget downloadBudget;
 
 
   /**
@@ -113,6 +115,9 @@ public class ArmoniKClient implements AutoCloseable {
       this.ownedListenerExecutor = newListenerExecutor();
       this.listenerExecutor = ownedListenerExecutor;
     }
+    this.downloadBudget = armoniKConfig.downloadBudget() == Long.MAX_VALUE
+      ? DownloadBudget.unlimited()
+      : new DownloadBudget(armoniKConfig.downloadBudget());
   }
 
   ArmoniKClient(ChannelPool channelPool) {
@@ -127,6 +132,7 @@ public class ArmoniKClient implements AutoCloseable {
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
     this.listenerExecutor = Runnable::run;
     this.ownedListenerExecutor = null;
+    this.downloadBudget = DownloadBudget.unlimited();
   }
 
   /** A client running its listener calls on {@code listenerExecutor}, which it owns and shuts down on close. */
@@ -138,6 +144,7 @@ public class ArmoniKClient implements AutoCloseable {
     this.resultsServiceConfiguration = new ResultsServiceConfiguration(channelPool);
     this.listenerExecutor = requireNonNull(listenerExecutor, "listenerExecutor must not be null");
     this.ownedListenerExecutor = listenerExecutor;
+    this.downloadBudget = DownloadBudget.unlimited();
   }
 
 
@@ -164,7 +171,7 @@ public class ArmoniKClient implements AutoCloseable {
     requireNonNull(sessionDefinition, "sessionDefinition must not be null");
 
     var sessionInfo = createSession(sessionDefinition);
-    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor);
+    return new SessionHandle(sessionInfo, sessionDefinition.outputListener(), channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor, downloadBudget);
   }
 
   /**
@@ -205,7 +212,7 @@ public class ArmoniKClient implements AutoCloseable {
         toTaskConfiguration(sessionResponse.getSession().getOptions())
       );
 
-      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor);
+      return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor, downloadBudget);
     } catch (Exception e) {
       throw new ArmoniKException(e.getMessage(), e);
     }
@@ -360,6 +367,11 @@ public class ArmoniKClient implements AutoCloseable {
     ListenerThread(Runnable runnable, String name) {
       super(runnable, name);
     }
+  }
+
+  /** The budget bounding the data of downloaded outputs this client holds. */
+  DownloadBudget downloadBudget() {
+    return downloadBudget;
   }
 
   private SessionInfo createSession(SessionDefinition definition) {

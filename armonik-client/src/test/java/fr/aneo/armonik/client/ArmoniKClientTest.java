@@ -132,8 +132,25 @@ class ArmoniKClientTest extends InProcessGrpcTestBase {
     // Given
     var sessionId = SessionId.from("does not exist");
 
+    // When / Then: the error names the session, and keeps the NOT_FOUND status in its cause
+    assertThatThrownBy(() -> client.getSession(sessionId))
+      .isInstanceOf(ArmoniKException.class)
+      .hasMessage("Session does not exist not found")
+      .satisfies(error -> assertThat(io.grpc.Status.fromThrowable(error).getCode()).isEqualTo(io.grpc.Status.Code.NOT_FOUND));
+  }
+
+  @Test
+  @DisplayName("should name the session in other errors of getSession")
+  void should_name_the_session_in_other_errors_of_get_session() {
+    // Given
+    var sessionId = SessionId.from("permission denied");
+
     // When / Then
-    assertThatThrownBy(() -> client.getSession(sessionId)).isInstanceOf(ArmoniKException.class);
+    assertThatThrownBy(() -> client.getSession(sessionId))
+      .isInstanceOf(ArmoniKException.class)
+      .hasMessageStartingWith("Could not get session permission denied: ")
+      .hasMessageContaining("PERMISSION_DENIED")
+      .satisfies(error -> assertThat(io.grpc.Status.fromThrowable(error).getCode()).isEqualTo(io.grpc.Status.Code.PERMISSION_DENIED));
   }
 
   @Test

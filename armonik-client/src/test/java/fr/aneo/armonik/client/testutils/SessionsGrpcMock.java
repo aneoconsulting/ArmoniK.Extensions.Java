@@ -49,6 +49,10 @@ public class SessionsGrpcMock extends SessionsGrpc.SessionsImplBase {
 
     if (request.getSessionId().equals("does not exist")) {
       responseObserver.onError(io.grpc.Status.NOT_FOUND.withDescription("Session not found").asRuntimeException());
+      return;
+    } else if (request.getSessionId().equals("permission denied")) {
+      responseObserver.onError(io.grpc.Status.PERMISSION_DENIED.withDescription("Not allowed").asRuntimeException());
+      return;
     } else {
       responseObserver.onNext(GetSessionResponse.newBuilder()
                                                 .setSession(

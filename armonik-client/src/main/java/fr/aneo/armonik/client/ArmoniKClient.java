@@ -21,6 +21,7 @@ import fr.aneo.armonik.client.exception.ArmoniKException;
 import fr.aneo.armonik.client.internal.concurrent.DownloadBudget;
 import fr.aneo.armonik.client.internal.concurrent.Futures;
 import io.grpc.ManagedChannel;
+import io.grpc.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -186,7 +187,9 @@ public class ArmoniKClient implements AutoCloseable {
    * session.
    *
    * <p><strong>Error Handling:</strong>
-   * If the session does not exist, this method throws an {@link ArmoniKException}
+   * If the session does not exist, this method throws an {@link ArmoniKException} whose message
+   * says that the session, named by its id, was not found; its cause carries the {@code NOT_FOUND}
+   * status. Any other failure throws an {@link ArmoniKException} naming the session too.
    *
    * @param sessionId      the identifier of the existing session to connect to
    * @param outputListener an optional listener for output blob completion events;
@@ -204,7 +207,7 @@ public class ArmoniKClient implements AutoCloseable {
       var sessionResponse = channelPool.execute(
         channel -> SessionsGrpc.newBlockingStub(channel).getSession(toGetSessionRequest(sessionId))
       );
-      if (!sessionResponse.hasSession()) throw new ArmoniKException("Session not found");
+      if (!sessionResponse.hasSession()) throw new ArmoniKException("Session " + sessionId.asString() + " not found");
 
       var sessionInfo = new SessionInfo(
         sessionId,
@@ -213,8 +216,13 @@ public class ArmoniKClient implements AutoCloseable {
       );
 
       return new SessionHandle(sessionInfo, outputListener, channelPool, taskSubmissionBatching, resultsServiceConfiguration, eventChannelPool, listenerExecutor, downloadBudget);
+    } catch (ArmoniKException e) {
+      throw e;
     } catch (Exception e) {
-      throw new ArmoniKException(e.getMessage(), e);
+      if (Status.fromThrowable(e).getCode() == Status.Code.NOT_FOUND) {
+        throw new ArmoniKException("Session " + sessionId.asString() + " not found", e);
+      }
+      throw new ArmoniKException("Could not get session " + sessionId.asString() + ": " + e.getMessage(), e);
     }
   }
 

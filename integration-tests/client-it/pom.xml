@@ -64,12 +64,17 @@
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
+        <artifactId>maven-failsafe-plugin</artifactId>
         <version>3.5.4</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
         <configuration>
-          <includes>
-            <include>**/*IT.java</include>
-          </includes>
           <!-- One JVM per test class: the SDK's executors are static, threads a test leaves blocked must not stall the next class -->
           <forkCount>1</forkCount>
           <reuseForks>false</reuseForks>

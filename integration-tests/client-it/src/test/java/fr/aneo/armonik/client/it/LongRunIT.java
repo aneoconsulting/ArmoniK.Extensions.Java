@@ -32,16 +32,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail scenario 4: "hang once leaked streams fill SETTINGS_MAX_CONCURRENT_STREAMS", and the long run
- * without stall: 20 sessions of one client loop on submit one task + awaitOutputsProcessed.
+ * Long run without stall: 20 sessions of one client loop on submit one task + awaitOutputsProcessed.
  * <p>
  * Expected: every round finishes; no 60 s without progress. Kestrel allows 100 streams per
- * connection, so with leaked streams the mail predicts a stall after 5,000 to 6,400 rounds. The
+ * connection, so streams left open would fill every connection after a few thousand rounds. The
  * stress run does 6,000 rounds, the default run 600.
  */
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 40, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
-class MailStreamLimitIT {
+class LongRunIT {
   private static final Duration NO_PROGRESS_LIMIT = Duration.ofSeconds(60);
 
   @AfterAll
@@ -94,10 +93,10 @@ class MailStreamLimitIT {
         }
       }
       var elapsed = millisSince(start);
-      metric("MailStreamLimitIT", "rounds_completed", completed.get() + "/" + target);
-      metric("MailStreamLimitIT", "rounds_per_s", String.format("%.1f", completed.get() * 1000.0 / Math.max(1, elapsed)));
-      metric("MailStreamLimitIT", "peak_event_channels_in_use", peakEventChannels.get());
-      metric("MailStreamLimitIT", "peak_tcp_connections", peakConnections.get());
+      metric("LongRunIT", "rounds_completed", completed.get() + "/" + target);
+      metric("LongRunIT", "rounds_per_s", String.format("%.1f", completed.get() * 1000.0 / Math.max(1, elapsed)));
+      metric("LongRunIT", "peak_event_channels_in_use", peakEventChannels.get());
+      metric("LongRunIT", "peak_tcp_connections", peakConnections.get());
 
       assertThat(failure.get()).as("a round failed").isNull();
       assertThat(completed.get()).as("rounds done before %d s without progress. %s", NO_PROGRESS_LIMIT.toSeconds(), sdkThreads())

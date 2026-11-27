@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail "other finding" 1: batching delays. submitTask buffers up to 100 ms, and an output is only
+ * Batching delays: submitTask buffers up to 100 ms, and an output is only
  * watched after a delay. Measures the latency a submit-and-wait round adds on top of the task itself.
  */
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")

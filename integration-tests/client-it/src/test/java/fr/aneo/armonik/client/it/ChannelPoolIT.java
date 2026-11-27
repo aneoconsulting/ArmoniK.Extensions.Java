@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail scenario 1: "throughput limited by a 50-channel pool lending one channel per call".
+ * The channel pool, which lends a channel to one call at a time, does not limit submission.
  * <p>
  * Expected: submitting thousands of tasks never parks a thread waiting for a pooled channel, and the
  * submission is not serialized behind the pool. The sessions are paused, so the numbers measure the
@@ -43,14 +43,14 @@ import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
  */
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 10, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
-class MailThroughputIT {
+class ChannelPoolIT {
 
   @AfterAll
   static void cleanUp() {
     cancelCreatedSessions();
   }
 
-  /** The mail's probe: 2,000 tasks with one small input each in one submitTasks call. */
+  /** 2,000 tasks with one small input each in one submitTasks call. */
   @Test
   void submitting_2000_small_tasks_never_blocks_a_thread_on_the_channel_pool() {
     try (var client = newClient()) {
@@ -64,11 +64,11 @@ class MailThroughputIT {
       var elapsed = millisSince(start);
       sampler.stop();
 
-      metric("MailThroughputIT", "small_2000_ack_ms", elapsed);
-      metric("MailThroughputIT", "small_2000_tasks_per_s", 2_000_000 / Math.max(1, elapsed));
-      metric("MailThroughputIT", "small_2000_peak_threads_blocked_in_pool", sampler.peakBlocked.get());
-      metric("MailThroughputIT", "small_2000_peak_channels_in_use", sampler.peakInUse.get());
-      metric("MailThroughputIT", "small_2000_peak_tcp_connections", sampler.peakConnections.get());
+      metric("ChannelPoolIT", "small_2000_ack_ms", elapsed);
+      metric("ChannelPoolIT", "small_2000_tasks_per_s", 2_000_000 / Math.max(1, elapsed));
+      metric("ChannelPoolIT", "small_2000_peak_threads_blocked_in_pool", sampler.peakBlocked.get());
+      metric("ChannelPoolIT", "small_2000_peak_channels_in_use", sampler.peakInUse.get());
+      metric("ChannelPoolIT", "small_2000_peak_tcp_connections", sampler.peakConnections.get());
       assertThat(sampler.peakBlocked.get()).as("threads parked in ManagedChannelPool while submitting").isZero();
     }
   }
@@ -105,14 +105,14 @@ class MailThroughputIT {
         sampler.stop();
         within(Duration.ofSeconds(60), "cancel", session.cancel());
         within(Duration.ofSeconds(60), "purge", session.purge());
-        metric("MailThroughputIT", "streamed_80x2200KB_pool" + poolSize + "_ms", sizes[run]);
-        metric("MailThroughputIT", "streamed_80x2200KB_pool" + poolSize + "_peak_channels_in_use", sampler.peakInUse.get());
-        metric("MailThroughputIT", "streamed_80x2200KB_pool" + poolSize + "_peak_tcp_connections", sampler.peakConnections.get());
+        metric("ChannelPoolIT", "streamed_80x2200KB_pool" + poolSize + "_ms", sizes[run]);
+        metric("ChannelPoolIT", "streamed_80x2200KB_pool" + poolSize + "_peak_channels_in_use", sampler.peakInUse.get());
+        metric("ChannelPoolIT", "streamed_80x2200KB_pool" + poolSize + "_peak_tcp_connections", sampler.peakConnections.get());
         assertThat(sampler.peakBlocked.get()).as("threads parked in ManagedChannelPool").isZero();
       }
     }
     // Recorded rather than asserted: the cluster is shared and timings are noisy
-    metric("MailThroughputIT", "streamed_speedup_pool200_vs_pool50", String.format("%.2f", (double) sizes[0] / Math.max(1, sizes[1])));
+    metric("ChannelPoolIT", "streamed_speedup_pool200_vs_pool50", String.format("%.2f", (double) sizes[0] / Math.max(1, sizes[1])));
   }
 
   /** Samples the SDK's pool every 20 ms. */

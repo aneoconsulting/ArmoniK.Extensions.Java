@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail scenario 2: "GetEvents streams are never cancelled".
+ * GetEvents streams are cancelled once the outputs they watch are processed.
  * <p>
  * Expected: once awaitOutputsProcessed returns, no event stream holds a channel of the event pool
  * (a subscription holds its channel exactly as long as its GetEvents call is open), and closing the
@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
  */
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 5, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
-class MailLeakIT {
+class EventStreamCleanupIT {
 
   @AfterAll
   static void cleanUp() {
@@ -59,7 +59,7 @@ class MailLeakIT {
       session.submitTasks(copyTasks(session, 1, "leak-" + round + "-"));
       run(Duration.ofMinutes(1), "round " + round, session::awaitOutputsProcessed);
     }
-    metric("MailLeakIT", "round_avg_ms", millisSince(roundsStart) / rounds);
+    metric("EventStreamCleanupIT", "round_avg_ms", millisSince(roundsStart) / rounds);
 
     var released = await(Duration.ofSeconds(2), () -> channelsInUse(client, "eventChannelPool") == 0);
     var heldEventChannels = channelsInUse(client, "eventChannelPool");
@@ -69,11 +69,11 @@ class MailLeakIT {
     var closeMillis = millisSince(closeStart);
     await(Duration.ofSeconds(2), () -> connectionsTo(endpointPort()) == 0);
 
-    metric("MailLeakIT", "event_channels_held_after_rounds", heldEventChannels);
-    metric("MailLeakIT", "connections_before_close", connectionsBefore);
-    metric("MailLeakIT", "close_ms", closeMillis);
-    metric("MailLeakIT", "baseline_close_ms", baselineCloseMillis);
-    metric("MailLeakIT", "connections_after_close", connectionsTo(endpointPort()));
+    metric("EventStreamCleanupIT", "event_channels_held_after_rounds", heldEventChannels);
+    metric("EventStreamCleanupIT", "connections_before_close", connectionsBefore);
+    metric("EventStreamCleanupIT", "close_ms", closeMillis);
+    metric("EventStreamCleanupIT", "baseline_close_ms", baselineCloseMillis);
+    metric("EventStreamCleanupIT", "connections_after_close", connectionsTo(endpointPort()));
 
     assertThat(released).as("event channels still held by GetEvents streams after every output was processed: %d", heldEventChannels).isTrue();
     assertThat(closeMillis).as("close() after 20 rounds, baseline %d ms", baselineCloseMillis).isLessThan(baselineCloseMillis + 1_000);

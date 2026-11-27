@@ -156,7 +156,7 @@ class HygieneIT {
   }
 
   /**
-   * Mail "other finding" 4: after a burst, connections must idle out. The pool reuses the most recent
+   * After a burst, connections must idle out. The pool reuses the most recent
    * channel first and shuts down channels idle for 5 minutes. One call per second for 6 minutes after
    * a burst of 200 concurrent calls should leave about one connection. Stress only (6 minutes).
    */

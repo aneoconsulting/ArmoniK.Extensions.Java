@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail scenario 5: "deadlock with listeners", run in its own JVM (surefire forks one per class).
+ * No deadlock with listeners, run in its own JVM (one fork per class).
  * <p>
  * Sessions with a listener are paused, all their tasks submitted so that every output watch opens
  * before any output completes, then resumed from a second client. Expected: every output reaches
@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 30, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class MailDeadlockIT {
+class ListenerDeadlockIT {
   private static final Duration NO_PROGRESS_LIMIT = Duration.ofSeconds(60);
 
   @AfterEach
@@ -51,7 +51,7 @@ class MailDeadlockIT {
     cancelCreatedSessions();
   }
 
-  /** The mail's probe: 12 sessions x 600 tasks (12 x 100 in the default run). */
+  /** 12 sessions x 600 tasks (12 x 100 in the default run). */
   @Test
   @Order(1)
   void twelve_paused_sessions_with_listeners_receive_every_output_once_resumed() throws Exception {
@@ -81,7 +81,7 @@ class MailDeadlockIT {
                                  .toArray(CompletableFuture[]::new);
       within(Duration.ofMinutes(3), "submission to the paused sessions", CompletableFuture.allOf(acknowledged));
       sleep(3_000);
-      metric("MailDeadlockIT", test + "_event_channels_in_use_while_paused", channelsInUse(client, "eventChannelPool"));
+      metric("ListenerDeadlockIT", test + "_event_channels_in_use_while_paused", channelsInUse(client, "eventChannelPool"));
 
       try (var admin = newClient()) {
         for (var session : sessions) {
@@ -102,9 +102,9 @@ class MailDeadlockIT {
         Thread.sleep(1_000);
       }
       var elapsed = millisSince(start);
-      metric("MailDeadlockIT", test + "_delivered", listener.events() + "/" + total);
-      metric("MailDeadlockIT", test + "_outputs_per_s", String.format("%.1f", listener.events() * 1000.0 / Math.max(1, elapsed)));
-      metric("MailDeadlockIT", test + "_listener_threads", listener.threads);
+      metric("ListenerDeadlockIT", test + "_delivered", listener.events() + "/" + total);
+      metric("ListenerDeadlockIT", test + "_outputs_per_s", String.format("%.1f", listener.events() * 1000.0 / Math.max(1, elapsed)));
+      metric("ListenerDeadlockIT", test + "_listener_threads", listener.threads);
 
       assertThat(processed.isDone()).as("delivery stopped for %d s with %d/%d delivered. %s",
         NO_PROGRESS_LIMIT.toSeconds(), listener.events(), total, sdkThreads()).isTrue();

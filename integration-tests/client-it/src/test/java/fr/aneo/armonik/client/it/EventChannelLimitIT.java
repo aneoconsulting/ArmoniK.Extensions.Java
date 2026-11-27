@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Mail scenario 3: "output watches pin every channel, ~10 sessions max per client".
+ * Output watches of sessions whose outputs stay pending must not hold every channel of the client.
  * <p>
  * Expected: sessions whose outputs stay pending (paused) never prevent another session of the same
  * client from being opened, submitting, and having its outputs watched and processed.
@@ -43,14 +43,14 @@ import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 6, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class MailPinningIT {
+class EventChannelLimitIT {
 
   @AfterEach
   void cleanUp() {
     cancelCreatedSessions();
   }
 
-  /** The mail's probe: 10 paused sessions with 500 pending tasks each, then an 11th session. */
+  /** 10 paused sessions with 500 pending tasks each, then an 11th session. */
   @Test
   @Order(1)
   void ten_paused_sessions_with_500_pending_tasks_do_not_block_an_eleventh() {
@@ -65,14 +65,14 @@ class MailPinningIT {
         handle.deferredTaskInfo().toCompletableFuture().get(15, TimeUnit.SECONDS);
         return session;
       });
-      metric("MailPinningIT", "eleventh_session_acknowledged_ms", millisSince(start));
+      metric("EventChannelLimitIT", "eleventh_session_acknowledged_ms", millisSince(start));
       run(Duration.ofSeconds(60), "awaitOutputsProcessed of the 11th session", other::awaitOutputsProcessed);
-      metric("MailPinningIT", "eleventh_session_processed_ms", millisSince(start));
+      metric("EventChannelLimitIT", "eleventh_session_processed_ms", millisSince(start));
     }
   }
 
   /**
-   * Beyond the mail: one GetEvents stream per session (up to 1000 outputs each) holds a channel of the
+   * One GetEvents stream per session (up to 1000 outputs each) holds a channel of the
    * event pool, 50 by default. With more sessions waiting on outputs than event channels, the outputs
    * of a new session are not watched until another session's outputs all complete.
    */
@@ -82,7 +82,7 @@ class MailPinningIT {
     var eventChannels = ArmoniKConfig.DEFAULT_EVENT_CHANNEL_POOL_SIZE;
     try (var client = newClient()) {
       pausedSessionsWithPendingTasks(client, eventChannels + 5, 1);
-      metric("MailPinningIT", "event_channels_in_use_with_" + (eventChannels + 5) + "_paused_sessions", channelsInUse(client, "eventChannelPool"));
+      metric("EventChannelLimitIT", "event_channels_in_use_with_" + (eventChannels + 5) + "_paused_sessions", channelsInUse(client, "eventChannelPool"));
 
       var start = System.nanoTime();
       var listener = new RecordingListener();
@@ -92,9 +92,9 @@ class MailPinningIT {
         run(Duration.ofSeconds(60), "awaitOutputsProcessed of a running session while " + (eventChannels + 5) + " paused sessions wait",
           session::awaitOutputsProcessed);
       } finally {
-        metric("MailPinningIT", "late_session_outputs_delivered", listener.events());
+        metric("EventChannelLimitIT", "late_session_outputs_delivered", listener.events());
       }
-      metric("MailPinningIT", "late_session_processed_ms", millisSince(start));
+      metric("EventChannelLimitIT", "late_session_processed_ms", millisSince(start));
       assertThat(listener.successes.get()).isEqualTo(1);
     }
   }

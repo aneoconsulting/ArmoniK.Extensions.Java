@@ -334,10 +334,12 @@ class CorrectnessIT {
 
   @Test
   void attaching_to_an_unknown_session_fails_with_an_armonik_exception() {
+    var unknown = UUID.randomUUID().toString();
     try (var client = newClient()) {
       assertThatThrownBy(() -> call(Duration.ofSeconds(60), "getSession of an unknown session",
-        () -> client.getSession(SessionId.from(UUID.randomUUID().toString()))))
-        .isInstanceOf(AssertionError.class).hasMessageNotContaining("not done after").hasCauseInstanceOf(ArmoniKException.class);
+        () -> client.getSession(SessionId.from(unknown))))
+        .isInstanceOf(AssertionError.class).hasMessageNotContaining("not done after")
+        .cause().isInstanceOf(ArmoniKException.class).hasMessageContaining("Session " + unknown + " not found");
     }
   }
 }

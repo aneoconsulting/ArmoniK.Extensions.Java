@@ -51,11 +51,12 @@ class ListenerDeadlockIT {
     cancelCreatedSessions();
   }
 
-  /** 12 sessions x 600 tasks (12 x 100 in the default run). */
+  /** 12 sessions x 600 tasks, stress only. */
   @Test
   @Order(1)
+  @EnabledIf("fr.aneo.armonik.client.it.ItSupport#stressEnabled")
   void twelve_paused_sessions_with_listeners_receive_every_output_once_resumed() throws Exception {
-    deliverAll(12, STRESS ? 600 : 100);
+    deliverAll(12, 600);
   }
 
   /** More sessions with a listener than event channels (50): each holds one GetEvents stream. */

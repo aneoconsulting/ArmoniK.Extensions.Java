@@ -78,7 +78,13 @@ import java.util.zip.ZipOutputStream;
  *   <li>{@code armonik.it.stress} / {@code ARMONIK_IT_STRESS}: {@code true} runs the long and heavy tests too</li>
  *   <li>{@code armonik.it.restart} / {@code ARMONIK_IT_RESTART}: name of the control plane docker container the
  *       restart test may restart, e.g. {@code armonik.control.submitter}; that test is skipped when empty</li>
+ *   <li>{@code armonik.it.worker-crash} / {@code ARMONIK_IT_WORKER_CRASH}: {@code true} runs the test that crashes
+ *       the worker process</li>
  * </ul>
+ * <p>
+ * Without {@code armonik.it.stress}, the suite runs in a few minutes. Tests that reproduce an open bug
+ * are {@code @Disabled} with a link to its issue.
+ * <p>
  * The worker of the partition must be the dynamic Java worker: the tests upload
  * {@code fr.aneo.armonik.it.processors.ItProcessor} as a {@link WorkerLibrary} in every session.
  */
@@ -87,6 +93,7 @@ public final class ItSupport {
   public static final String PARTITION = setting("armonik.it.partition", "ARMONIK_IT_PARTITION", "TestPartition1");
   public static final boolean STRESS = Boolean.parseBoolean(setting("armonik.it.stress", "ARMONIK_IT_STRESS", "false"));
   public static final String RESTART_CONTAINER = setting("armonik.it.restart", "ARMONIK_IT_RESTART", "");
+  public static final boolean WORKER_CRASH = Boolean.parseBoolean(setting("armonik.it.worker-crash", "ARMONIK_IT_WORKER_CRASH", "false"));
   static final String LIBRARY_PATH = "it-processors.jar";
   static final String SYMBOL = "fr.aneo.armonik.it.processors.ItProcessor";
 
@@ -105,6 +112,15 @@ public final class ItSupport {
   /** Whether the long and heavy tests run too. */
   public static boolean stressEnabled() {
     return enabled() && STRESS;
+  }
+
+  /**
+   * Whether the test that crashes the worker runs. A crashed worker is restarted by its container
+   * runtime; outside Kubernetes the restarted worker may not reach its agent again, which fails the
+   * tests that follow, so it runs only when asked.
+   */
+  public static boolean workerCrashEnabled() {
+    return enabled() && WORKER_CRASH;
   }
 
   /** Whether the control plane restart test runs. */

@@ -80,6 +80,7 @@ class ChannelPoolIT {
    * channel lending caps throughput. The sessions are purged afterwards to free the object storage.
    */
   @Test
+  @EnabledIf("fr.aneo.armonik.client.it.ItSupport#stressEnabled")
   void streamed_uploads_are_not_capped_by_the_channel_pool() {
     var tasks = 80;
     var sizes = new long[2];

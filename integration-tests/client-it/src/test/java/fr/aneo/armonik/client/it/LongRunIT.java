@@ -35,10 +35,10 @@ import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
  * Long run without stall: 20 sessions of one client loop on submit one task + awaitOutputsProcessed.
  * <p>
  * Expected: every round finishes; no 60 s without progress. Kestrel allows 100 streams per
- * connection, so streams left open would fill every connection after a few thousand rounds. The
- * stress run does 6,000 rounds, the default run 600.
+ * connection, so streams left open would fill every connection after a few thousand rounds. Stress
+ * only: 6,000 rounds.
  */
-@EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
+@EnabledIf("fr.aneo.armonik.client.it.ItSupport#stressEnabled")
 @Timeout(value = 40, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
 class LongRunIT {
   private static final Duration NO_PROGRESS_LIMIT = Duration.ofSeconds(60);
@@ -50,7 +50,7 @@ class LongRunIT {
 
   @Test
   void twenty_sessions_doing_thousands_of_submit_and_wait_rounds_never_stall() throws Exception {
-    var target = STRESS ? 6_000 : 600;
+    var target = 6_000;
     var workers = 20;
     var completed = new AtomicInteger();
     var lastProgress = new AtomicLong(System.nanoTime());

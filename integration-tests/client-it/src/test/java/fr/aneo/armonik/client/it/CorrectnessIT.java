@@ -214,6 +214,7 @@ class CorrectnessIT {
 
   /** The worker JVM halts during the first attempt: the control plane retries the task, the client sees one success. */
   @Test
+  @EnabledIf("fr.aneo.armonik.client.it.ItSupport#workerCrashEnabled")
   void a_task_whose_worker_crashes_is_retried_and_its_output_delivered_once() {
     try (var client = newClient()) {
       var listener = new RecordingListener();

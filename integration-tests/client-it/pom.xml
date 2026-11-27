@@ -15,8 +15,9 @@
   <properties>
     <!-- Set to run against a cluster, e.g. -Darmonik.it.endpoint=http://localhost:5001 -->
     <armonik.it.endpoint/>
-    <armonik.it.partition>TestPartition1</armonik.it.partition>
-    <armonik.it.stress>false</armonik.it.stress>
+    <!-- Empty so that the ARMONIK_IT_* environment variables, then the defaults of ItSupport, apply -->
+    <armonik.it.partition/>
+    <armonik.it.stress/>
     <armonik.it.label>local</armonik.it.label>
   </properties>
 

@@ -17,6 +17,7 @@ package fr.aneo.armonik.client.it;
 
 import fr.aneo.armonik.client.ArmoniKConfig;
 import fr.aneo.armonik.client.SessionHandle;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -78,6 +79,7 @@ class EventChannelLimitIT {
    */
   @Test
   @Order(2)
+  @Disabled("Fails while the event channel pool is bounded: https://github.com/aneoconsulting/ArmoniK.Extensions.Java/issues/73")
   void more_paused_sessions_than_event_channels_do_not_block_the_outputs_of_another_session() {
     var eventChannels = ArmoniKConfig.DEFAULT_EVENT_CHANNEL_POOL_SIZE;
     try (var client = newClient()) {

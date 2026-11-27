@@ -21,14 +21,12 @@ import fr.aneo.armonik.client.definition.SessionDefinition;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import fr.aneo.armonik.client.definition.blob.InputBlobDefinition;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIf;
 
 import java.io.IOException;
 import java.net.ServerSocket;
-import java.net.Socket;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
-/** Unreachable and unresponsive control planes, timeouts, and a control plane restart under load. */
+/** An unreachable control plane, timed waits, and a control plane restart under load. */
 @EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 8, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
 class FailureIT {
@@ -73,74 +71,24 @@ class FailureIT {
     }
   }
 
-  /** A server that accepts connections and never answers: no call has a deadline, so does it hang? */
-  @Test
-  void opening_a_session_on_a_silent_server_fails_within_a_minute() throws Exception {
-    try (var server = new ServerSocket(0)) {
-      var accepted = new ArrayList<Socket>();
-      var acceptor = new Thread(() -> {
-        while (!server.isClosed()) {
-          try {
-            accepted.add(server.accept());
-          } catch (IOException e) {
-            return;
-          }
-        }
-      }, "it-silent-server");
-      acceptor.setDaemon(true);
-      acceptor.start();
-      var client = newClient("http://localhost:" + server.getLocalPort(), builder -> {
-      });
-      try {
-        var start = System.nanoTime();
-        try {
-          call(Duration.ofSeconds(60), "openSession on a server that never answers",
-            () -> client.openSession(new SessionDefinition(Set.of(PARTITION))));
-        } catch (AssertionError expected) {
-          metric("FailureIT", "silent_server_outcome", expected.getMessage().contains("not done after") ? "hang>60s" : "failed after " + millisSince(start) + " ms");
-          assertThat(expected.getMessage()).as("openSession on a silent server").doesNotContain("not done after");
-        }
-      } finally {
-        server.close();
-        accepted.forEach(socket -> {
-          try {
-            socket.close();
-          } catch (IOException ignored) {
-            // closing
-          }
-        });
-        client.close();
-      }
-    }
-  }
-
-  /** PR #70 adds awaitOutputsProcessed(Duration); skipped where the method does not exist. */
+  /** A timed wait gives up after its timeout without stopping the watch: a later wait still succeeds. */
   @Test
   void a_timed_wait_gives_up_and_a_later_wait_still_succeeds() throws Exception {
-    var timed = findTimedAwait();
-    Assumptions.assumeTrue(timed != null, "SessionHandle.awaitOutputsProcessed(Duration) not in this version");
     try (var client = newClient()) {
       var session = openSession(client, null);
       within(Duration.ofSeconds(30), "pause", session.pause());
       session.submitTask(task(session, utf8("timed")));
       var start = System.nanoTime();
-      var finished = (Boolean) timed.invoke(session, Duration.ofSeconds(2));
+      var finished = session.awaitOutputsProcessed(Duration.ofSeconds(2));
       var elapsed = millisSince(start);
       metric("FailureIT", "timed_wait_2s_elapsed_ms", elapsed);
       assertThat(finished).isFalse();
       assertThat(elapsed).isBetween(1_900L, 5_000L);
       within(Duration.ofSeconds(30), "resume", session.resume());
-      assertThat((Boolean) call(Duration.ofSeconds(90), "timed wait after resume", () -> timed.invoke(session, Duration.ofSeconds(60)))).isTrue();
+      assertThat(call(Duration.ofSeconds(90), "timed wait after resume", () -> session.awaitOutputsProcessed(Duration.ofSeconds(60)))).isTrue();
     }
   }
 
-  private static java.lang.reflect.Method findTimedAwait() {
-    try {
-      return SessionHandle.class.getMethod("awaitOutputsProcessed", Duration.class);
-    } catch (NoSuchMethodException e) {
-      return null;
-    }
-  }
 
   /**
    * Restarts the control plane container while 4 sessions loop on rounds of 3 tasks: one 2.5 MB

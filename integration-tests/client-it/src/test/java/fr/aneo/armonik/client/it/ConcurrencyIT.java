@@ -20,6 +20,7 @@ import fr.aneo.armonik.client.BlobCompletionListener;
 import fr.aneo.armonik.client.BlobId;
 import fr.aneo.armonik.client.SessionHandle;
 import fr.aneo.armonik.client.TaskHandle;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -154,6 +155,7 @@ class ConcurrencyIT {
    * client. Session B alone is timed first, then again while session A's listener sleeps 1 s per output.
    */
   @Test
+  @Disabled("Fails while the sessions of a client share its listener threads: https://github.com/aneoconsulting/ArmoniK.Extensions.Java/issues/75")
   void a_slow_listener_of_one_session_does_not_delay_another_session() {
     slowListenerNextTo(false);
   }

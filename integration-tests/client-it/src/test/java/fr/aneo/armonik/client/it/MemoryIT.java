@@ -15,7 +15,6 @@
  */
 package fr.aneo.armonik.client.it;
 
-import fr.aneo.armonik.client.ArmoniKConfig;
 import fr.aneo.armonik.client.BlobCompletionListener;
 import fr.aneo.armonik.client.definition.TaskDefinition;
 import org.junit.jupiter.api.AfterAll;
@@ -26,6 +25,8 @@ import org.junit.jupiter.api.condition.EnabledIf;
 import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -36,16 +37,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 /**
- * Data held by the client when outputs complete faster than the listener takes them: 80 outputs of
- * 4 MB (320 MB), a listener taking 1 s each. Expected: the client holds a bounded amount of output data.
- * PR #71 adds ArmoniKConfig.withDownloadBudget, set here to 64 MB through reflection where it exists.
- * Stress only.
+ * The download budget bounds the data of downloaded outputs: 80 outputs of 4 MB (320 MB) complete
+ * faster than a listener that takes 1 s per output, with a 64 MB budget.
+ * <p>
+ * The failsafe execution {@code memory} runs this class alone in a JVM whose heap is capped at
+ * 256 MB, where downloading every output at once runs out of memory. Expected: every output reaches
+ * the listener as a success, none as an error. The peak of the heap in use is recorded, not asserted:
+ * it includes garbage not yet collected, so it varies from one run to the next.
  */
-@EnabledIf("fr.aneo.armonik.client.it.ItSupport#stressEnabled")
+@EnabledIf("fr.aneo.armonik.client.it.ItSupport#enabled")
 @Timeout(value = 10, unit = TimeUnit.MINUTES, threadMode = SEPARATE_THREAD)
 class MemoryIT {
   private static final int OUTPUTS = 80;
   private static final int SIZE = 4_000_000;
+  private static final long BUDGET = 64L * 1024 * 1024;
 
   @AfterAll
   static void cleanUp() {
@@ -53,34 +58,34 @@ class MemoryIT {
   }
 
   @Test
-  void outputs_completing_faster_than_the_listener_keep_the_heap_bounded() {
-    var budget = new AtomicBoolean();
-    try (var client = newClient(builder -> budget.set(setBudget(builder, 64L * 1024 * 1024)))) {
-      var delivered = new AtomicInteger();
+  void outputs_completing_faster_than_the_listener_are_all_downloaded_within_the_budget() {
+    var maxHeapMb = Runtime.getRuntime().maxMemory() / (1024 * 1024);
+    metric("MemoryIT", "max_heap_MB", maxHeapMb);
+    try (var client = newClient(builder -> builder.withDownloadBudget(BUDGET))) {
+      var successes = new AtomicInteger();
+      List<String> errors = new CopyOnWriteArrayList<>();
       var listener = new BlobCompletionListener() {
         @Override
         public void onSuccess(Blob blob) {
           sleep(1_000);
-          delivered.incrementAndGet();
+          successes.incrementAndGet();
         }
 
         @Override
         public void onError(BlobError blobError) {
-          delivered.incrementAndGet();
+          errors.add(String.valueOf(blobError.cause()));
         }
       };
       var session = openSession(client, listener);
       var definitions = new ArrayList<TaskDefinition>();
       for (int i = 0; i < OUTPUTS; i++) definitions.add(task(session, utf8("m" + i), "big:" + SIZE));
 
-      System.gc();
       var memory = ManagementFactory.getMemoryMXBean();
-      var base = memory.getHeapMemoryUsage().getUsed();
       var peak = new AtomicLong();
       var sampling = new AtomicBoolean(true);
       var sampler = new Thread(() -> {
         while (sampling.get()) {
-          peak.accumulateAndGet(memory.getHeapMemoryUsage().getUsed() - base, Math::max);
+          peak.accumulateAndGet(memory.getHeapMemoryUsage().getUsed(), Math::max);
           sleep(20);
         }
       }, "it-heap-sampler");
@@ -89,25 +94,19 @@ class MemoryIT {
 
       var start = System.nanoTime();
       session.submitTasks(definitions);
-      run(Duration.ofMinutes(8), "awaitOutputsProcessed of 80 x 4 MB outputs with a slow listener", session::awaitOutputsProcessed);
-      sampling.set(false);
-      var peakMb = peak.get() / (1024 * 1024);
-      metric("MemoryIT", "budget_api_available", budget.get());
-      metric("MemoryIT", "outputs_80x4MB_slow_listener_ms", millisSince(start));
-      metric("MemoryIT", "heap_peak_above_base_MB", peakMb);
+      try {
+        run(Duration.ofMinutes(8), "awaitOutputsProcessed of 80 x 4 MB outputs with a slow listener", session::awaitOutputsProcessed);
+      } finally {
+        sampling.set(false);
+        metric("MemoryIT", "outputs_80x4MB_slow_listener_ms", millisSince(start));
+        metric("MemoryIT", "heap_peak_used_MB", peak.get() / (1024 * 1024));
+        metric("MemoryIT", "successes", successes.get());
+        metric("MemoryIT", "errors", errors.size());
+      }
       within(Duration.ofSeconds(30), "cancel", session.cancel());
       within(Duration.ofSeconds(30), "purge", session.purge());
-      assertThat(delivered.get()).isEqualTo(OUTPUTS);
-      assertThat(peakMb).as("peak heap above baseline while 320 MB of outputs completed").isLessThan(160);
-    }
-  }
-
-  private static boolean setBudget(ArmoniKConfig.Builder builder, long bytes) {
-    try {
-      ArmoniKConfig.Builder.class.getMethod("withDownloadBudget", long.class).invoke(builder, bytes);
-      return true;
-    } catch (ReflectiveOperationException e) {
-      return false;
+      assertThat(errors).as("outputs reported as failed, with a %d MB heap", maxHeapMb).isEmpty();
+      assertThat(successes.get()).isEqualTo(OUTPUTS);
     }
   }
 }

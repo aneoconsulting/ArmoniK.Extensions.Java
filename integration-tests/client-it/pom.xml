@@ -72,6 +72,26 @@
               <goal>integration-test</goal>
               <goal>verify</goal>
             </goals>
+            <configuration>
+              <excludes>
+                <exclude>**/MemoryIT.java</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+          <!-- The download budget is checked in a JVM whose heap is too small to hold every output at once -->
+          <execution>
+            <id>memory</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>**/MemoryIT.java</include>
+              </includes>
+              <argLine>-Xmx256m -Dcom.google.protobuf.use_unsafe_pre22_gencode=true</argLine>
+              <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary-memory.xml</summaryFile>
+            </configuration>
           </execution>
         </executions>
         <configuration>

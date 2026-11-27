@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>fr.aneo</groupId>
+    <artifactId>armonik-integration-tests</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>armonik-client-it</artifactId>
+  <name>Integration tests of armonik-client</name>
+
+  <properties>
+    <!-- Set to run against a cluster, e.g. -Darmonik.it.endpoint=http://localhost:5001 -->
+    <armonik.it.endpoint/>
+    <!-- Empty so that the ARMONIK_IT_* environment variables, then the defaults of ItSupport, apply -->
+    <armonik.it.partition/>
+    <armonik.it.stress/>
+    <armonik.it.label>local</armonik.it.label>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>fr.aneo</groupId>
+      <artifactId>armonik-client</artifactId>
+      <version>${armonik-client.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Built first, then packed into the WorkerLibrary zip by the tests -->
+    <dependency>
+      <groupId>fr.aneo</groupId>
+      <artifactId>armonik-it-processors</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <version>5.14.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <version>5.14.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.27.7</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.5.20</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>3.5.4</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+            <configuration>
+              <excludes>
+                <exclude>**/MemoryIT.java</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+          <!-- The download budget is checked in a JVM whose heap is too small to hold every output at once -->
+          <execution>
+            <id>memory</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>**/MemoryIT.java</include>
+              </includes>
+              <argLine>-Xmx256m -Dcom.google.protobuf.use_unsafe_pre22_gencode=true</argLine>
+              <summaryFile>${project.build.directory}/failsafe-reports/failsafe-summary-memory.xml</summaryFile>
+            </configuration>
+          </execution>
+        </executions>
+        <configuration>
+          <!-- One JVM per test class: the SDK's executors are static, threads a test leaves blocked must not stall the next class -->
+          <forkCount>1</forkCount>
+          <reuseForks>false</reuseForks>
+          <redirectTestOutputToFile>true</redirectTestOutputToFile>
+          <argLine>-Dcom.google.protobuf.use_unsafe_pre22_gencode=true</argLine>
+          <systemPropertyVariables>
+            <armonik.it.endpoint>${armonik.it.endpoint}</armonik.it.endpoint>
+            <armonik.it.partition>${armonik.it.partition}</armonik.it.partition>
+            <armonik.it.stress>${armonik.it.stress}</armonik.it.stress>
+            <armonik.it.label>${armonik.it.label}</armonik.it.label>
+            <armonik.it.processors>${project.basedir}/../test-processors/target/classes</armonik.it.processors>
+            <armonik.it.metrics>${project.build.directory}/it-metrics-${armonik.it.label}.tsv</armonik.it.metrics>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

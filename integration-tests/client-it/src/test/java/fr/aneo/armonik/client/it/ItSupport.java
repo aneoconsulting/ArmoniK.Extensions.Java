@@ -80,6 +80,12 @@ import java.util.zip.ZipOutputStream;
  *       restart test may restart, e.g. {@code armonik.control.submitter}; that test is skipped when empty</li>
  *   <li>{@code armonik.it.worker-crash} / {@code ARMONIK_IT_WORKER_CRASH}: {@code true} runs the test that crashes
  *       the worker process</li>
+ *   <li>For an {@code https://} endpoint: {@code armonik.it.ca-cert} / {@code ARMONIK_IT_CA_CERT}, a PEM file of
+ *       the CA that signed the server certificate; {@code armonik.it.insecure} / {@code ARMONIK_IT_INSECURE},
+ *       {@code true} to skip the validation of the server certificate; for mutual TLS,
+ *       {@code armonik.it.client-p12} / {@code ARMONIK_IT_CLIENT_P12} and {@code armonik.it.client-p12-password} /
+ *       {@code ARMONIK_IT_CLIENT_P12_PASSWORD}, or {@code armonik.it.client-cert} / {@code ARMONIK_IT_CLIENT_CERT}
+ *       and {@code armonik.it.client-key} / {@code ARMONIK_IT_CLIENT_KEY} in PEM</li>
  * </ul>
  * <p>
  * Without {@code armonik.it.stress}, the suite runs in a few minutes. Tests that reproduce an open bug
@@ -94,6 +100,12 @@ public final class ItSupport {
   public static final boolean STRESS = Boolean.parseBoolean(setting("armonik.it.stress", "ARMONIK_IT_STRESS", "false"));
   public static final String RESTART_CONTAINER = setting("armonik.it.restart", "ARMONIK_IT_RESTART", "");
   public static final boolean WORKER_CRASH = Boolean.parseBoolean(setting("armonik.it.worker-crash", "ARMONIK_IT_WORKER_CRASH", "false"));
+  static final String CA_CERT = setting("armonik.it.ca-cert", "ARMONIK_IT_CA_CERT", "");
+  static final boolean INSECURE = Boolean.parseBoolean(setting("armonik.it.insecure", "ARMONIK_IT_INSECURE", "false"));
+  static final String CLIENT_P12 = setting("armonik.it.client-p12", "ARMONIK_IT_CLIENT_P12", "");
+  static final String CLIENT_P12_PASSWORD = setting("armonik.it.client-p12-password", "ARMONIK_IT_CLIENT_P12_PASSWORD", "");
+  static final String CLIENT_CERT = setting("armonik.it.client-cert", "ARMONIK_IT_CLIENT_CERT", "");
+  static final String CLIENT_KEY = setting("armonik.it.client-key", "ARMONIK_IT_CLIENT_KEY", "");
   static final String LIBRARY_PATH = "it-processors.jar";
   static final String SYMBOL = "fr.aneo.armonik.it.processors.ItProcessor";
 
@@ -146,21 +158,20 @@ public final class ItSupport {
   }
 
   /**
-   * Creates a client for {@code endpoint}. An {@code http://} endpoint needs {@code withoutSslValidation()}
-   * on main to connect in plaintext, while PR #68 rejects that combination and connects in plaintext by
-   * scheme: the helper tries the first form and falls back to the second.
+   * Creates a client for {@code endpoint}: plaintext for {@code http://}, TLS with the configured CA,
+   * validation and client certificate for {@code https://}.
    */
   public static ArmoniKClient newClient(String endpoint, Consumer<ArmoniKConfig.Builder> customizer) {
-    if (endpoint.startsWith("http://")) {
-      try {
-        var builder = ArmoniKConfig.builder().endpoint(endpoint).withoutSslValidation();
-        customizer.accept(builder);
-        return new ArmoniKClient(builder.build());
-      } catch (IllegalArgumentException plaintextByScheme) {
-        // fall through
+    var builder = ArmoniKConfig.builder().endpoint(endpoint);
+    if (endpoint.startsWith("https://")) {
+      if (!CA_CERT.isBlank()) builder.withCaCert(CA_CERT);
+      if (INSECURE) builder.withoutSslValidation();
+      if (!CLIENT_P12.isBlank()) {
+        builder.withClientP12(CLIENT_P12, CLIENT_P12_PASSWORD.isBlank() ? null : CLIENT_P12_PASSWORD);
+      } else if (!CLIENT_CERT.isBlank()) {
+        builder.withClientCert(CLIENT_CERT, CLIENT_KEY);
       }
     }
-    var builder = ArmoniKConfig.builder().endpoint(endpoint);
     customizer.accept(builder);
     return new ArmoniKClient(builder.build());
   }

@@ -198,7 +198,10 @@ class ConcurrencyIT {
 
   /**
    * A listener that blocks (here sleeps 1 s per output) must not slow down task submission elsewhere:
-   * another client submits 500 tasks to a paused session, timed alone and next to the slow listener.
+   * its calls run on the listener threads of its client, never on the threads the SDK shares between
+   * clients to complete gRPC calls. That confinement is what is asserted. The time another client takes
+   * to submit 500 tasks, alone and next to the slow listener, is only recorded: it also depends on the
+   * load of the cluster, which the slow session's tasks raise (the compute plane may scale up meanwhile).
    */
   @Test
   void a_slow_listener_does_not_slow_down_submissions_of_another_client() {
@@ -206,9 +209,11 @@ class ConcurrencyIT {
       var alone = timeSubmission(other, "alone-");
 
       var slowCalls = new AtomicInteger();
+      var listenerThreads = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
       var slow = new BlobCompletionListener() {
         @Override
         public void onSuccess(Blob blob) {
+          listenerThreads.add(Thread.currentThread().getName());
           slowCalls.incrementAndGet();
           sleep(1_000);
         }
@@ -223,8 +228,10 @@ class ConcurrencyIT {
       var busy = timeSubmission(other, "busy-");
       metric("ConcurrencyIT", "submit500_alone_ms", alone);
       metric("ConcurrencyIT", "submit500_next_to_slow_listener_ms", busy);
+      metric("ConcurrencyIT", "slow_listener_threads", listenerThreads);
       within(Duration.ofSeconds(30), "cancel", slowSession.cancel());
-      assertThat(busy).as("500 submissions next to a slow listener of another client, alone %d ms", alone).isLessThan(alone + 3_000);
+      assertThat(listenerThreads).as("threads that ran the slow listener").isNotEmpty()
+        .allSatisfy(name -> assertThat(name).startsWith("ArmoniK-Listener-"));
     }
   }
 

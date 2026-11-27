@@ -186,7 +186,7 @@ class CorrectnessIT {
       assertThat(listener.errors).containsKey(id);
       metric("CorrectnessIT", "failing_task_" + command + "_error", listener.errors.get(id).getMessage());
       assertThatThrownBy(() -> within(Duration.ofSeconds(30), "download of an aborted output", output(handle).downloadData()))
-        .isInstanceOf(AssertionError.class);
+        .isInstanceOf(AssertionError.class).hasMessageNotContaining("not done after");
     }
   }
 

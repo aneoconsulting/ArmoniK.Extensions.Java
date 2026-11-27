@@ -184,6 +184,8 @@ class FailureIT {
       var roundsBefore = rounds.get();
       var process = new ProcessBuilder("docker", "restart", RESTART_CONTAINER).redirectErrorStream(true).start();
       assertThat(process.waitFor(2, TimeUnit.MINUTES)).as("docker restart").isTrue();
+      assertThat(process.exitValue()).as("exit code of docker restart %s: %s", RESTART_CONTAINER,
+        new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim()).isZero();
       restarted.set(true);
       var restartedAt = System.nanoTime();
       // Run until 20 rounds completed after the restart, or 3 minutes

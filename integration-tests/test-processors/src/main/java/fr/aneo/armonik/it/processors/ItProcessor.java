@@ -78,7 +78,7 @@ public class ItProcessor implements TaskProcessor {
             if (SEEN.add(argument)) return TaskOutcome.error("first attempt of " + argument + " fails");
           }
           case "crashonce" -> {
-            var marker = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"), "it-crashonce-" + argument);
+            var marker = crashMarkerDirectory().resolve("it-crashonce-" + argument);
             if (!java.nio.file.Files.exists(marker)) {
               java.nio.file.Files.createFile(marker);
               Runtime.getRuntime().halt(1);
@@ -150,5 +150,17 @@ public class ItProcessor implements TaskProcessor {
       for (int i = 0; i < count; i++) buffer[offset + i] = (byte) ((position++ * 31 + 7) & 0xff);
       return count;
     }
+  }
+
+  /**
+   * Where crashonce leaves its marker: it must outlive the worker container, which the crash restarts.
+   * On Kubernetes {@code /cache} is an emptyDir shared by the pod, while the container's own {@code /tmp}
+   * is reset; with docker the container's file system, hence {@code /tmp}, survives a restart.
+   */
+  private static java.nio.file.Path crashMarkerDirectory() {
+    var cache = java.nio.file.Paths.get("/cache");
+    return java.nio.file.Files.isDirectory(cache) && java.nio.file.Files.isWritable(cache)
+      ? cache
+      : java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"));
   }
 }
